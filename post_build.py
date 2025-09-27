@@ -12,7 +12,7 @@ project_name = sys.argv[2]
 timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%MZ")
 
 # Set your desired filename prefix here
-custom_prefix = "jf_bms32_"
+custom_prefix = "jf_bms32_ntc_"
 custom_name = f"{custom_prefix}{timestamp}.bin"
 
 # Paths

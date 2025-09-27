@@ -273,6 +273,16 @@
 #define CONF_PSW_WAIT_INIT 0
 #endif
 
+// NTC Resistance
+#ifndef CONF_TEMP_RES
+#define CONF_TEMP_RES 2
+#endif
+
+// NTC Beta
+#ifndef CONF_TEMP_BETA
+#define CONF_TEMP_BETA 3435
+#endif
+
 // JF_BMS32_CONF_DEFAULT_H_
 #endif
 

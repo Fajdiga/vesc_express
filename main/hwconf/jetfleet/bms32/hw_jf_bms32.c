@@ -413,11 +413,55 @@ static void bq_init(uint8_t dev_addr) {
 	bq_set_reg(dev_addr, DFETOFFPinConfig, 0x00, 1);
 
 	// ADC inputs with 18k pull-up
-	bq_set_reg(dev_addr, TS1Config, 0b00111011, 1);
-	bq_set_reg(dev_addr, TS3Config, 0b00111011, 1);
-	bq_set_reg(dev_addr, ALERTPinConfig, 0b00111011, 1);
-	bq_set_reg(dev_addr, DCHGPinConfig, 0b00111011, 1);
-	bq_set_reg(dev_addr, HDQPinConfig, 0b00111011, 1);
+	main_config_t *cfg = (main_config_t *)&backup.config;
+	uint32_t ntcPinConfig = 0;
+	/* 0b00111011
+	   	00: 18k pull-up
+	   	11: no polynomial is used, raw ADC counts are reported
+	   	10: thermistor temperature measurement, reported but not used for protections
+	   	11: 3 = ADC Input or Thermistor
+	   0b01111011
+	   	01: 180k pull-up
+	   	11: no polynomial is used, raw ADC counts are reported
+	   	10: thermistor temperature measurement, reported but not used for protections
+	   	11: 3 = ADC Input or Thermistor
+	*/
+
+	switch (cfg->temp_res) {
+		case NTC_RES_4_7K:
+			ntcPinConfig = 0b00111011;
+			break;
+		case NTC_RES_5K:
+			ntcPinConfig = 0b00111011;
+			break;
+		case NTC_RES_10K:
+			ntcPinConfig = 0b00111011;
+			break;
+		case NTC_RES_20K:
+			ntcPinConfig = 0b00111011;
+			break;
+		case NTC_RES_22K:
+			ntcPinConfig = 0b00111011;
+			break;
+		case NTC_RES_47K:
+			ntcPinConfig = 0b00111011;
+			break;
+		case NTC_RES_50K:
+			ntcPinConfig = 0b00111011;
+			break;
+		case NTC_RES_100K:
+			ntcPinConfig = 0b01111011;
+			break;
+		case NTC_RES_200K:
+			ntcPinConfig = 0b01111011;
+			break;
+	}
+
+	bq_set_reg(dev_addr, TS1Config, ntcPinConfig, 1);
+	bq_set_reg(dev_addr, TS3Config, ntcPinConfig, 1);
+	bq_set_reg(dev_addr, ALERTPinConfig, ntcPinConfig, 1);
+	bq_set_reg(dev_addr, DCHGPinConfig, ntcPinConfig, 1);
+	bq_set_reg(dev_addr, HDQPinConfig, ntcPinConfig, 1);
 
 	// Disabled
 	bq_set_reg(dev_addr, DDSGPinConfig, 0x00, 1);
@@ -636,9 +680,9 @@ static lbm_value ext_get_vcells(lbm_value *args, lbm_uint argn) {
 	return lbm_list_destructive_reverse(vc_list);
 }
 
-#define NTC_TEMP(res, beta)                                                    \
-	(1.0 / ((logf((res) / 10000.0) / beta) + (1.0 / 298.15)) - 273.15)
-#define NTC_RES(volts) (18.0e3 / (1.8 / volts - 1.0) - 500.0)
+#define NTC_TEMP(res, ntc_res, ntc_beta)                                                    \
+	(1.0 / ((logf((res) / ntc_res) / ntc_beta) + (1.0 / 298.15)) - 273.15)
+#define NTC_MEASURED_RES(volts) (18.0e3 / (1.8 / volts - 1.0) - 500.0)
 #define NAN_TO_M1(x)   (UTILS_IS_NAN(x) ? -1.0 : x)
 
 static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
@@ -686,23 +730,56 @@ static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
 		goto exit_error1;
 	}
 
-	// TODO: Use config
-	float ntc_beta = 3380.0;
+	float ntc_smd_beta = 3434; // B25/85 LCSC=C13564 muRata NCP18XH103F03RB
+	float ntc_smd_res = 10000.0;
+
+	main_config_t *cfg = (main_config_t *)&backup.config;
+	float ntc_res = 0.0;
+
+	switch (cfg->temp_res) {
+		case NTC_RES_4_7K:
+			ntc_res = 4700.0;
+			break;
+		case NTC_RES_5K:
+			ntc_res = 5000.0;
+			break;
+		case NTC_RES_10K:
+			ntc_res = 10000.0;
+			break;
+		case NTC_RES_20K:
+			ntc_res = 20000.0;
+			break;
+		case NTC_RES_22K:
+			ntc_res = 22000.0;
+			break;
+		case NTC_RES_47K:
+			ntc_res = 47000.0;
+			break;
+		case NTC_RES_50K:
+			ntc_res = 50000.0;
+			break;
+		case NTC_RES_100K:
+			ntc_res = 100000.0;
+			break;
+		case NTC_RES_200K:
+			ntc_res = 200000.0;
+			break;
+	}
 
 	ts_list = lbm_cons(
-		lbm_enc_float(NAN_TO_M1(NTC_TEMP(NTC_RES(v1), ntc_beta))), ts_list
+		lbm_enc_float(NAN_TO_M1(NTC_TEMP(NTC_MEASURED_RES(v1), ntc_res, (float) (cfg->temp_beta)))), ts_list
 	);
 	ts_list = lbm_cons(
-		lbm_enc_float(NAN_TO_M1(NTC_TEMP(NTC_RES(v2), ntc_beta))), ts_list
+		lbm_enc_float(NAN_TO_M1(NTC_TEMP(NTC_MEASURED_RES(v2), ntc_res, (float) (cfg->temp_beta)))), ts_list
 	);
 	ts_list = lbm_cons(
-		lbm_enc_float(NAN_TO_M1(NTC_TEMP(NTC_RES(v3), ntc_beta))), ts_list
+		lbm_enc_float(NAN_TO_M1(NTC_TEMP(NTC_MEASURED_RES(v3), ntc_res, (float) (cfg->temp_beta)))), ts_list
 	);
 	ts_list = lbm_cons(
-		lbm_enc_float(NAN_TO_M1(NTC_TEMP(NTC_RES(v4), ntc_beta))), ts_list
+		lbm_enc_float(NAN_TO_M1(NTC_TEMP(NTC_MEASURED_RES(v4), ntc_res, (float) (cfg->temp_beta)))), ts_list
 	);
 	ts_list = lbm_cons(
-		lbm_enc_float(NAN_TO_M1(NTC_TEMP(NTC_RES(v5), ntc_beta))), ts_list
+		lbm_enc_float(NAN_TO_M1(NTC_TEMP(NTC_MEASURED_RES(v5), ntc_smd_res, ntc_smd_beta))), ts_list
 	);
 
 	if (m_cells_ic2 != 0) {

@@ -62,6 +62,19 @@
 #define OVR_CONF_MAIN_CONFIG
 #define VAR_INIT_CODE				259763459
 
+//Enums
+typedef enum {
+	NTC_RES_4_7K = 0,
+	NTC_RES_5K,
+	NTC_RES_10K,
+	NTC_RES_20K,
+	NTC_RES_22K,
+	NTC_RES_47K,
+	NTC_RES_50K,
+	NTC_RES_100K,
+	NTC_RES_200K
+} NTC_RES;
+
 typedef struct {
 	int controller_id;
 	CAN_BAUD can_baud_rate;
@@ -91,6 +104,9 @@ typedef struct {
 	
 	// Number of external temperature sensors
 	int temp_num;
+
+	NTC_RES temp_res;
+	uint16_t temp_beta;
 
 	// Battery amp hours
 	float batt_ah;
