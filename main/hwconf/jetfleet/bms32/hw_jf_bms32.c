@@ -461,7 +461,7 @@ static void bq_init(uint8_t dev_addr) {
 	bq_set_reg(dev_addr, TS3Config, ntcPinConfig, 1);
 	bq_set_reg(dev_addr, ALERTPinConfig, ntcPinConfig, 1);
 	bq_set_reg(dev_addr, DCHGPinConfig, ntcPinConfig, 1);
-	bq_set_reg(dev_addr, HDQPinConfig, ntcPinConfig, 1);
+	bq_set_reg(dev_addr, HDQPinConfig, 0b00111011, 1);
 
 	// Disabled
 	bq_set_reg(dev_addr, DDSGPinConfig, 0x00, 1);
