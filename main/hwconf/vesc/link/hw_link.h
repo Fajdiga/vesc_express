@@ -25,6 +25,10 @@
 
 #define HW_NAME						"VL Link"
 
+#ifndef CONF_BLE_NAME
+#define CONF_BLE_NAME "VL Link"
+#endif
+
 #define HW_NO_UART
 
 #define HW_INIT_HOOK()				hw_init()
