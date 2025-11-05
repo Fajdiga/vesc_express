@@ -2,22 +2,22 @@
 import os
 import shutil
 import sys
-from datetime import datetime, timezone
 import time
 
 build_dir = sys.argv[1]
 project_name = sys.argv[2]
 
-# UTC timestamp with Z suffix (Zulu time)
-timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%MZ")
-
 # Set your desired filename prefix here
-custom_prefix = "jf_bms32_ntc_"
-custom_name = f"{custom_prefix}{timestamp}.bin"
+custom_prefix = os.environ['BIN_PREFIX']
+custom_name = f"{custom_prefix}_{os.environ['TIMESTAMP']}.bin"
 
 # Paths
 src_bin = os.path.join(build_dir, f"{project_name}.bin")
-dst_bin = os.path.join(build_dir, custom_name)
+destination_dir = os.path.join(f"{build_dir}/../output" , os.environ['TIMESTAMP'])
+print(destination_dir)
+# Create the destination directory if it doesn't exist
+os.makedirs(destination_dir, exist_ok=True)
+dst_bin = os.path.join(destination_dir, custom_name)
 
 # Wait for the .bin file to appear (up to 5 seconds)
 for i in range(10):

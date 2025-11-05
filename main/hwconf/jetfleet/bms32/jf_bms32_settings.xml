@@ -928,25 +928,27 @@ p, li { white-space: pre-wrap; }
             <vTx>9</vTx>
         </max_charge_current>
         <sleep_regular>
-            <longName>Sleep Time Regular</longName>
+            <longName>Sleep Time</longName>
             <type>1</type>
             <transmittable>1</transmittable>
             <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
 &lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
 p, li { white-space: pre-wrap; }
 &lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Time to sleep between polling for the charger and tracking state. If this time is shorter the BMS will react faster to e.g. plugging in a charger or data on the CAN-bus, but it will also draw more power.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;The BMS will wake up periodically (X sleep time hours) to check that the SoC is not below 5% or the shutdown time has passed, in which case it will enter shutdown mode.&lt;/p&gt;
+&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Max value is 168 hours which represents one week. Note that if this value is set higher than the shutdown days then the BMS shutdown will not happen until the BMS wakes up from sleep.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_SLEEP_REGULAR</cDefine>
             <editorDecimalsDouble>1</editorDecimalsDouble>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
-            <maxDouble>999</maxDouble>
-            <minDouble>0</minDouble>
+            <maxDouble>168</maxDouble>
+            <minDouble>1</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>1</stepDouble>
-            <valDouble>10</valDouble>
+            <valDouble>12</valDouble>
             <vTxDoubleScale>10</vTxDoubleScale>
-            <suffix> s</suffix>
+            <suffix> hours</suffix>
             <vTx>7</vTx>
         </sleep_regular>
         <sleep_long>
@@ -971,6 +973,28 @@ p, li { white-space: pre-wrap; }
             <suffix> s</suffix>
             <vTx>7</vTx>
         </sleep_long>
+        <shutdown>
+            <longName>Shutdown Time</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
+&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
+p, li { white-space: pre-wrap; }
+&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Time in days for the BMS to enter shutdown after the last time it was used. Every time the BMS is waken up by plugging in the charger or waking up over CAN the timer will reset. Once the BMS has entered shutdown, it lowers its idle consumption to levels low enough that in most cases the battery should last years before going flat.&lt;/p&gt;
+&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;The BMS will emit a series of rapid beeps when it is about to enter shutdown. Once the BMS is in shutdown, the only way to wake it up is by plugging in the charger, once voltage is detected on the charge port, the BMS DCDC will awake along with the ESP32 and the balancing ICs.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_SHUTDOWN</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>999</maxInt>
+            <minInt>0</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>15</valInt>
+            <suffix> days</suffix>
+            <vTx>4</vTx>
+        </shutdown>
         <soc_filter_const>
             <longName>SoC Filter Constant</longName>
             <type>1</type>
@@ -1187,6 +1211,7 @@ p, li { white-space: pre-wrap; }
         <ser>psw_wait_init</ser>
         <ser>temp_res</ser>
         <ser>temp_beta</ser>
+        <ser>shutdown</ser>
     </SerOrder>
     <Grouping>
         <group>
@@ -1272,12 +1297,12 @@ p, li { white-space: pre-wrap; }
                 </subgroupParams>
             </subgroup>
             <subgroup>
-                <subgroupName>Sleep</subgroupName>
+                <subgroupName>Sleep and Shutdown</subgroupName>
                 <subgroupParams>
                     <param>min_current_sleep</param>
                     <param>sleep_regular</param>
-                    <param>sleep_long</param>
                     <param>block_sleep</param>
+                    <param>shutdown</param>
                 </subgroupParams>
             </subgroup>
             <subgroup>

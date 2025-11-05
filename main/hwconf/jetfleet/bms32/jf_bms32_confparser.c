@@ -74,6 +74,7 @@ int32_t jf_bms32_confparser_serialize_main_config_t(uint8_t *buffer, const main_
 	buffer[ind++] = conf->psw_wait_init;
 	buffer[ind++] = conf->temp_res;
 	buffer_append_uint16(buffer, conf->temp_beta, &ind);
+	buffer_append_int16(buffer, conf->shutdown, &ind);
 
 	return ind;
 }
@@ -150,6 +151,7 @@ bool jf_bms32_confparser_deserialize_main_config_t(const uint8_t *buffer, main_c
 	conf->psw_wait_init = buffer[ind++];
 	conf->temp_res = buffer[ind++];
 	conf->temp_beta = buffer_get_uint16(buffer, &ind);
+	conf->shutdown = buffer_get_int16(buffer, &ind);
 
 	return true;
 }
@@ -211,5 +213,6 @@ void jf_bms32_confparser_set_defaults_main_config_t(main_config_t *conf) {
 	conf->psw_wait_init = CONF_PSW_WAIT_INIT;
 	conf->temp_res = CONF_TEMP_RES;
 	conf->temp_beta = CONF_TEMP_BETA;
+	conf->shutdown = CONF_SHUTDOWN;
 }
 

@@ -17,7 +17,7 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
     */
 
-#include "hw_jf_bms32.h"
+#include HW_HEADER
 #include "../../vesc/vbms32/bq769x2_defs.h"
 
 #include "main.h"
@@ -29,6 +29,7 @@
 #include "utils.h"
 
 #include <math.h>
+#include <sys/time.h>
 
 // Settings
 #define BQ_ADDR_1 0x10
@@ -633,7 +634,7 @@ static lbm_value ext_hw_sleep(lbm_value *args, lbm_uint argn) {
 	}
 	
 	// Disable CAN-bus and other COMM
-	gpio_set_level(PIN_COM_EN, 1);
+	gpio_set_level(PIN_COM_EN, 1);	
 
 	xSemaphoreGive(bq_mutex);
 	return ENC_SYM_TRUE;
@@ -820,11 +821,9 @@ static lbm_value ext_get_current(lbm_value *args, lbm_uint argn) {
 		return ENC_SYM_EERROR;
 	}
 
-#if PCB_VERSION == 2
+
 	return lbm_enc_float(current);
-#else
-	return lbm_enc_float(-current);
-#endif
+
 }
 
 static lbm_value ext_get_vout(lbm_value *args, lbm_uint argn) {
@@ -837,6 +836,51 @@ static lbm_value ext_get_vchg(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 	return lbm_enc_float(HW_GET_VCHG());
+}
+
+static lbm_value ext_bms_supports_shutdown(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	
+	#ifdef SHUTDOWN_SUPPORT
+		return ENC_SYM_TRUE;
+	#else
+		return ENC_SYM_NIL;
+	#endif
+}
+
+//
+static lbm_value ext_get_time_of_day_s(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+
+	struct timeval now;
+	gettimeofday(&now, NULL);
+
+	return lbm_enc_i32(now.tv_sec);
+}
+
+// Returns 1 for wakeup source GPIO IO or RTC IO, 2 for timer and 0 for any other source
+static lbm_value ext_bms_wakeup_source(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+
+	switch (esp_sleep_get_wakeup_cause()) {
+		case ESP_SLEEP_WAKEUP_EXT0:
+			return lbm_enc_i(1);
+			break;
+		case ESP_SLEEP_WAKEUP_TIMER:
+			return lbm_enc_i(2);
+			break;
+		case ESP_SLEEP_WAKEUP_GPIO:
+			return lbm_enc_i(1);
+			break;
+		default:
+			return lbm_enc_i(0);
+			break;
+	}
+
+	// return lbm_enc_i(esp_sleep_get_wakeup_cause());
 }
 
 static lbm_value ext_get_btn(lbm_value *args, lbm_uint argn) {
@@ -1071,6 +1115,9 @@ typedef struct {
 	lbm_uint t_psw_en;
 	lbm_uint t_psw_max_mos;
 	lbm_uint psw_wait_init;
+	lbm_uint temp_beta;
+	lbm_uint temp_res;
+	lbm_uint shutdown;
 } vesc_syms;
 
 static vesc_syms syms_vesc = {0};
@@ -1123,6 +1170,8 @@ static bool compare_symbol(lbm_uint sym, lbm_uint *comp) {
 			lbm_add_symbol_const("sleep_regular", comp);
 		} else if (comp == &syms_vesc.sleep_long) {
 			lbm_add_symbol_const("sleep_long", comp);
+		} else if (comp == &syms_vesc.shutdown) {
+			lbm_add_symbol_const("shutdown", comp);
 		} else if (comp == &syms_vesc.min_charge_current) {
 			lbm_add_symbol_const("min_charge_current", comp);
 		} else if (comp == &syms_vesc.max_charge_current) {
@@ -1151,6 +1200,10 @@ static bool compare_symbol(lbm_uint sym, lbm_uint *comp) {
 			lbm_add_symbol_const("t_psw_max_mos", comp);
 		} else if (comp == &syms_vesc.psw_wait_init) {
 			lbm_add_symbol_const("psw_wait_init", comp);
+		} else if (comp == &syms_vesc.temp_beta) {
+			lbm_add_symbol_const("temp_beta", comp);
+		} else if (comp == &syms_vesc.temp_res) {
+			lbm_add_symbol_const("temp_res", comp);
 		}
 	}
 
@@ -1167,6 +1220,15 @@ static lbm_value get_or_set_float(bool set, float *val, lbm_value *lbm_val) {
 }
 
 static lbm_value get_or_set_i(bool set, int *val, lbm_value *lbm_val) {
+	if (set) {
+		*val = lbm_dec_as_i32(*lbm_val);
+		return ENC_SYM_TRUE;
+	} else {
+		return lbm_enc_i(*val);
+	}
+}
+
+static lbm_value get_or_set_u16(bool set, uint16_t *val, lbm_value *lbm_val) {
 	if (set) {
 		*val = lbm_dec_as_i32(*lbm_val);
 		return ENC_SYM_TRUE;
@@ -1255,6 +1317,8 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 		res = get_or_set_float(set, &cfg->sleep_regular, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.sleep_long)) {
 		res = get_or_set_float(set, &cfg->sleep_long, &set_arg);
+	} else if (compare_symbol(name, &syms_vesc.shutdown)) {
+		res = get_or_set_u16(set, &cfg->shutdown, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.min_charge_current)) {
 		res = get_or_set_float(set, &cfg->min_charge_current, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.max_charge_current)) {
@@ -1281,6 +1345,10 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 		res = get_or_set_float(set, &cfg->t_psw_max_mos, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.psw_wait_init)) {
 		res = get_or_set_bool(set, &cfg->psw_wait_init, &set_arg);
+	} else if (compare_symbol(name, &syms_vesc.temp_res)) {
+		res = get_or_set_i(set, (int *)(&cfg->temp_res), &set_arg);
+	} else if (compare_symbol(name, &syms_vesc.temp_beta)) {
+		res = get_or_set_u16(set, &cfg->temp_beta, &set_arg);
 	}
 
 	return res;
@@ -1420,6 +1488,13 @@ static void load_extensions(bool main_found) {
 	// Enable user button wakeup. 1: wakeup on ON, 0: wakeup on OFF, otherwise disable wakeup
 	lbm_add_extension("bms-set-btn-wakeup-state", ext_set_btn_wakeup_state);
 
+	//Returns 1 for wakeup source GPIO IO, 2 for timer and 0 for any other source
+	lbm_add_extension("bms-wakeup-source", ext_bms_wakeup_source);
+
+	lbm_add_extension("get-time-of-day-s", ext_get_time_of_day_s);
+
+	lbm_add_extension("bms-supports-shutdown", ext_bms_supports_shutdown);
+
 	// Enable/disable precharge switch
 	// CHANGE FROM VBMS32
 	// lbm_add_extension("bms-set-pchg", ext_set_pchg);
@@ -1472,11 +1547,6 @@ void hw_init(void) {
 	gpconf.pull_up_en   = GPIO_PULLUP_DISABLE;
 	gpio_config(&gpconf);
 
-	// SHUTDOWN
-	gpio_set_intr_type(PIN_SHUTDOWN, GPIO_INTR_DISABLE); // CHANGE FROM VBMS32 -- ADDED
-	gpio_set_direction(PIN_SHUTDOWN, GPIO_MODE_OUTPUT_OD); // CHANGE FROM VBMS32 -- ADDED
-	gpio_set_pull_mode(PIN_SHUTDOWN, GPIO_FLOATING); // CHANGE FROM VBMS32 -- ADDED
-
 	// PIN_PSW_EN we want it OUTPUT 
 	gpio_set_intr_type(PIN_PSW_EN, GPIO_INTR_DISABLE); // CHANGE FROM VBMS32 -- ADDED
 	gpio_set_direction(PIN_PSW_EN, GPIO_MODE_OUTPUT); // CHANGE FROM VBMS32 -- ADDED
@@ -1484,7 +1554,26 @@ void hw_init(void) {
 
 	gpio_set_level(PIN_OUT_EN, 0);
 	gpio_set_level(PIN_CHG_EN, 0);
+
+
+	// SHUTDOWN
+	gpio_set_intr_type(PIN_SHUTDOWN, GPIO_INTR_DISABLE); // CHANGE FROM VBMS32 -- ADDED
+	gpio_set_direction(PIN_SHUTDOWN, GPIO_MODE_OUTPUT_OD); // CHANGE FROM VBMS32 -- ADDED
+
+	#if PCB_VERSION == 1 && defined SHUTDOWN_SUPPORT
+		gpio_set_pull_mode(PIN_SHUTDOWN, GPIO_PULLUP_ONLY);
+	#else
+		gpio_set_pull_mode(PIN_SHUTDOWN, GPIO_FLOATING);
+	#endif
+
 	gpio_set_level(PIN_SHUTDOWN, 1); // CHANGE FROM VBMS32 gpio_set_level(PIN_PCHG_EN, 0);
+
+	#if PCB_VERSION == 1 && defined SHUTDOWN_SUPPORT
+		//Make sure we hold SHUTDOWN to 1 so that the DCDC does not turn off, also make enable it during sleep
+		gpio_hold_en(PIN_SHUTDOWN);
+		gpio_deep_sleep_hold_en();
+	#endif
+
 	gpio_set_level(PIN_PSW_EN, 1); // CHANGE FROM VBMS32 gpio_set_level(PIN_PSW_EN, 0);
 	gpio_set_level(PIN_COM_EN, 1);
 

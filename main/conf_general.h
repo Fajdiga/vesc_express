@@ -47,8 +47,8 @@
 //#define HW_HEADER					"hw_vbms32.h"
 //#define HW_SOURCE					"hw_vbms32.c"
 
-#define HW_HEADER					"hw_jf_bms32.h"
-#define HW_SOURCE					"hw_jf_bms32.c"
+// #define HW_HEADER					"hw_jf_bms32.h"
+// #define HW_SOURCE					"hw_jf_bms32.c"
 
 //#define HW_HEADER					"hw_vdisp_dual.h"
 //#define HW_SOURCE					"hw_vdisp_dual.c"

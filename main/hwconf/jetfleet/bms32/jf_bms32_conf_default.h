@@ -223,9 +223,9 @@
 #define CONF_MAX_CHARGE_CURRENT 16
 #endif
 
-// Sleep Time Regular
+// Sleep Time
 #ifndef CONF_SLEEP_REGULAR
-#define CONF_SLEEP_REGULAR 10
+#define CONF_SLEEP_REGULAR 12
 #endif
 
 // Sleep Time Long
@@ -281,6 +281,11 @@
 // NTC Beta
 #ifndef CONF_TEMP_BETA
 #define CONF_TEMP_BETA 3435
+#endif
+
+// Shutdown Time
+#ifndef CONF_SHUTDOWN
+#define CONF_SHUTDOWN 15
 #endif
 
 // JF_BMS32_CONF_DEFAULT_H_

@@ -72,9 +72,9 @@ static void terminal_ublox_reinit(int argc, const char **argv);
 void app_main(void) {
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
-	tv.tv_sec = 0;
-	tv.tv_usec = 0;
-	settimeofday(&tv, NULL);
+	// tv.tv_sec = 0;
+	// tv.tv_usec = 0;
+	// settimeofday(&tv, NULL);
 
 	esp_err_t ret = nvs_flash_init();
 	if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {

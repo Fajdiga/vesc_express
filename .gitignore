@@ -2,6 +2,7 @@
 .settings
 .cproject
 build
+output
 esp_idf_components
 sdkconfig.old
 .vscode

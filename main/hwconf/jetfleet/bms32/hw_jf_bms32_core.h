@@ -1,49 +1,11 @@
-/*
-	Copyright 2024 Benjamin Vedder	benjamin@vedder.se
-
-	This file is part of the VESC firmware.
-
-	The VESC firmware is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    The VESC firmware is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-    */
-
-#ifndef MAIN_HWCONF_JF_BMS32_H_
-#define MAIN_HWCONF_JF_BMS32_H_
-
-/*
- * TODO V1:
- * * [OK] Fix precharge supply. 12V boost from 5V is an option. E.g. MT3608.
- * * [OK] Connect temp-pin properly so that bq can exit sleep mode (not needed?)
- * * [OK] RST_SHUT should have pull-down when not used
- * * [OK] 10k pull-up on i2c
- * * [OK] SRP and SRN to Cell0 when not used
- * * SRP should be positive when charging (Was OK, wrong now...)
- * * [OK] How to deal with I2C when only having the lower BQ connected?
- */
-
-/*
- * TODO V2:
- * Swap SRP and SRN again
- * Temperature sensor under MOSFETs
- */
+#ifndef MAIN_HWCONF_JF_BMS32_CORE_H_
+#define MAIN_HWCONF_JF_BMS32_CORE_H_
 
 #include "adc.h"
 #include "driver/gpio.h"
 #include "datatypes.h"
 
 #define HW_NAME						"JFBMS32"
-
-#define PCB_VERSION					2
 
 #define HW_EARLY_LBM_INIT
 #define HW_NO_UART
@@ -168,6 +130,9 @@ typedef struct {
 	// Long sleep time, for when SOC is low
 	float sleep_long;
 
+	// Long sleep time, for when SOC is low
+	uint16_t shutdown;
+
 	// Stop charging when the charge current goes below this value
 	float min_charge_current;
 
@@ -239,4 +204,4 @@ typedef struct {
 // Functions
 void hw_init(void);
 
-#endif /* MAIN_HWCONF_JF_BMS32_H_ */
+#endif /* MAIN_HWCONF_JF_BMS32_CORE_H_ */
