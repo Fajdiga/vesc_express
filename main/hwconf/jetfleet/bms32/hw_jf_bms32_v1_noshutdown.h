@@ -3,7 +3,7 @@
 
 #include "hw_jf_bms32_core.h"
 
-#define HW_NAME						"JFBMS32"
+#define HW_NAME						"JFBMS32v1ns"
 
 #define PCB_VERSION					1
 

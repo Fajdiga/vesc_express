@@ -5,7 +5,7 @@
 #include "driver/gpio.h"
 #include "datatypes.h"
 
-#define HW_NAME						"JFBMS32"
+// #define HW_NAME						"JFBMS32"
 
 #define HW_EARLY_LBM_INIT
 #define HW_NO_UART
