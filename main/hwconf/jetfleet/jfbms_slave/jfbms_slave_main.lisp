@@ -1,50 +1,45 @@
-; JFBMS Slave - Data streaming script for master-slave BMS topology
-; This slave BMS reads cell voltages and temperatures and streams them
-; to the master BMS via custom CAN protocol. Master handles all safety logic.
-;
-; CAN Protocol (11-bit Standard IDs):
-;   Slave -> Master (0x600 range):
-;     0x01 = Cell voltages (3 per message, uint16 mV)
-;     0x02 = Temperatures (4 temps, int16 0.1C)
-;     0x03 = Status (cell count, flags, bal bitmap)
-;   Master -> Slave (0x700 range):
-;     0x10 = Balancing command (bitmap)
+; JFBMS Slave - CAN Protocol Implementation
+; Broadcasts cell voltages and temperatures to master BMS via 11-bit CAN protocol
+; Receives balance commands from master
 
 ; ============================================================================
-; Configuration
+; SLAVE CONFIGURATION - Change this value to set slave address (1-8)
 ; ============================================================================
+(def slave-id 2)  ; <-- CHANGE THIS VALUE FOR EACH SLAVE BOARD
 
+; ============================================================================
+; Cell Configuration (read from stored config)
+; ============================================================================
 (def cells-ic1 (bms-get-param 'cells_ic1))
 (def cells-ic2 (bms-get-param 'cells_ic2))
-(def slave-id (bms-get-slave-id))
 (def total-cells (+ cells-ic1 cells-ic2))
 
 ; ============================================================================
-; CAN RX Handler for Master Commands
+; Balance Watchdog
 ; ============================================================================
+; Master must send balance command at least every 10 seconds
+; If no command received, stop all balancing for safety
+(def last-bal-cmd-time 0)
+(def bal-watchdog-timeout 10.0)
 
-; Handle incoming CAN messages from master
+; ============================================================================
+; CAN RX Handler for Balance Commands from Master
+; ============================================================================
+; Balance command CAN ID: 0x500 | slave_id
+; Data: 4 bytes balance bitmap (little-endian uint32)
+
 (defun handle-can-rx (can-id data) {
-    ; Extract packet type and target slave from CAN ID
-    ; Format: 0x700 + slave_id + (packet_type << 4)
-    (var pkt-type (shr (bitwise-and can-id 0xF0) 4))
-    (var target-slave (bitwise-and can-id 0x0F))
-
-    ; Only process if addressed to us (or broadcast 0x0F)
-    (if (or (= target-slave slave-id) (= target-slave 0x0F)) {
-        (if (= pkt-type 0x10) {
-            ; Balancing command from master
-            (var cmd (bufget-u8 data 0))
-            (if (= cmd 0x00)
-                ; Stop all balancing
-                (bms-stop-balancing)
-                ; Set balancing bitmap
-                (if (= cmd 0x01) {
-                    (var new-bitmap (bufget-u32 data 1))
-                    (bms-set-bal-bitmap new-bitmap)
-                })
-            )
-        })
+    (var expected-bal-id (bitwise-or 0x500 slave-id))
+    (if (= can-id expected-bal-id) {
+        ; Extract 32-bit balance mask (little-endian)
+        (var bal-mask (bitwise-or
+            (bufget-u8 data 0)
+            (shl (bufget-u8 data 1) 8)
+            (shl (bufget-u8 data 2) 16)
+            (shl (bufget-u8 data 3) 24)))
+        (bms-set-bal-bitmap bal-mask)
+        ; Reset watchdog timer
+        (setq last-bal-cmd-time (systime))
     })
 })
 
@@ -54,20 +49,32 @@
     (loopwhile t
         (recv
             ((event-can-sid (? id) (? data))
-                ; Check if it's in master command range (0x700-0x7FF)
-                (if (and (>= id 0x700) (<= id 0x7FF))
-                    (handle-can-rx id data)))
+                (handle-can-rx id data))
             ((? x) nil)  ; Ignore other events
         )))
 
 ; ============================================================================
-; Main Thread
+; Balance Watchdog Check
+; ============================================================================
+(defun check-bal-watchdog () {
+    ; If we received a balance command and timeout has elapsed, stop balancing
+    (if (and (> last-bal-cmd-time 0)
+             (> (- (systime) last-bal-cmd-time) bal-watchdog-timeout))
+        {
+            (bms-stop-balancing)
+            (setq last-bal-cmd-time 0)
+            (print "Balance watchdog triggered - stopped balancing")
+        })
+})
+
+; ============================================================================
+; Main Thread - Broadcast data every 100ms
 ; ============================================================================
 
 (defun main-thd () {
     ; Track BQ communication status
     (var bq1-ok true)
-    (var bq2-ok (> cells-ic2 0))
+    (var bq2-ok (if (> cells-ic2 0) true false))
 
     (loopwhile t {
         ; Read cell voltages from both BQ chips
@@ -80,23 +87,23 @@
         ; Read temperatures (BQ1-Int, TS1, TS3, BQ2-Int)
         (var temps (bms-get-temps))
         (if (eq temps nil)
-            (setq temps '(-1.0 -1.0 -1.0 -1.0)))
+            (setq temps '(-273.0 -273.0 -273.0 -273.0)))
 
-        ; Check BQ2 status from temperature (BQ2-Int = -1.0 if not present or error)
-        (if (and (> cells-ic2 0) (>= (ix temps 3) 0.0))
-            (setq bq2-ok true)
-            (if (> cells-ic2 0) (setq bq2-ok false)))
+        ; Check BQ2 status from temperature (invalid if < -200)
+        (if (> cells-ic2 0) {
+            (if (and (>= (length temps) 4) (> (ix temps 3) -200.0))
+                (setq bq2-ok true)
+                (setq bq2-ok false))
+        })
 
-        ; Update VESC BMS values for VESC Tool display (USB/WiFi direct connection)
-        (bms-update-vesc cells temps)
+        ; Broadcast all data via CAN (8 cell msgs + 1 temp + 1 status)
+        (bms-broadcast-all slave-id cells temps bq1-ok bq2-ok)
 
-        ; Optionally send to master via custom CAN protocol (uncomment if needed)
-        ; (bms-can-send-cells slave-id cells)
-        ; (bms-can-send-temps slave-id temps)
-        ; (bms-can-send-status slave-id bq1-ok bq2-ok)
+        ; Check balance watchdog
+        (check-bal-watchdog)
 
-        ; 1 Hz loop
-        (sleep 1.0)
+        ; 100ms loop (10 Hz broadcast rate per protocol spec)
+        (sleep 0.1)
     })
 })
 
@@ -113,15 +120,26 @@
 
 ; Initialize BMS hardware
 (def init-ok false)
+(def bq1-init-ok false)
+(def bq2-init-ok false)
+
 (looprange i 0 10 {
     (if (bms-init cells-ic1 cells-ic2) {
         (setq init-ok true)
+        (setq bq1-init-ok true)
+        (setq bq2-init-ok (if (> cells-ic2 0) true false))
         (break)
     } {
         (print (str-merge "BMS init failed, attempt " (to-str (+ i 1)) ", retrying..."))
         (sleep 1.0)
     })
 })
+
+; Set fault flags based on init status
+(var fault-flags 0)
+(if (not bq1-init-ok) (setq fault-flags (bitwise-or fault-flags 0x01)))
+(if (and (> cells-ic2 0) (not bq2-init-ok)) (setq fault-flags (bitwise-or fault-flags 0x02)))
+(bms-set-fault-flags fault-flags)
 
 (if init-ok
     (print "BMS initialized successfully")
@@ -155,10 +173,12 @@
         )
     })
 } {
-    ; Init failed - enter diagnostic loop
+    ; Init failed - enter diagnostic loop, but still broadcast status
     (print "Entering diagnostic mode due to init failure")
     (loopwhile t {
         (print (str-merge "I2C detect 0x08: " (to-str (i2c-detect-addr 0x08))))
-        (sleep 5.0)
+        ; Broadcast empty data with fault flags
+        (bms-broadcast-all slave-id '() '() false false)
+        (sleep 1.0)
     })
 })

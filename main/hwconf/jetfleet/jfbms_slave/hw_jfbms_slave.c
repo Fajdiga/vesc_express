@@ -58,107 +58,93 @@ static char *error_comm_bq1 = "BQ1 communication error";
 static char *error_comm_bq2 = "BQ2 communication error";
 
 // ============================================================================
-// Custom CAN Protocol for BMS Master-Slave Communication
+// BMS Master-Slave CAN Protocol (11-bit Standard IDs)
 // ============================================================================
-// CAN ID Format: 0x600 + slave_id + (packet_type << 4)
-// Range: 0x600-0x6FF for slave->master, 0x700-0x7FF for master->slave
+// CAN ID Format: (msg_type << 7) | slave_id
 //
-// Packet Types (Slave -> Master):
-//   0x01 = Cell voltages (multiple messages, 3 cells per message)
-//   0x02 = Temperatures (single message)
-//   0x03 = Status
+// Message Types (Slave -> Master):
+//   0x0-0x7 = Cell voltages (4 cells per message, 8 messages for 32 cells)
+//   0x8     = Temperatures (4 temps)
+//   0x9     = Status (balance mask + faults)
 //
-// Packet Types (Master -> Slave):
-//   0x10 = Balancing command
+// Message Types (Master -> Slave):
+//   0xA     = Balance command (32-bit balance mask)
+//
+// Data Format:
+//   - All multi-byte values are little-endian
+//   - Cell voltages: uint16 mV (0x0000 = not populated, 0xFFFF = read error)
+//   - Temperatures: int16 0.1°C (0x7FFF = not present/invalid)
 // ============================================================================
 
-#define CAN_BMS_BASE_ID        0x600
-#define CAN_PKT_CELL_VOLTAGES  0x01
-#define CAN_PKT_TEMPERATURES   0x02
-#define CAN_PKT_STATUS         0x03
-#define CAN_PKT_BAL_CMD        0x10
+// CAN ID macros per protocol spec
+#define CAN_ID_CELLS(type, slave_id)  (((type) << 7) | (slave_id))
+#define CAN_ID_TEMPS(slave_id)        (0x400 | (slave_id))
+#define CAN_ID_STATUS(slave_id)       (0x480 | (slave_id))
+#define CAN_ID_BAL_CMD(slave_id)      (0x500 | (slave_id))
 
 // Forward declarations (functions defined later in file)
 static void select_bq_chip(uint8_t chip_num);
 static bool subcommands_write16(uint8_t dev_addr, uint16_t command, uint16_t data);
 
-// Build CAN ID for this slave
-static inline uint32_t make_can_id(uint8_t slave_id, uint8_t pkt_type) {
-	return CAN_BMS_BASE_ID + slave_id + ((uint32_t)pkt_type << 4);
-}
+// ============================================================================
+// CAN Protocol TX Functions
+// ============================================================================
 
-// Send cell voltages over CAN (3 cells per message, uint16 mV)
-static void can_send_cell_voltages(uint8_t slave_id, float *cells, uint8_t num_cells) {
-	uint8_t msg_idx = 0;
-	uint8_t cell_idx = 0;
+/**
+ * Send all 32 cell positions (8 CAN messages, 4 cells each)
+ * @param slave_id  Slave ID (1-8)
+ * @param cells_mv  Array of 32 cell voltages in mV (0 = not populated, 0xFFFF = error)
+ */
+static void can_send_all_cells(uint8_t slave_id, uint16_t *cells_mv) {
+	for (uint8_t msg_type = 0; msg_type < 8; msg_type++) {
+		uint8_t buf[8];
+		uint8_t base_cell = msg_type * 4;
 
-	while (cell_idx < num_cells) {
-		// Calculate how many cells in this message (max 3)
-		uint8_t cells_in_msg = (num_cells - cell_idx);
-		if (cells_in_msg > 3) cells_in_msg = 3;
-
-		// Build data buffer: [msg-idx, cells-in-msg, v0-hi, v0-lo, v1-hi, v1-lo, v2-hi, v2-lo]
-		uint8_t buf[8] = {0};
-		buf[0] = msg_idx;
-		buf[1] = cells_in_msg;
-
-		// Add cell voltages (convert V to mV, big-endian)
-		for (uint8_t i = 0; i < cells_in_msg; i++) {
-			uint16_t v_mv = (uint16_t)(cells[cell_idx + i] * 1000.0f);
-			buf[2 + i * 2] = (v_mv >> 8) & 0xFF;     // High byte
-			buf[3 + i * 2] = v_mv & 0xFF;            // Low byte
+		// Pack 4 cells per message, little-endian
+		for (uint8_t i = 0; i < 4; i++) {
+			uint16_t v = cells_mv[base_cell + i];
+			buf[i * 2]     = v & 0xFF;         // Low byte
+			buf[i * 2 + 1] = (v >> 8) & 0xFF;  // High byte
 		}
 
-		// Send CAN message
-		comm_can_transmit_sid(make_can_id(slave_id, CAN_PKT_CELL_VOLTAGES), buf, 8);
-
-		msg_idx++;
-		cell_idx += cells_in_msg;
-
-		// Small delay between messages (non-blocking)
-		vTaskDelay(1);
+		comm_can_transmit_sid(CAN_ID_CELLS(msg_type, slave_id), buf, 8);
 	}
 }
 
-// Send temperatures over CAN (4 temps: BQ1-Int, TS1, TS3, BQ2-Int)
-// Temperature in 0.1°C units as int16 (e.g., 255 = 25.5°C, -1000 = unused)
-static void can_send_temperatures(uint8_t slave_id, float *temps, uint8_t num_temps) {
-	uint8_t buf[8] = {0};
-	buf[0] = num_temps;
+/**
+ * Send 4 temperatures (1 CAN message)
+ * @param slave_id  Slave ID (1-8)
+ * @param temps     Array of 4 temperatures in 0.1°C (0x7FFF = invalid)
+ */
+static void can_send_temps(uint8_t slave_id, int16_t *temps) {
+	uint8_t buf[8];
 
-	for (uint8_t i = 0; i < num_temps && i < 4; i++) {
-		// Convert to 0.1°C, handle -1.0 as "unused" marker
-		int16_t t_val;
-		if (temps[i] < -0.5f) {
-			t_val = -1000;  // Unused marker
-		} else {
-			t_val = (int16_t)(temps[i] * 10.0f);
-		}
-		buf[1 + i * 2] = (t_val >> 8) & 0xFF;   // High byte
-		buf[2 + i * 2] = t_val & 0xFF;          // Low byte
+	// Pack 4 temps, little-endian (T_BQ1, T_TS1, T_TS3, T_BQ2)
+	for (uint8_t i = 0; i < 4; i++) {
+		buf[i * 2]     = temps[i] & 0xFF;         // Low byte
+		buf[i * 2 + 1] = (temps[i] >> 8) & 0xFF;  // High byte
 	}
 
-	comm_can_transmit_sid(make_can_id(slave_id, CAN_PKT_TEMPERATURES), buf, 8);
+	comm_can_transmit_sid(CAN_ID_TEMPS(slave_id), buf, 8);
 }
 
-// Send status message
-static void can_send_status(uint8_t slave_id, uint8_t total_cells, bool bq1_ok, bool bq2_ok, uint32_t bal_bitmap) {
-	uint8_t buf[8] = {0};
-	buf[0] = total_cells;
+/**
+ * Send status message (1 CAN message, 5 bytes)
+ * @param slave_id  Slave ID (1-8)
+ * @param bal_mask  32-bit balance bitmap
+ * @param faults    Fault byte (bit0 = BQ1 init failed, bit1 = BQ2 init failed)
+ */
+static void can_send_status(uint8_t slave_id, uint32_t bal_mask, uint8_t faults) {
+	uint8_t buf[5];
 
-	// Flags: bit0 = BQ1 OK, bit1 = BQ2 OK
-	uint8_t flags = 0;
-	if (bq1_ok) flags |= 0x01;
-	if (bq2_ok) flags |= 0x02;
-	buf[1] = flags;
+	// Balance mask, little-endian
+	buf[0] = (bal_mask >> 0) & 0xFF;
+	buf[1] = (bal_mask >> 8) & 0xFF;
+	buf[2] = (bal_mask >> 16) & 0xFF;
+	buf[3] = (bal_mask >> 24) & 0xFF;
+	buf[4] = faults;
 
-	// Balancing bitmap (32 bits, little-endian)
-	buf[2] = (bal_bitmap >> 0) & 0xFF;
-	buf[3] = (bal_bitmap >> 8) & 0xFF;
-	buf[4] = (bal_bitmap >> 16) & 0xFF;
-	buf[5] = (bal_bitmap >> 24) & 0xFF;
-
-	comm_can_transmit_sid(make_can_id(slave_id, CAN_PKT_STATUS), buf, 8);
+	comm_can_transmit_sid(CAN_ID_STATUS(slave_id), buf, 5);
 }
 
 // Get current balancing bitmap from both ICs
@@ -1063,21 +1049,21 @@ static lbm_value ext_write_reg(lbm_value *args, lbm_uint argn) {
 }
 
 typedef struct {
+	lbm_uint slave_id;
 	lbm_uint cells_ic1;
 	lbm_uint cells_ic2;
-	lbm_uint temp_num;
-} vesc_syms;
+} config_syms;
 
-static vesc_syms syms_vesc = {0};
+static config_syms syms_cfg = {0};
 
 static bool compare_symbol(lbm_uint sym, lbm_uint *comp) {
 	if (*comp == 0) {
-		if (comp == &syms_vesc.cells_ic1) {
+		if (comp == &syms_cfg.slave_id) {
+			lbm_add_symbol_const("slave_id", comp);
+		} else if (comp == &syms_cfg.cells_ic1) {
 			lbm_add_symbol_const("cells_ic1", comp);
-		} else if (comp == &syms_vesc.cells_ic2) {
+		} else if (comp == &syms_cfg.cells_ic2) {
 			lbm_add_symbol_const("cells_ic2", comp);
-		} else if (comp == &syms_vesc.temp_num) {
-			lbm_add_symbol_const("temp_num", comp);
 		}
 	}
 
@@ -1118,12 +1104,12 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 	lbm_uint name      = lbm_dec_sym(args[0]);
 	main_config_t *cfg = (main_config_t *)&backup.config;
 
-	if (compare_symbol(name, &syms_vesc.cells_ic1)) {
+	if (compare_symbol(name, &syms_cfg.slave_id)) {
+		res = get_or_set_i(set, &cfg->slave_id, &set_arg);
+	} else if (compare_symbol(name, &syms_cfg.cells_ic1)) {
 		res = get_or_set_i(set, &cfg->cells_ic1, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.cells_ic2)) {
+	} else if (compare_symbol(name, &syms_cfg.cells_ic2)) {
 		res = get_or_set_i(set, &cfg->cells_ic2, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.temp_num)) {
-		res = get_or_set_i(set, &cfg->temp_num, &set_arg);
 	}
 
 	return res;
@@ -1239,88 +1225,85 @@ static lbm_value ext_set_buzzer(lbm_value *args, lbm_uint argn) {
 // CAN Protocol LispBM Extensions
 // ============================================================================
 
-// (bms-can-send-cells slave-id cells-list)
-// Send cell voltages over CAN to master
-static lbm_value ext_can_send_cells(lbm_value *args, lbm_uint argn) {
-	if (argn != 2) {
+// Track fault state for status messages
+static volatile uint8_t m_fault_flags = 0;
+
+// (bms-set-fault-flags flags)
+// Set fault flags (bit0 = BQ1 init failed, bit1 = BQ2 init failed)
+static lbm_value ext_set_fault_flags(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(1);
+	m_fault_flags = lbm_dec_as_u32(args[0]) & 0xFF;
+	return ENC_SYM_TRUE;
+}
+
+// (bms-broadcast-all slave-id cells-list temps-list bq1-ok bq2-ok)
+// Broadcast all data to master per protocol (8 cell msgs + 1 temp + 1 status)
+static lbm_value ext_broadcast_all(lbm_value *args, lbm_uint argn) {
+	if (argn < 3) {
 		return ENC_SYM_EERROR;
 	}
 
-	if (!lbm_is_number(args[0]) || !lbm_is_list(args[1])) {
+	if (!lbm_is_number(args[0]) || !lbm_is_list(args[1]) || !lbm_is_list(args[2])) {
 		return ENC_SYM_EERROR;
 	}
 
 	uint8_t slave_id = lbm_dec_as_u32(args[0]);
 
-	// Count cells and extract voltages
-	float cells[32];
+	// Extract cell voltages into 32-element array
+	// 0 = not populated, 0xFFFF = read error
+	uint16_t cells_mv[32] = {0};
 	uint8_t num_cells = 0;
 	lbm_value curr = args[1];
 
 	while (lbm_is_cons(curr) && num_cells < 32) {
 		lbm_value cell = lbm_car(curr);
 		if (lbm_is_number(cell)) {
-			cells[num_cells++] = lbm_dec_as_float(cell);
+			float v = lbm_dec_as_float(cell);
+			if (v < 0) {
+				cells_mv[num_cells] = 0xFFFF;  // Error marker
+			} else {
+				cells_mv[num_cells] = (uint16_t)(v * 1000.0f);  // Convert V to mV
+			}
+			num_cells++;
 		}
 		curr = lbm_cdr(curr);
 	}
 
-	if (num_cells == 0) {
-		return ENC_SYM_NIL;
-	}
-
-	can_send_cell_voltages(slave_id, cells, num_cells);
-	return ENC_SYM_TRUE;
-}
-
-// (bms-can-send-temps slave-id temps-list)
-// Send temperatures over CAN to master
-static lbm_value ext_can_send_temps(lbm_value *args, lbm_uint argn) {
-	if (argn != 2) {
-		return ENC_SYM_EERROR;
-	}
-
-	if (!lbm_is_number(args[0]) || !lbm_is_list(args[1])) {
-		return ENC_SYM_EERROR;
-	}
-
-	uint8_t slave_id = lbm_dec_as_u32(args[0]);
-
-	// Extract temperatures (max 4)
-	float temps[4] = {-1.0f, -1.0f, -1.0f, -1.0f};
+	// Extract temperatures into 4-element array
+	// 0x7FFF = not present/invalid
+	int16_t temps[4] = {0x7FFF, 0x7FFF, 0x7FFF, 0x7FFF};
 	uint8_t num_temps = 0;
-	lbm_value curr = args[1];
+	curr = args[2];
 
 	while (lbm_is_cons(curr) && num_temps < 4) {
 		lbm_value temp = lbm_car(curr);
 		if (lbm_is_number(temp)) {
-			temps[num_temps++] = lbm_dec_as_float(temp);
+			float t = lbm_dec_as_float(temp);
+			if (t < -40.0f || t > 120.0f) {
+				temps[num_temps] = 0x7FFF;  // Invalid marker
+			} else {
+				temps[num_temps] = (int16_t)(t * 10.0f);  // Convert to 0.1°C
+			}
+			num_temps++;
 		}
 		curr = lbm_cdr(curr);
 	}
 
-	can_send_temperatures(slave_id, temps, num_temps);
-	return ENC_SYM_TRUE;
-}
-
-// (bms-can-send-status slave-id bq1-ok bq2-ok)
-// Send status message over CAN to master
-static lbm_value ext_can_send_status(lbm_value *args, lbm_uint argn) {
-	if (argn != 3) {
-		return ENC_SYM_EERROR;
+	// Get fault flags from optional args or use stored value
+	uint8_t faults = m_fault_flags;
+	if (argn >= 5) {
+		bool bq1_ok = lbm_dec_as_i32(args[3]) != 0;
+		bool bq2_ok = lbm_dec_as_i32(args[4]) != 0;
+		faults = 0;
+		if (!bq1_ok) faults |= 0x01;
+		if (!bq2_ok) faults |= 0x02;
 	}
 
-	if (!lbm_is_number(args[0])) {
-		return ENC_SYM_EERROR;
-	}
+	// Send all messages per protocol
+	can_send_all_cells(slave_id, cells_mv);
+	can_send_temps(slave_id, temps);
+	can_send_status(slave_id, get_bal_bitmap(), faults);
 
-	uint8_t slave_id = lbm_dec_as_u32(args[0]);
-	bool bq1_ok = lbm_dec_as_i32(args[1]) != 0;
-	bool bq2_ok = lbm_dec_as_i32(args[2]) != 0;
-	uint8_t total_cells = m_cells_ic1 + m_cells_ic2;
-	uint32_t bal_bitmap = get_bal_bitmap();
-
-	can_send_status(slave_id, total_cells, bq1_ok, bq2_ok, bal_bitmap);
 	return ENC_SYM_TRUE;
 }
 
@@ -1360,120 +1343,21 @@ static lbm_value ext_stop_balancing(lbm_value *args, lbm_uint argn) {
 }
 
 // (bms-get-slave-id)
-// Get controller ID from configuration
+// Get slave ID from configuration
 static lbm_value ext_get_slave_id(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 	main_config_t *cfg = (main_config_t *)&backup.config;
-	return lbm_enc_i(cfg->controller_id);
+	return lbm_enc_i(cfg->slave_id);
 }
 
-// (bms-update-vesc cells-list temps-list)
-// Update VESC BMS values structure with cell voltages and temperatures
-// This allows VESC Tool to display BMS data
-static lbm_value ext_update_vesc(lbm_value *args, lbm_uint argn) {
-	if (argn < 2) {
-		return ENC_SYM_EERROR;
-	}
-
-	if (!lbm_is_list(args[0]) || !lbm_is_list(args[1])) {
-		return ENC_SYM_EERROR;
-	}
-
-	volatile bms_values *val = bms_get_values();
-
-	// Extract cell voltages
-	float v_min = 10.0f;
-	float v_max = 0.0f;
-	float v_tot = 0.0f;
-	int cell_num = 0;
-	lbm_value curr = args[0];
-
-	while (lbm_is_cons(curr) && cell_num < BMS_MAX_CELLS) {
-		lbm_value cell = lbm_car(curr);
-		if (lbm_is_number(cell)) {
-			float v = lbm_dec_as_float(cell);
-			val->v_cell[cell_num] = v;
-			v_tot += v;
-			if (v < v_min) v_min = v;
-			if (v > v_max) v_max = v;
-			cell_num++;
-		}
-		curr = lbm_cdr(curr);
-	}
-	val->cell_num = cell_num;
-	val->v_tot = v_tot;
-	val->v_cell_min = v_min;
-	val->v_cell_max = v_max;
-
-	// Extract temperatures
-	float t_max = -100.0f;
-	int temp_num = 0;
-	curr = args[1];
-
-	while (lbm_is_cons(curr) && temp_num < BMS_MAX_TEMPS) {
-		lbm_value temp = lbm_car(curr);
-		if (lbm_is_number(temp)) {
-			float t = lbm_dec_as_float(temp);
-			if (t > -0.5f) {  // Valid temperature (not -1.0 marker)
-				val->temps_adc[temp_num] = t;
-				if (t > t_max) t_max = t;
-				temp_num++;
-			}
-		}
-		curr = lbm_cdr(curr);
-	}
-	val->temp_adc_num = temp_num;
-	val->temp_max_cell = t_max;
-
-	// Set IC temperature (first temp is BQ1 internal)
-	if (temp_num > 0) {
-		val->temp_ic = val->temps_adc[0];
-	}
-
-	// Calculate SOC based on voltage (simple linear approximation)
-	// Using default values if not set
-	float vc_empty = 2.8f;
-	float vc_full = 4.2f;
-	float soc = (v_min - vc_empty) / (vc_full - vc_empty);
-	if (soc < 0.0f) soc = 0.0f;
-	if (soc > 1.0f) soc = 1.0f;
-	val->soc = soc;
-	val->soh = 1.0f;  // Assume 100% SOH
-
-	// Update balancing state
-	uint32_t bal_bitmap = get_bal_bitmap();
-	for (int i = 0; i < cell_num && i < BMS_MAX_CELLS; i++) {
-		val->bal_state[i] = (bal_bitmap >> i) & 1;
-	}
-	val->is_balancing = (bal_bitmap != 0) ? 1 : 0;
-
-	// No charging/current info for this slave BMS
-	val->i_in = 0.0f;
-	val->i_in_ic = 0.0f;
-	val->v_charge = 0.0f;
-	val->is_charging = 0;
-	val->is_charge_allowed = 1;
-
-	return ENC_SYM_TRUE;
-}
-
-// (bms-send-vesc)
-// Send BMS data to VESC Tool using standard VESC BMS CAN protocol
-static lbm_value ext_send_vesc(lbm_value *args, lbm_uint argn) {
-	(void)args;
-	(void)argn;
-
-	bms_send_status_can();
-	return ENC_SYM_TRUE;
-}
 
 static void load_extensions(bool main_found) {
 	if (main_found) {
 		return;
 	}
 
-	memset(&syms_vesc, 0, sizeof(syms_vesc));
+	memset(&syms_cfg, 0, sizeof(syms_cfg));
 
 	// Wake up and initialize hardware
 	lbm_add_extension("bms-init", ext_bms_init);
@@ -1500,16 +1384,13 @@ static void load_extensions(bool main_found) {
 	// Buzzer control
 	lbm_add_extension("bms-set-buzzer", ext_set_buzzer);
 
-	// CAN protocol for master-slave communication
-	lbm_add_extension("bms-can-send-cells", ext_can_send_cells);
-	lbm_add_extension("bms-can-send-temps", ext_can_send_temps);
-	lbm_add_extension("bms-can-send-status", ext_can_send_status);
+	// CAN protocol for master-slave communication (11-bit IDs)
+	lbm_add_extension("bms-broadcast-all", ext_broadcast_all);
+	lbm_add_extension("bms-set-fault-flags", ext_set_fault_flags);
 	lbm_add_extension("bms-set-bal-bitmap", ext_set_bal_bitmap);
 	lbm_add_extension("bms-get-bal-bitmap", ext_get_bal_bitmap);
 	lbm_add_extension("bms-stop-balancing", ext_stop_balancing);
 	lbm_add_extension("bms-get-slave-id", ext_get_slave_id);
-	lbm_add_extension("bms-update-vesc", ext_update_vesc);
-	lbm_add_extension("bms-send-vesc", ext_send_vesc);
 
 	// HW-specific commands
 	lbm_add_extension("bms-direct-cmd", ext_direct_cmd);
@@ -1533,6 +1414,9 @@ static void load_extensions(bool main_found) {
 void hw_init(void) {
 	i2c_mutex = xSemaphoreCreateMutex();
 	bq_mutex  = xSemaphoreCreateMutex();
+
+	// Disable VESC CAN protocol decoder - we only use our 11-bit protocol
+	comm_can_use_vesc_decoder(false);
 
 	gpio_config_t gpconf = {0};
 

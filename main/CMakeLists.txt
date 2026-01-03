@@ -1,14 +1,22 @@
 set(COMPONENT_REQUIRES )
 set(COMPONENT_PRIV_REQUIRES )
 
+# Detect if building for slave hardware
+set(IS_SLAVE_BUILD FALSE)
+if(DEFINED ENV{HW_HEADER})
+    string(FIND "$ENV{HW_HEADER}" "jfbms_slave" SLAVE_POS)
+    if(NOT SLAVE_POS EQUAL -1)
+        set(IS_SLAVE_BUILD TRUE)
+        message(STATUS "Detected slave build - excluding WiFi/BLE modules")
+    endif()
+endif()
+
 set(COMPONENT_SRCS
 "main.c"
 "buffer.c"
 "comm_uart.c"
 "comm_usb.c"
 "comm_can.c"
-"comm_ble.c"
-"comm_wifi.c"
 "packet.c"
 "crc.c"
 "commands.c"
@@ -62,13 +70,21 @@ set(COMPONENT_SRCS
 "lispBM/src/extensions/lbm_dyn_lib.c"
 "lispBM/src/extensions/ttf_extensions.c"
 "lispBM/src/extensions/schrift.c"
+)
 
-"wifi/lispif_wifi_extensions.c"
+# Conditionally add WiFi and BLE for non-slave builds
+if(NOT IS_SLAVE_BUILD)
+    list(APPEND COMPONENT_SRCS
+        "comm_wifi.c"
+        "comm_ble.c"
+        "wifi/lispif_wifi_extensions.c"
+        "ble/custom_ble.c"
+        "ble/lispif_ble_extensions.c"
+        "rgbled/lispif_rgbled_extensions.c"
+    )
+endif()
 
-"ble/custom_ble.c"
-"ble/lispif_ble_extensions.c"
-
-"rgbled/lispif_rgbled_extensions.c"
+list(APPEND COMPONENT_SRCS
 
 "display/lispif_disp_extensions.c"
 "display/disp_sh8501b.c"
@@ -102,6 +118,7 @@ set(COMPONENT_ADD_INCLUDEDIRS
 "hwconf/vesc/vbms32"
 "hwconf/jetfleet"
 "hwconf/jetfleet/bms32"
+"hwconf/jetfleet/jfbms_slave"
 "hwconf/vesc/vdisp_dual"
 "hwconf/vesc/scope"
 "hwconf/vesc/duet"
@@ -141,11 +158,17 @@ if((DEFINED ENV{HW_SRC}) OR (DEFINED ENV{HW_HEADER}))
     if(NOT DEFINED ENV{HW_HEADER})
         message(FATAL_ERROR "HW_HEADER not defined while HW_SRC is set. You must either set both or none.")
     endif()
-    
+
     message(STATUS "Setting HW_SOURCE=\"$ENV{HW_SRC}\" and HW_HEADER=\"$ENV{HW_HEADER}\" definitions")
-    
+
     add_compile_definitions(
         HW_SOURCE=\"$ENV{HW_SRC}\"
         HW_HEADER=\"$ENV{HW_HEADER}\"
+    )
+else()
+    message(STATUS "Using default hardware: jfbms_slave")
+    add_compile_definitions(
+        HW_SOURCE=\"hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.c\"
+        HW_HEADER=\"hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.h\"
     )
 endif()

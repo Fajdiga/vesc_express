@@ -28,6 +28,7 @@
 
 #define HW_EARLY_LBM_INIT
 #define HW_NO_UART
+#define HW_IS_SLAVE
 #define HW_INIT_HOOK()				hw_init()
 //#define HW_POST_LISPIF_HOOK()		vTaskDelay(200);
 
@@ -44,32 +45,30 @@
 #define VAR_INIT_CODE				259763459
 
 typedef struct {
-	int controller_id;
-	CAN_BAUD can_baud_rate;
-	int can_status_rate_hz;
-	WIFI_MODE wifi_mode;
-	char wifi_sta_ssid[36];
-	char wifi_sta_key[26];
-	char wifi_ap_ssid[36];
-	char wifi_ap_key[26];
-	bool use_tcp_local;
-	bool use_tcp_hub;
-	char tcp_hub_url[36];
-	uint16_t tcp_hub_port;
-	char tcp_hub_id[26];
-	char tcp_hub_pass[26];
-	BLE_MODE ble_mode;
-	char ble_name[9];
-	uint32_t ble_pin;
-	uint32_t ble_service_capacity;
-	uint32_t ble_chr_descr_capacity;
+	int slave_id;           // Slave ID on BMS CAN bus (1-8)
+	CAN_BAUD can_baud_rate; // CAN baud rate (should be 500K per protocol)
+	int cells_ic1;          // Cells on BQ76952 IC1 (3-16)
+	int cells_ic2;          // Cells on BQ76952 IC2 (0-16, 0=single chip)
 
-	// Cells on balance IC
-	int cells_ic1;
-	int cells_ic2;
-
-	// Number of external temperature sensors
-	int temp_num;
+	// Compatibility fields (not used by slave, but needed for compilation)
+	int controller_id;      // Not used - slave uses slave_id instead
+	int can_status_rate_hz; // Not used by slave
+	WIFI_MODE wifi_mode;    // Not used by slave
+	char wifi_sta_ssid[36]; // Not used by slave
+	char wifi_sta_key[26];  // Not used by slave
+	char wifi_ap_ssid[36];  // Not used by slave
+	char wifi_ap_key[26];   // Not used by slave
+	bool use_tcp_local;     // Not used by slave
+	bool use_tcp_hub;       // Not used by slave
+	char tcp_hub_url[36];   // Not used by slave
+	uint16_t tcp_hub_port;  // Not used by slave
+	char tcp_hub_id[26];    // Not used by slave
+	char tcp_hub_pass[26];  // Not used by slave
+	BLE_MODE ble_mode;      // Not used by slave
+	char ble_name[9];       // Not used by slave
+	uint32_t ble_pin;       // Not used by slave
+	uint32_t ble_service_capacity;    // Not used by slave
+	uint32_t ble_chr_descr_capacity;  // Not used by slave
 } main_config_t;
 
 // Default setting Overrides
