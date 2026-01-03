@@ -3,17 +3,19 @@ import os
 import shutil
 import sys
 import time
+from datetime import datetime
 
 build_dir = sys.argv[1]
 project_name = sys.argv[2]
 
-# Set your desired filename prefix here
-custom_prefix = os.environ['BIN_PREFIX']
-custom_name = f"{custom_prefix}_{os.environ['TIMESTAMP']}.bin"
+# Set your desired filename prefix here (use env var or default to project name)
+custom_prefix = os.environ.get('BIN_PREFIX', project_name)
+timestamp = os.environ.get('TIMESTAMP', datetime.now().strftime('%Y%m%d_%H%M%S'))
+custom_name = f"{custom_prefix}_{timestamp}.bin"
 
 # Paths
 src_bin = os.path.join(build_dir, f"{project_name}.bin")
-destination_dir = os.path.join(f"{build_dir}/../output" , os.environ['TIMESTAMP'])
+destination_dir = os.path.join(f"{build_dir}/../output" , timestamp)
 print(destination_dir)
 # Create the destination directory if it doesn't exist
 os.makedirs(destination_dir, exist_ok=True)

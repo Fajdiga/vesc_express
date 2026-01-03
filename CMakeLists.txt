@@ -5,7 +5,16 @@ cmake_minimum_required(VERSION 3.5)
 set(PROJECT_VER "6.0") 
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-get_filename_component(ProjectId ${CMAKE_CURRENT_LIST_DIR} NAME)
+
+# Derive project name from HW_HEADER if set, otherwise use default hardware name
+if(DEFINED ENV{HW_HEADER})
+    # Extract hardware name from path (e.g., "hw_jfbms_slave.h" -> "jfbms_slave")
+    get_filename_component(HW_FILENAME "$ENV{HW_HEADER}" NAME_WE)
+    string(REGEX REPLACE "^hw_" "" ProjectId ${HW_FILENAME})
+else()
+    # Default hardware is jfbms_slave (see main/CMakeLists.txt)
+    set(ProjectId "jfbms_slave")
+endif()
 string(REPLACE " " "_" ProjectId ${ProjectId})
 project(${ProjectId})
 
