@@ -53,6 +53,14 @@
 #define HW_INIT_HOOK()
 #endif
 
+#ifndef HW_CAN_PING_SCAN_ENABLED
+#define HW_CAN_PING_SCAN_ENABLED 1
+#endif
+
+#ifndef HW_CAN_NO_ACK_MODE
+#define HW_CAN_NO_ACK_MODE 0
+#endif
+
 #ifndef HW_POST_LISPIF_HOOK
 #define HW_POST_LISPIF_HOOK()
 #endif

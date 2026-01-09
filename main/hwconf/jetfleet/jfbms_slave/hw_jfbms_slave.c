@@ -1300,6 +1300,7 @@ static lbm_value ext_broadcast_all(lbm_value *args, lbm_uint argn) {
 	}
 
 	// Send all messages per protocol
+	// TX queue is 20 messages, we send 10, so no delays needed
 	can_send_all_cells(slave_id, cells_mv);
 	can_send_temps(slave_id, temps);
 	can_send_status(slave_id, get_bal_bitmap(), faults);
@@ -1343,7 +1344,7 @@ static lbm_value ext_stop_balancing(lbm_value *args, lbm_uint argn) {
 }
 
 // (bms-get-slave-id)
-// Get slave ID from configuration
+// Get slave ID from configuration (set via VESC Tool -> JFBMS Slave -> Slave ID)
 static lbm_value ext_get_slave_id(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;

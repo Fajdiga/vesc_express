@@ -28,9 +28,10 @@
 #define CONF_CONTROLLER_ID 0
 #endif
 
-// CAN Status Rate Hz (compatibility field, not used)
+// CAN Status Rate Hz - Set to 0 to disable VESC protocol CAN broadcasts
+// JFBMS Slave only uses the custom 11-bit master-slave protocol via LispBM
 #ifndef CONF_CAN_STATUS_RATE_HZ
-#define CONF_CAN_STATUS_RATE_HZ 50
+#define CONF_CAN_STATUS_RATE_HZ 0
 #endif
 
 // WiFi/BLE compatibility fields (not used by slave)
