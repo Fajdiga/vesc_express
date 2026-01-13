@@ -153,24 +153,26 @@ static uint32_t get_bal_bitmap(void) {
 }
 
 // Apply balancing from bitmap
-// Note: BQ76952 requires periodic refresh of CB_ACTIVE_CELLS (internal ~30s timeout)
-// Always write to keep balancing active, even if value unchanged
+// Note: BQ76952 requires TOGGLE (0 then value) to reset internal ~18s timeout
+// Just writing the same value does NOT reset the timer!
 static bool apply_bal_bitmap(uint32_t bitmap) {
 	uint16_t new_bal_ic1 = bitmap & 0xFFFF;
 	uint16_t new_bal_ic2 = (bitmap >> 16) & 0xFFFF;
 	bool res = true;
 
-	// Always write to BQ1 to refresh balancing (BQ76952 has internal timeout)
+	// BQ1: Toggle - write 0 first, then actual value to reset internal timer
 	select_bq_chip(1);
+	subcommands_write16(BQ_ADDR_1, CB_ACTIVE_CELLS, 0);  // Clear first
 	if (subcommands_write16(BQ_ADDR_1, CB_ACTIVE_CELLS, new_bal_ic1)) {
 		m_bal_state_ic1 = new_bal_ic1;
 	} else {
 		res = false;
 	}
 
-	// Always write to BQ2 if present
+	// BQ2: Toggle if present
 	if (m_cells_ic2 > 0) {
 		select_bq_chip(2);
+		subcommands_write16(BQ_ADDR_2, CB_ACTIVE_CELLS, 0);  // Clear first
 		if (subcommands_write16(BQ_ADDR_2, CB_ACTIVE_CELLS, new_bal_ic2)) {
 			m_bal_state_ic2 = new_bal_ic2;
 		} else {

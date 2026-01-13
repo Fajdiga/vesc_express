@@ -15,12 +15,12 @@
 (def total-cells (+ cells-ic1 cells-ic2))
 
 ; ============================================================================
-; Balance Watchdog
+; Balance Watchdog (counter-based, systime doesn't work in loops)
 ; ============================================================================
 ; Master must send balance command at least every 10 seconds
 ; If no command received, stop all balancing for safety
-(def last-bal-cmd-time 0)
-(def bal-watchdog-timeout 10.0)
+; Using counter: 100 iterations × 100ms = 10 seconds
+(def bal-state (list 0))  ; state[0] = iterations since last balance command (0 = no cmd received)
 
 ; ============================================================================
 ; CAN RX Handler for Balance Commands from Master
@@ -43,27 +43,36 @@
                     (shl (bufget-u8 data 1) 8)
                     (shl (bufget-u8 data 2) 16)
                     (shl (bufget-u8 data 3) 24)))
-                (bms-set-bal-bitmap bal-mask)
-                ; Reset watchdog timer
-                (setq last-bal-cmd-time (systime))
-                (print (str-merge "BAL CMD: mask=0x" (str-from-n bal-mask "%08X")))
+                (var result (bms-set-bal-bitmap bal-mask))
+                ; Reset watchdog counter (1 = command received, will increment each loop)
+                (setix bal-state 0 1)
+                (if result
+                    (print (str-merge "BAL OK: 0x" (str-from-n bal-mask "%08X")))
+                    (print (str-merge "BAL FAIL: 0x" (str-from-n bal-mask "%08X"))))
             })
         })
     })
 })
 
 ; ============================================================================
-; Balance Watchdog Check
+; Balance Watchdog Check (counter-based)
 ; ============================================================================
+; 100 iterations × 100ms = 10 seconds timeout
+(def bal-watchdog-limit 100)
+
 (defun check-bal-watchdog () {
-    ; If we received a balance command and timeout has elapsed, stop balancing
-    (if (and (> last-bal-cmd-time 0)
-             (> (- (systime) last-bal-cmd-time) bal-watchdog-timeout))
-        {
+    (var cnt (ix bal-state 0))
+    ; Only check if we ever received a command (cnt > 0)
+    (if (> cnt 0) {
+        ; Increment counter
+        (setix bal-state 0 (+ cnt 1))
+        ; Check if timeout exceeded
+        (if (> cnt bal-watchdog-limit) {
             (bms-stop-balancing)
-            (setq last-bal-cmd-time 0)
+            (setix bal-state 0 0)
             (print "Balance watchdog triggered - stopped balancing")
         })
+    })
 })
 
 ; ============================================================================
@@ -102,9 +111,14 @@
         ; Debug: print every 10 loops (1 second)
         (setq loop-count (+ loop-count 1))
         (if (= (mod loop-count 10) 0) {
-            (print (str-merge "Loop " (to-str loop-count) " - Cells: " (to-str (length cells))
-                              ", BalMask: 0x" (str-from-n (bms-get-bal-bitmap) "%08X")))
+            (print (str-merge "Loop " (str-from-n loop-count "%d") " Cells: " (str-from-n (length cells) "%d")
+                              " BalMask: 0x" (str-from-n (bms-get-bal-bitmap) "%08X")))
         })
+
+        ; Refresh BQ balancing every 100ms to test if this fixes 30s timeout
+        (var current-mask (bms-get-bal-bitmap))
+        (if (> current-mask 0)
+            (bms-set-bal-bitmap current-mask))
 
         ; Broadcast all data via CAN (8 cell msgs + 1 temp + 1 status)
         (bms-broadcast-all slave-id cells temps bq1-ok bq2-ok)
@@ -122,11 +136,11 @@
 ; ============================================================================
 
 (print "JFBMS Slave starting...")
-(print (str-merge "Slave ID: " (to-str slave-id)))
-(print (str-merge "Cells IC1: " (to-str cells-ic1) ", IC2: " (to-str cells-ic2)))
+(print (str-merge "Slave ID: " (str-from-n slave-id "%d")))
+(print (str-merge "Cells IC1: " (str-from-n cells-ic1 "%d") ", IC2: " (str-from-n cells-ic2 "%d")))
 
 ; Check if I2C device is present at 0x08
-(print (str-merge "I2C detect 0x08: " (to-str (i2c-detect-addr 0x08))))
+(print (str-merge "I2C detect 0x08: " (if (i2c-detect-addr 0x08) "OK" "FAIL")))
 
 ; Initialize BMS hardware
 (def init-ok false)
@@ -140,7 +154,7 @@
         (setq bq2-init-ok (if (> cells-ic2 0) true false))
         (break)
     } {
-        (print (str-merge "BMS init failed, attempt " (to-str (+ i 1)) ", retrying..."))
+        (print (str-merge "BMS init failed, attempt " (str-from-n (+ i 1) "%d") ", retrying..."))
         (sleep 1.0)
     })
 })
@@ -164,7 +178,7 @@
     ; Init failed - enter diagnostic loop, but still broadcast status
     (print "Entering diagnostic mode due to init failure")
     (loopwhile t {
-        (print (str-merge "I2C detect 0x08: " (to-str (i2c-detect-addr 0x08))))
+        (print (str-merge "I2C detect 0x08: " (if (i2c-detect-addr 0x08) "OK" "FAIL")))
         ; Broadcast empty data with fault flags
         (bms-broadcast-all slave-id '() '() false false)
         (sleep 1.0)

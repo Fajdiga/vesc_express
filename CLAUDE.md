@@ -139,14 +139,18 @@ For proper Master-Slave communication:
 ### 2026-01-13: Balancing Fixes, LispBM Corrections & Build Improvements
 
 **BQ76952 Balancing Timeout Fix:**
-- BQ76952 has internal ~30 second timeout for CB_ACTIVE_CELLS command
-- Previously only wrote to chip if value changed - caused balancing to stop after 30s
-- Now always writes CB_ACTIVE_CELLS to refresh timeout, even if value unchanged
-- Master sends balance command every 5 seconds (was 50ms, too frequent)
+- BQ76952 has internal ~18 second timeout for CB_ACTIVE_CELLS command
+- Writing the SAME value does NOT reset the timeout - must use TOGGLE approach
+- Fix: Write 0 first, then write actual mask to reset internal timer
+- Adjacent cells cannot balance simultaneously (BQ76952 limitation) - use odd/even groups
+- Master sends balance command every 1 second to slave
+- Slave refreshes BQ76952 every 100ms with toggle approach
 
 **LispBM Fixes:**
 - `bitwise-or` only supports 2 arguments in LispBM - replaced with `+` for CAN ID calculation and byte extraction (works because bits don't overlap)
-- Global variable updates must use `(set 'var value)` not `setq` inside blocks
+- `(systime)` resets each `loopwhile` iteration - use counter-based timing instead
+- Global variables (`def`, `setq`, `set`) don't persist across loop iterations - use mutable list: `(def state (list 0))` with `(setix state 0 value)` to update
+- `(to-str x)` includes type suffix like `"0u32"` - use `(str-from-n x "%d")` for clean output
 - Fixed in both master and slave Lisp scripts
 
 **Build System Improvements:**
@@ -160,7 +164,7 @@ For proper Master-Slave communication:
 - `main/hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.c` - Always refresh CB_ACTIVE_CELLS
 - `main/hwconf/jetfleet/jfbms_slave/jfbms_slave_main.lisp` - bitwise-or → +
 - `main/hwconf/jetfleet/jfbms_slave/can_demo.lisp` - bitwise-or → +
-- `main/hwconf/jetfleet/jfbms_master/jfbms_master_main.lisp` - 5s balance interval, set 'var fix
+- `main/hwconf/jetfleet/jfbms_master/jfbms_master_main.lisp` - Counter-based timing, mutable state list, str-from-n formatting
 - `main/datatypes.h` - BMS_MAX_CELLS 50 → 64
 
 ---
@@ -236,7 +240,10 @@ For proper Master-Slave communication:
 - `can-recv-sid` only catches ~10% of messages when slave sends bursts
 - VESC Tool shows temperatures as T1, T2, T3... (hardcoded in app, cannot rename)
 - LispBM `bitwise-or` only accepts 2 arguments - use `+` when bits don't overlap
-- LispBM global variables must be updated with `(set 'var value)` inside functions
+- LispBM `(systime)` resets each loop iteration in `loopwhile` - use counter-based timing instead
+- LispBM global variables (`def`, `setq`, `set`) don't persist in loops - use mutable list with `(setix list idx value)`
+- BQ76952 CB_ACTIVE_CELLS requires TOGGLE (write 0, then value) to reset ~18s internal timeout
+- BQ76952 cannot balance adjacent cells simultaneously - must alternate odd/even cell groups
 
 ### VS Code Build Errors
 If you get `${ProjectId}.map not found` error:
