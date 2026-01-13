@@ -760,13 +760,52 @@ static lbm_value ext_master_can_overflow(lbm_value *args, lbm_uint argn) {
 // VESC BMS Data Integration
 // ============================================================================
 
+// Number of test cells (master's "own" cells with random values)
+#define NUM_TEST_CELLS 32
+#define SLAVE_CELL_OFFSET 32  // Slave cells start at index 32
+
+// Simple pseudo-random number generator state
+static uint32_t prng_state = 12345;
+
+static uint32_t simple_prng(void) {
+	prng_state = prng_state * 1103515245 + 12345;
+	return (prng_state >> 16) & 0x7FFF;
+}
+
 // Update VESC BMS values from master data (for VESC Tool display)
+// Layout: Cells 0-31 = test/random (master), Cells 32-63 = from first active slave
 static void update_vesc_bms_values(void) {
 	volatile bms_values *bms = bms_get_values();
 
+	int num_cells = 0;
+	float v_tot = 0.0f;
+	float v_min = 9999.0f;
+	float v_max = 0.0f;
+
+	// ========================================
+	// Part 1: Test cells (0 to 31)
+	// Random voltages around 3.65-3.85V
+	// ========================================
+	for (int i = 0; i < NUM_TEST_CELLS; i++) {
+		// Generate voltage 3650-3850 mV (random variation)
+		uint32_t rand_offset = simple_prng() % 200;  // 0-199 mV variation
+		float v = (3650.0f + (float)rand_offset) / 1000.0f;
+
+		bms->v_cell[num_cells] = v;
+		bms->bal_state[num_cells] = 0;  // Test cells not balancing
+		v_tot += v;
+		if (v < v_min) v_min = v;
+		if (v > v_max) v_max = v;
+		num_cells++;
+	}
+
+	// ========================================
+	// Part 2: Slave cells (32 to 63)
+	// 32 cells from first active slave
+	// ========================================
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 
-	// Find first active slave and use its data
+	// Find first active slave
 	int active_slave = -1;
 	for (int i = 0; i < MAX_SLAVES; i++) {
 		if (m_bms_data.active[i]) {
@@ -776,31 +815,26 @@ static void update_vesc_bms_values(void) {
 	}
 
 	if (active_slave >= 0) {
-		// Count populated cells and calculate totals
-		int num_cells = 0;
-		float v_tot = 0.0f;
-		float v_min = 9999.0f;
-		float v_max = 0.0f;
-
-		for (int i = 0; i < CELLS_PER_SLAVE; i++) {
+		// Add slave cells starting at position SLAVE_CELL_OFFSET (32)
+		for (int i = 0; i < CELLS_PER_SLAVE && num_cells < BMS_MAX_CELLS; i++) {
 			uint16_t mv = m_bms_data.cell_voltages[active_slave][i];
+			float v;
 			if (mv > 0 && mv < 0xFFFF) {
-				float v = (float)mv / 1000.0f;
-				bms->v_cell[num_cells] = v;
-				bms->bal_state[num_cells] = (m_bms_data.balance_mask[active_slave] >> i) & 1;
+				v = (float)mv / 1000.0f;
+			} else {
+				v = 0.0f;  // Not populated or error
+			}
+			bms->v_cell[num_cells] = v;
+			bms->bal_state[num_cells] = (m_bms_data.balance_mask[active_slave] >> i) & 1;
+			if (v > 0) {
 				v_tot += v;
 				if (v < v_min) v_min = v;
 				if (v > v_max) v_max = v;
-				num_cells++;
 			}
+			num_cells++;
 		}
 
-		bms->cell_num = num_cells;
-		bms->v_tot = v_tot;
-		bms->v_cell_min = (num_cells > 0) ? v_min : 0.0f;
-		bms->v_cell_max = (num_cells > 0) ? v_max : 0.0f;
-
-		// Temperatures
+		// Temperatures from slave
 		int num_temps = 0;
 		float t_max = -273.0f;
 		for (int i = 0; i < TEMPS_PER_SLAVE; i++) {
@@ -814,27 +848,44 @@ static void update_vesc_bms_values(void) {
 		}
 		bms->temp_adc_num = num_temps;
 		bms->temp_max_cell = (num_temps > 0) ? t_max : 0.0f;
-		bms->temp_ic = (num_temps > 0) ? bms->temps_adc[0] : 0.0f;  // First temp is BQ internal
+		bms->temp_ic = (num_temps > 0) ? bms->temps_adc[0] : 0.0f;
 
 		// Balancing state
 		bms->is_balancing = (m_bms_data.balance_mask[active_slave] != 0) ? 1 : 0;
-
-		// Update timestamp
-		bms->update_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
-
-		// Simple SOC estimate based on cell voltage (rough approximation)
-		// Li-Ion: 3.0V = 0%, 4.2V = 100%
-		// VESC expects SOC as 0.0-1.0 (not 0-100%)
-		float avg_v = (num_cells > 0) ? (v_tot / num_cells) : 3.7f;
-		bms->soc = (avg_v - 3.0f) / (4.2f - 3.0f);
-		if (bms->soc < 0.0f) bms->soc = 0.0f;
-		if (bms->soc > 1.0f) bms->soc = 1.0f;
-
-		bms->soh = 1.0f;  // Assume 100% health (VESC expects 0.0-1.0)
 		bms->can_id = active_slave + 1;
+	} else {
+		// No active slave - fill remaining cells with zeros
+		for (int i = num_cells; i < BMS_MAX_CELLS; i++) {
+			bms->v_cell[i] = 0.0f;
+			bms->bal_state[i] = 0;
+		}
+		num_cells = NUM_TEST_CELLS;  // Only test cells
+		bms->temp_adc_num = 0;
+		bms->temp_max_cell = 0.0f;
+		bms->temp_ic = 0.0f;
+		bms->is_balancing = 0;
+		bms->can_id = 0;
 	}
 
 	xSemaphoreGive(m_data_mutex);
+
+	// Update totals
+	bms->cell_num = num_cells;
+	bms->v_tot = v_tot;
+	bms->v_cell_min = (num_cells > 0) ? v_min : 0.0f;
+	bms->v_cell_max = (num_cells > 0) ? v_max : 0.0f;
+
+	// Update timestamp
+	bms->update_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+	// Simple SOC estimate based on cell voltage (rough approximation)
+	// Li-Ion: 3.0V = 0%, 4.2V = 100%
+	float avg_v = (num_cells > 0) ? (v_tot / num_cells) : 3.7f;
+	bms->soc = (avg_v - 3.0f) / (4.2f - 3.0f);
+	if (bms->soc < 0.0f) bms->soc = 0.0f;
+	if (bms->soc > 1.0f) bms->soc = 1.0f;
+
+	bms->soh = 1.0f;  // Assume 100% health (VESC expects 0.0-1.0)
 }
 
 // (master-update-vesc-bms) - Update VESC BMS values for display in VESC Tool

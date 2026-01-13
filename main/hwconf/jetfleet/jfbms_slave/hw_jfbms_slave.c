@@ -153,23 +153,23 @@ static uint32_t get_bal_bitmap(void) {
 }
 
 // Apply balancing from bitmap
+// Note: BQ76952 requires periodic refresh of CB_ACTIVE_CELLS (internal ~30s timeout)
+// Always write to keep balancing active, even if value unchanged
 static bool apply_bal_bitmap(uint32_t bitmap) {
 	uint16_t new_bal_ic1 = bitmap & 0xFFFF;
 	uint16_t new_bal_ic2 = (bitmap >> 16) & 0xFFFF;
 	bool res = true;
 
-	// Update BQ1 if changed
-	if (new_bal_ic1 != m_bal_state_ic1) {
-		select_bq_chip(1);
-		if (subcommands_write16(BQ_ADDR_1, CB_ACTIVE_CELLS, new_bal_ic1)) {
-			m_bal_state_ic1 = new_bal_ic1;
-		} else {
-			res = false;
-		}
+	// Always write to BQ1 to refresh balancing (BQ76952 has internal timeout)
+	select_bq_chip(1);
+	if (subcommands_write16(BQ_ADDR_1, CB_ACTIVE_CELLS, new_bal_ic1)) {
+		m_bal_state_ic1 = new_bal_ic1;
+	} else {
+		res = false;
 	}
 
-	// Update BQ2 if changed and present
-	if (m_cells_ic2 > 0 && new_bal_ic2 != m_bal_state_ic2) {
+	// Always write to BQ2 if present
+	if (m_cells_ic2 > 0) {
 		select_bq_chip(2);
 		if (subcommands_write16(BQ_ADDR_2, CB_ACTIVE_CELLS, new_bal_ic2)) {
 			m_bal_state_ic2 = new_bal_ic2;
@@ -1346,6 +1346,18 @@ static lbm_value ext_stop_balancing(lbm_value *args, lbm_uint argn) {
 	return res ? ENC_SYM_TRUE : ENC_SYM_EERROR;
 }
 
+// (bms-set-bal-bitmap-demo bitmap)
+// Set balance mask directly without writing to BQ chips (for demo/testing)
+static lbm_value ext_set_bal_bitmap_demo(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(1);
+
+	uint32_t bitmap = lbm_dec_as_u32(args[0]);
+	m_bal_state_ic1 = bitmap & 0xFFFF;
+	m_bal_state_ic2 = (bitmap >> 16) & 0xFFFF;
+
+	return ENC_SYM_TRUE;
+}
+
 // (bms-get-slave-id)
 // Get slave ID from configuration (set via VESC Tool -> JFBMS Slave -> Slave ID)
 static lbm_value ext_get_slave_id(lbm_value *args, lbm_uint argn) {
@@ -1353,6 +1365,73 @@ static lbm_value ext_get_slave_id(lbm_value *args, lbm_uint argn) {
 	(void)argn;
 	main_config_t *cfg = (main_config_t *)&backup.config;
 	return lbm_enc_i(cfg->slave_id);
+}
+
+// ============================================================================
+// Direct CAN RX Buffer - bypasses broken event system
+// ============================================================================
+
+#define CAN_BUF_SIZE 16
+
+typedef struct {
+	uint32_t id;
+	uint8_t data[8];
+	uint8_t len;
+} can_msg_t;
+
+static can_msg_t can_rx_buffer[CAN_BUF_SIZE];
+static volatile int can_rx_write = 0;
+static volatile int can_rx_read = 0;
+static volatile uint32_t can_rx_overflow = 0;
+
+// Hardware CAN hook - called from comm_can.c for every received message
+void hw_can_rx_hook(uint32_t id, uint8_t *data, int len, bool is_ext) {
+	if (is_ext) return;  // Only handle standard 11-bit IDs
+
+	int next_write = (can_rx_write + 1) % CAN_BUF_SIZE;
+	if (next_write == can_rx_read) {
+		// Buffer full - overflow
+		can_rx_overflow++;
+		return;
+	}
+
+	can_rx_buffer[can_rx_write].id = id;
+	can_rx_buffer[can_rx_write].len = len > 8 ? 8 : len;
+	memcpy(can_rx_buffer[can_rx_write].data, data, can_rx_buffer[can_rx_write].len);
+	can_rx_write = next_write;
+}
+
+// (slave-can-available) - Returns number of messages in buffer
+static lbm_value ext_slave_can_available(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	int count = can_rx_write - can_rx_read;
+	if (count < 0) count += CAN_BUF_SIZE;
+	return lbm_enc_i(count);
+}
+
+// (slave-can-read) - Read one message from buffer, returns (id . data) or nil
+static lbm_value ext_slave_can_read(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+
+	if (can_rx_read == can_rx_write) {
+		return ENC_SYM_NIL;  // Buffer empty
+	}
+
+	can_msg_t *msg = &can_rx_buffer[can_rx_read];
+	can_rx_read = (can_rx_read + 1) % CAN_BUF_SIZE;
+
+	// Create array for data
+	lbm_value data_arr;
+	if (!lbm_heap_allocate_array(&data_arr, msg->len)) {
+		return ENC_SYM_NIL;
+	}
+	lbm_array_header_t *arr = (lbm_array_header_t *)lbm_car(data_arr);
+	memcpy(arr->data, msg->data, msg->len);
+
+	// Return (id . data)
+	return lbm_cons(lbm_enc_u32(msg->id), data_arr);
 }
 
 
@@ -1394,7 +1473,12 @@ static void load_extensions(bool main_found) {
 	lbm_add_extension("bms-set-bal-bitmap", ext_set_bal_bitmap);
 	lbm_add_extension("bms-get-bal-bitmap", ext_get_bal_bitmap);
 	lbm_add_extension("bms-stop-balancing", ext_stop_balancing);
+	lbm_add_extension("bms-set-bal-bitmap-demo", ext_set_bal_bitmap_demo);
 	lbm_add_extension("bms-get-slave-id", ext_get_slave_id);
+
+	// Direct CAN buffer extensions (bypass broken event system)
+	lbm_add_extension("slave-can-available", ext_slave_can_available);
+	lbm_add_extension("slave-can-read", ext_slave_can_read);
 
 	// HW-specific commands
 	lbm_add_extension("bms-direct-cmd", ext_direct_cmd);

@@ -3,6 +3,7 @@
 (print "=== JFBMS Master v2 - DEBUG ===")
 
 (def last-print 0)
+(def last-bal-send 0)
 
 ; Debug: Track message types received per slave
 (def debug-msg-counts (list 0 0 0 0 0 0 0 0 0 0))  ; 10 message types (0-9)
@@ -149,14 +150,21 @@
         (master-update-vesc-bms)
         (master-check-timeouts 2000)
 
+        ; Send balance command to slave 1, cell 2 (bit 2 = mask 4)
+        ; Send every 5 seconds (BQ76952 has ~30s internal timeout)
+        (if (> (- (systime) last-bal-send) 5.0) {
+            (master-send-balance 1 4)
+            (set 'last-bal-send (systime))
+            (print (str-merge "BAL SENT at " (str-from-n (systime) "%.1f") "s"))
+        })
+
         ; Print summary every 2 seconds
-        (var now (systime))
-        (if (> (- now last-print) 2.0) {
+        (if (> (- (systime) last-print) 2.0) {
             (print "")
             (print (str-merge "Avail:" (to-str (master-can-available))
                               " Overflow:" (to-str (master-can-overflow))))
             (print-slaves)
-            (setq last-print now)
+            (set 'last-print (systime))
         })
 
         (sleep 0.05)

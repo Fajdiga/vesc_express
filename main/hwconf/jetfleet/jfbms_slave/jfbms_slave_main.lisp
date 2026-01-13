@@ -27,31 +27,30 @@
 ; ============================================================================
 ; Balance command CAN ID: 0x500 | slave_id
 ; Data: 4 bytes balance bitmap (little-endian uint32)
+; Uses direct CAN buffer (bypasses broken event-can-sid system)
 
-(defun handle-can-rx (can-id data) {
-    (var expected-bal-id (bitwise-or 0x500 slave-id))
-    (if (= can-id expected-bal-id) {
-        ; Extract 32-bit balance mask (little-endian)
-        (var bal-mask (bitwise-or
-            (bufget-u8 data 0)
-            (shl (bufget-u8 data 1) 8)
-            (shl (bufget-u8 data 2) 16)
-            (shl (bufget-u8 data 3) 24)))
-        (bms-set-bal-bitmap bal-mask)
-        ; Reset watchdog timer
-        (setq last-bal-cmd-time (systime))
+(defun process-can-messages () {
+    (var expected-bal-id (+ 0x500 slave-id))
+    ; Process all available CAN messages
+    (loopwhile (> (slave-can-available) 0) {
+        (var msg (slave-can-read))
+        (if msg {
+            (var can-id (car msg))
+            (var data (cdr msg))
+            (if (= can-id expected-bal-id) {
+                ; Extract 32-bit balance mask (little-endian)
+                (var bal-mask (+ (bufget-u8 data 0)
+                    (shl (bufget-u8 data 1) 8)
+                    (shl (bufget-u8 data 2) 16)
+                    (shl (bufget-u8 data 3) 24)))
+                (bms-set-bal-bitmap bal-mask)
+                ; Reset watchdog timer
+                (setq last-bal-cmd-time (systime))
+                (print (str-merge "BAL CMD: mask=0x" (str-from-n bal-mask "%08X")))
+            })
+        })
     })
 })
-
-; Event handler thread for CAN RX
-(defun event-handler ()
-    (event-enable 'event-can-sid)
-    (loopwhile t
-        (recv
-            ((event-can-sid (? id) (? data))
-                (handle-can-rx id data))
-            ((? x) nil)  ; Ignore other events
-        )))
 
 ; ============================================================================
 ; Balance Watchdog Check
@@ -78,6 +77,9 @@
     (var loop-count 0)
 
     (loopwhile t {
+        ; Process incoming CAN messages (balance commands from master)
+        (process-can-messages)
+
         ; Read cell voltages from both BQ chips
         (var cells (bms-get-vcells))
         (if (eq cells nil) {
@@ -100,7 +102,8 @@
         ; Debug: print every 10 loops (1 second)
         (setq loop-count (+ loop-count 1))
         (if (= (mod loop-count 10) 0) {
-            (print (str-merge "Loop " (to-str loop-count) " - Cells: " (to-str (length cells)) ", V0: " (to-str (if (> (length cells) 0) (ix cells 0) 0))))
+            (print (str-merge "Loop " (to-str loop-count) " - Cells: " (to-str (length cells))
+                              ", BalMask: 0x" (str-from-n (bms-get-bal-bitmap) "%08X")))
         })
 
         ; Broadcast all data via CAN (8 cell msgs + 1 temp + 1 status)
@@ -144,8 +147,8 @@
 
 ; Set fault flags based on init status
 (def fault-flags 0)
-(if (not bq1-init-ok) (setq fault-flags (bitwise-or fault-flags 0x01)))
-(if (and (> cells-ic2 0) (not bq2-init-ok)) (setq fault-flags (bitwise-or fault-flags 0x02)))
+(if (not bq1-init-ok) (setq fault-flags (+ fault-flags 0x01)))
+(if (and (> cells-ic2 0) (not bq2-init-ok)) (setq fault-flags (+ fault-flags 0x02)))
 (bms-set-fault-flags fault-flags)
 
 (if init-ok
@@ -154,10 +157,7 @@
 
 ; Only continue if init was successful
 (if init-ok {
-    ; Start event handler thread for CAN RX
-    (spawn 64 event-handler)
-
-    ; Start main broadcast loop
+    ; Start main broadcast loop (CAN RX is polled in main loop)
     (print "Starting CAN broadcast loop...")
     (spawn 150 main-thd)
 } {

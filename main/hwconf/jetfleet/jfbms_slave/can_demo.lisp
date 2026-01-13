@@ -24,6 +24,36 @@
 (def demo-temp-nominal 25.0)      ; Nominal temperature (C)
 (def demo-temp-variation 5.0)     ; Random variation +/- (C)
 
+; Balance state (simulated, updated by master commands)
+(def demo-bal-mask 0)
+
+; ============================================================================
+; CAN RX Handler for Balance Commands from Master
+; ============================================================================
+; Uses direct CAN buffer (bypasses broken event-can-sid system)
+
+(defun process-can-messages () {
+    (var expected-bal-id (+ 0x500 demo-slave-id))
+    ; Process all available CAN messages
+    (loopwhile (> (slave-can-available) 0) {
+        (var msg (slave-can-read))
+        (if msg {
+            (var can-id (car msg))
+            (var data (cdr msg))
+            (if (= can-id expected-bal-id) {
+                ; Extract 32-bit balance mask (little-endian)
+                (var bal-mask (+ (bufget-u8 data 0)
+                    (shl (bufget-u8 data 1) 8)
+                    (shl (bufget-u8 data 2) 16)
+                    (shl (bufget-u8 data 3) 24)))
+                ; Set balance mask directly (demo mode - no BQ chips)
+                (bms-set-bal-bitmap-demo bal-mask)
+                (print (str-merge "BAL CMD: mask=0x" (str-from-n bal-mask "%08X")))
+            })
+        })
+    })
+})
+
 ; ============================================================================
 ; Helper Functions
 ; ============================================================================
@@ -96,13 +126,16 @@
 
 (loopwhile t {
     (if demo-running {
+        ; Process incoming CAN messages (balance commands from master)
+        (process-can-messages)
+
         ; Generate simulated data (32 cells, 4 temps)
         (var cells (gen-cell-list-32))
         (var temps (gen-temp-list))
 
         ; Broadcast via 11-bit CAN protocol
         ; bms-broadcast-all sends: 8 cell msgs + 1 temp msg + 1 status msg
-        ; Read slave ID fresh each time to allow runtime config changes
+        ; Balance mask is read from internal state (set by bms-set-bal-bitmap-demo)
         (bms-broadcast-all (bms-get-slave-id) cells temps 1 1)
 
         ; Debug output (comment out for silent operation)
