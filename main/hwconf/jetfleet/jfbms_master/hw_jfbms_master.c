@@ -823,13 +823,14 @@ static void update_vesc_bms_values(void) {
 		bms->update_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
 
 		// Simple SOC estimate based on cell voltage (rough approximation)
-		// 3.0V = 0%, 4.2V = 100%
+		// Li-Ion: 3.0V = 0%, 4.2V = 100%
+		// VESC expects SOC as 0.0-1.0 (not 0-100%)
 		float avg_v = (num_cells > 0) ? (v_tot / num_cells) : 3.7f;
-		bms->soc = (avg_v - 3.0f) / (4.2f - 3.0f) * 100.0f;
-		if (bms->soc < 0) bms->soc = 0;
-		if (bms->soc > 100) bms->soc = 100;
+		bms->soc = (avg_v - 3.0f) / (4.2f - 3.0f);
+		if (bms->soc < 0.0f) bms->soc = 0.0f;
+		if (bms->soc > 1.0f) bms->soc = 1.0f;
 
-		bms->soh = 100.0f;  // Assume 100% health
+		bms->soh = 1.0f;  // Assume 100% health (VESC expects 0.0-1.0)
 		bms->can_id = active_slave + 1;
 	}
 

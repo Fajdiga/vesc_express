@@ -834,7 +834,9 @@ static lbm_value ext_get_vcells(lbm_value *args, lbm_uint argn) {
 #define NTC_TEMP(res, beta)                                                    \
 	(1.0 / ((logf((res) / 10000.0) / beta) + (1.0 / 298.15)) - 273.15)
 #define NTC_RES(volts) (18.0e3 / (1.8 / volts - 1.0) - 500.0)
-#define NAN_TO_M1(x)   (UTILS_IS_NAN(x) ? -1.0 : x)
+// Return 999.0 for invalid NTC (will be converted to 0x7FFF in broadcast)
+#define NTC_INVALID_MARKER 999.0f
+#define NAN_TO_INVALID(x)  (UTILS_IS_NAN(x) ? NTC_INVALID_MARKER : x)
 
 static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
 	(void)args;
@@ -874,10 +876,10 @@ static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
 	float ntc_beta = 3380.0;
 
 	ts_list = lbm_cons(
-		lbm_enc_float(NAN_TO_M1(NTC_TEMP(NTC_RES(v1), ntc_beta))), ts_list
+		lbm_enc_float(NAN_TO_INVALID(NTC_TEMP(NTC_RES(v1), ntc_beta))), ts_list
 	);
 	ts_list = lbm_cons(
-		lbm_enc_float(NAN_TO_M1(NTC_TEMP(NTC_RES(v3), ntc_beta))), ts_list
+		lbm_enc_float(NAN_TO_INVALID(NTC_TEMP(NTC_RES(v3), ntc_beta))), ts_list
 	);
 
 	// Read BQ2 internal temperature if present
@@ -893,7 +895,8 @@ static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
 			goto exit_error2;
 		}
 	} else {
-		ts_list = lbm_cons(lbm_enc_float(-1.0), ts_list);
+		// BQ2 not present - mark as invalid
+		ts_list = lbm_cons(lbm_enc_float(NTC_INVALID_MARKER), ts_list);
 	}
 
 	return lbm_list_destructive_reverse(ts_list);

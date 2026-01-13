@@ -3,9 +3,9 @@
 ; Receives balance commands from master
 
 ; ============================================================================
-; SLAVE CONFIGURATION - Change this value to set slave address (1-8)
+; SLAVE CONFIGURATION - Read from VESC Tool configuration
 ; ============================================================================
-(def slave-id 2)  ; <-- CHANGE THIS VALUE FOR EACH SLAVE BOARD
+(def slave-id (bms-get-slave-id))  ; Configured in VESC Tool -> JFBMS Slave -> Slave ID
 
 ; ============================================================================
 ; Cell Configuration (read from stored config)
@@ -75,6 +75,7 @@
     ; Track BQ communication status
     (var bq1-ok true)
     (var bq2-ok (if (> cells-ic2 0) true false))
+    (var loop-count 0)
 
     (loopwhile t {
         ; Read cell voltages from both BQ chips
@@ -94,6 +95,12 @@
             (if (and (>= (length temps) 4) (> (ix temps 3) -200.0))
                 (setq bq2-ok true)
                 (setq bq2-ok false))
+        })
+
+        ; Debug: print every 10 loops (1 second)
+        (setq loop-count (+ loop-count 1))
+        (if (= (mod loop-count 10) 0) {
+            (print (str-merge "Loop " (to-str loop-count) " - Cells: " (to-str (length cells)) ", V0: " (to-str (if (> (length cells) 0) (ix cells 0) 0))))
         })
 
         ; Broadcast all data via CAN (8 cell msgs + 1 temp + 1 status)
@@ -136,7 +143,7 @@
 })
 
 ; Set fault flags based on init status
-(var fault-flags 0)
+(def fault-flags 0)
 (if (not bq1-init-ok) (setq fault-flags (bitwise-or fault-flags 0x01)))
 (if (and (> cells-ic2 0) (not bq2-init-ok)) (setq fault-flags (bitwise-or fault-flags 0x02)))
 (bms-set-fault-flags fault-flags)
@@ -150,28 +157,9 @@
     ; Start event handler thread for CAN RX
     (spawn 64 event-handler)
 
-    ; Main loop with error recovery
-    (loopwhile t {
-        (spawn-trap "main-thd" main-thd)
-        (recv
-            ((exit-error (? tid) (? e)) {
-                (print (str-merge "Main thread error: " (to-str e)))
-                (bms-stop-balancing)  ; Safety: stop balancing on error
-                (sleep 1.0)
-                ; Re-initialize BMS
-                (looprange j 0 5 {
-                    (if (bms-init cells-ic1 cells-ic2)
-                        (break)
-                        (print "BMS re-init failed, retrying..."))
-                    (sleep 1.0)
-                })
-            })
-            ((exit-ok (? tid) (? v)) {
-                (print "Main thread exited normally, restarting...")
-                (sleep 1.0)
-            })
-        )
-    })
+    ; Start main broadcast loop
+    (print "Starting CAN broadcast loop...")
+    (spawn 150 main-thd)
 } {
     ; Init failed - enter diagnostic loop, but still broadcast status
     (print "Entering diagnostic mode due to init failure")

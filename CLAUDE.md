@@ -19,7 +19,7 @@ The BMS system consists of:
 | ID Formula | Message Type | DLC | Content |
 |------------|--------------|-----|---------|
 | `(0-7 << 7) \| slave_id` | Cell Voltages | 8 | 4 cells per msg, 8 msgs total (32 cells) |
-| `0x400 \| slave_id` | Temperatures | 8 | 4 temps (T_BQ1, T_TS1, T_TS3, T_BQ2) |
+| `0x400 \| slave_id` | Temperatures | 8 | 4 temps (BQ1-int, Ext1/TS1, Ext2/TS3, BQ2-int) |
 | `0x480 \| slave_id` | Status | 5 | Balance mask (4B) + faults (1B) |
 | `0x500 \| slave_id` | Balance Cmd | 4 | Master -> Slave balance command |
 
@@ -135,6 +135,31 @@ For proper Master-Slave communication:
 
 ## Development History
 
+### 2026-01-13: SOC/SOH Fix, Temperature Filtering & Slave ID from Config
+
+**SOC/SOH Fix:**
+- Fixed SOC and SOH calculation - VESC expects 0.0-1.0 (fraction), not 0-100 (percent)
+- Was showing 1724% SOH due to incorrect scaling
+
+**Temperature Improvements:**
+- Invalid temperatures now correctly use `0x7FFF` marker instead of `-1.0°C`
+- Changed `NAN_TO_M1` macro to `NAN_TO_INVALID` returning 999.0°C (outside valid range)
+- Master filters out invalid temps and only displays valid ones
+- Temperature naming in Lisp output:
+  - `BQ1` = BQ76952 #1 internal die temperature
+  - `Ext1` = External NTC on TS1 pin
+  - `Ext2` = External NTC on TS3 pin
+  - `BQ2` = BQ76952 #2 internal die temperature
+- Note: VESC Tool still shows T1, T2, T3... (hardcoded in app)
+
+**Slave Configuration:**
+- Slave ID now reads from VESC Tool config via `(bms-get-slave-id)` instead of hardcoded value
+- Fixed Lisp syntax errors (`var` → `def` for top-level, `spawn-trap` → `spawn`)
+
+**Debug Features:**
+- Added debug mode to master script showing raw CAN messages with parsed values
+- Shows first 20 raw messages then switches to normal operation
+
 ### 2026-01-13: Master CAN Reception Fix & VESC BMS Integration
 - Fixed CAN ACK mode (`HW_CAN_NO_ACK_MODE 0`) on both master and slave
 - Discovered LispBM event system (`event-can-sid`) has a bug - events not delivered to Lisp
@@ -179,3 +204,15 @@ For proper Master-Slave communication:
 ### Known Issues
 - LispBM `event-can-sid` system does not work - use direct buffer approach instead
 - `can-recv-sid` only catches ~10% of messages when slave sends bursts
+- VESC Tool shows temperatures as T1, T2, T3... (hardcoded in app, cannot rename)
+
+### Temperature Sensor Mapping
+
+| Index | VESC Tool | Actual Sensor | Description |
+|-------|-----------|---------------|-------------|
+| 0 | T1 | BQ1 | BQ76952 #1 internal die temperature |
+| 1 | T2 | Ext1 | External NTC on TS1 pin |
+| 2 | T3 | Ext2 | External NTC on TS3 pin |
+| 3 | T4 | BQ2 | BQ76952 #2 internal die temperature |
+
+**Invalid temperature marker:** `0x7FFF` (3276.7°C) - filtered out, not displayed
