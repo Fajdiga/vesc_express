@@ -86,6 +86,7 @@ static volatile int rx_read = 0;
 static volatile bool use_vesc_decoder = true;
 
 static volatile int rx_recovery_cnt = 0;
+static volatile uint32_t rx_total_cnt = 0;  // Total received messages counter
 
 // Private functions
 static void update_baud(CAN_BAUD baudrate);
@@ -565,6 +566,7 @@ static void rx_task(void *arg) {
 		esp_err_t res = twai_receive(&rx_message, 2);
 
 		if (res == ESP_OK) {
+			rx_total_cnt++;
 			rx_buf[rx_write] = rx_message;
 			rx_write++;
 			if (rx_write >= RXBUF_LEN) {
@@ -614,6 +616,12 @@ static void process_task(void *arg) {
 			}
 
 			lispif_process_can(msg->identifier, msg->data, msg->data_length_code, msg->extd);
+
+			// Hardware-specific CAN hook (weak symbol, can be overridden)
+			extern void hw_can_rx_hook(uint32_t id, uint8_t *data, int len, bool is_ext) __attribute__((weak));
+			if (hw_can_rx_hook) {
+				hw_can_rx_hook(msg->identifier, msg->data, msg->data_length_code, msg->extd);
+			}
 
 			if (use_vesc_decoder) {
 				if (!bms_process_can_frame(msg->identifier, msg->data, msg->data_length_code, msg->extd)) {
@@ -854,6 +862,10 @@ void comm_can_stop(void) {
 
 int comm_can_get_rx_recovery_cnt(void) {
 	return rx_recovery_cnt;
+}
+
+uint32_t comm_can_get_rx_total_cnt(void) {
+	return rx_total_cnt;
 }
 
 void comm_can_use_vesc_decoder(bool use_vesc_dec) {

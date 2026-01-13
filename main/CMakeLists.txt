@@ -1,13 +1,19 @@
 set(COMPONENT_REQUIRES )
 set(COMPONENT_PRIV_REQUIRES )
 
-# Detect if building for slave hardware
+# Detect if building for slave or master hardware (no WiFi/BLE needed)
 set(IS_SLAVE_BUILD FALSE)
+set(IS_MASTER_BUILD FALSE)
 if(DEFINED ENV{HW_HEADER})
     string(FIND "$ENV{HW_HEADER}" "jfbms_slave" SLAVE_POS)
     if(NOT SLAVE_POS EQUAL -1)
         set(IS_SLAVE_BUILD TRUE)
         message(STATUS "Detected slave build - excluding WiFi/BLE modules")
+    endif()
+    string(FIND "$ENV{HW_HEADER}" "jfbms_master" MASTER_POS)
+    if(NOT MASTER_POS EQUAL -1)
+        set(IS_MASTER_BUILD TRUE)
+        message(STATUS "Detected master build - excluding WiFi/BLE modules")
     endif()
 endif()
 
@@ -72,8 +78,8 @@ set(COMPONENT_SRCS
 "lispBM/src/extensions/schrift.c"
 )
 
-# Conditionally add WiFi and BLE for non-slave builds
-if(NOT IS_SLAVE_BUILD)
+# Conditionally add WiFi and BLE for non-slave/master builds
+if(NOT IS_SLAVE_BUILD AND NOT IS_MASTER_BUILD)
     list(APPEND COMPONENT_SRCS
         "comm_wifi.c"
         "comm_ble.c"
@@ -119,6 +125,7 @@ set(COMPONENT_ADD_INCLUDEDIRS
 "hwconf/jetfleet"
 "hwconf/jetfleet/bms32"
 "hwconf/jetfleet/jfbms_slave"
+"hwconf/jetfleet/jfbms_master"
 "hwconf/vesc/vdisp_dual"
 "hwconf/vesc/scope"
 "hwconf/vesc/duet"
@@ -166,9 +173,9 @@ if((DEFINED ENV{HW_SRC}) OR (DEFINED ENV{HW_HEADER}))
         HW_HEADER=\"$ENV{HW_HEADER}\"
     )
 else()
-    message(STATUS "Using default hardware: jfbms_slave")
-    add_compile_definitions(
-        HW_SOURCE=\"hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.c\"
-        HW_HEADER=\"hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.h\"
-    )
+  message(STATUS "Using default hardware: jfbms_master")
+      add_compile_definitions(
+          HW_SOURCE=\"hwconf/jetfleet/jfbms_master/hw_jfbms_master.c\"
+          HW_HEADER=\"hwconf/jetfleet/jfbms_master/hw_jfbms_master.h\"
+      )
 endif()

@@ -1,14 +1,18 @@
 # JFBMS Project Status
 
-## Current Stage: CAN Protocol Working
+## Current Stage: Master-Slave Communication - WORKING
 
-**Date:** 2026-01-09
+**Date:** 2026-01-13
 
-### JFBMS Slave - 11-bit CAN Protocol
+### JFBMS Architecture
 
-The BMS Master-Slave CAN protocol using 11-bit standard IDs is fully operational.
+The BMS system consists of:
+- **JFBMS Master**: Receives data from slaves, aggregates pack information, displays in VESC Tool
+- **JFBMS Slave**: Reads cell voltages/temperatures from BQ76952 chips, broadcasts via CAN
 
-#### Protocol Specification
+**Status:** Master successfully receives all 32 cell voltages, 4 temperatures, and status from slave.
+
+### 11-bit CAN Protocol
 
 **CAN ID Format:** `(msg_type << 7) | slave_id`
 
@@ -35,67 +39,143 @@ The BMS Master-Slave CAN protocol using 11-bit standard IDs is fully operational
 381 - Cells 28-31
 401 - Temperatures
 481 - Status
+501 - Balance command (from master)
 ```
 
-#### Verified Working
-- All 10 messages transmitted within ~2ms
-- 32 cell voltages properly encoded
-- 4 temperature readings properly encoded
-- Status message with balance mask and fault flags
-- No-ACK mode available for testing without second CAN device
+---
 
-#### Key Files
-- `main/hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.c` - CAN protocol implementation
+## Building
+
+### Build Scripts
+- `build_master.bat` - Build master firmware
+- `build_slave.bat` - Build slave firmware
+
+### Manual Build
+```batch
+REM Build Master
+set HW_SRC=hwconf/jetfleet/jfbms_master/hw_jfbms_master.c
+set HW_HEADER=hwconf/jetfleet/jfbms_master/hw_jfbms_master.h
+idf.py -B build_master build
+
+REM Build Slave
+set HW_SRC=hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.c
+set HW_HEADER=hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.h
+idf.py -B build_slave build
+```
+
+---
+
+## CAN Bus Requirements
+
+For proper Master-Slave communication:
+1. **Wiring**: CANH to CANH, CANL to CANL
+2. **Baud Rate**: Both devices at 500 kbps (default)
+3. **ACK Mode**: Both set to `HW_CAN_NO_ACK_MODE 0` (normal ACK mode)
+4. **Termination**: 120Ω resistors at each end of CAN bus recommended
+
+---
+
+## Key Files
+
+### Master
+- `main/hwconf/jetfleet/jfbms_master/hw_jfbms_master.c` - CAN RX logic, Lisp extensions, VESC BMS integration
+- `main/hwconf/jetfleet/jfbms_master/hw_jfbms_master.h` - Hardware configuration
+- `main/hwconf/jetfleet/jfbms_master/jfbms_master_main.lisp` - Main script (direct CAN buffer)
+
+### Slave
+- `main/hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.c` - CAN TX logic, BQ76952 communication
 - `main/hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.h` - Hardware configuration
-- `main/hwconf/jetfleet/jfbms_slave/can_demo.lisp` - Demo script for protocol testing
+- `main/hwconf/jetfleet/jfbms_slave/can_demo.lisp` - Demo script (simulated data)
 
-#### Configuration Flags
-- `HW_CAN_PING_SCAN_ENABLED 0` - Disables VESC CAN ping scan (slave uses 11-bit protocol)
-- `HW_CAN_NO_ACK_MODE 1` - Enables no-ACK mode for standalone testing
+### Common
+- `main/comm_can.c` - CAN driver with `hw_can_rx_hook` for hardware-specific handling
 
-> **IMPORTANT:** When testing is complete and a real master device is connected,
-> set `HW_CAN_NO_ACK_MODE` back to `0` in `hw_jfbms_slave.h` and rebuild.
-> No-ACK mode is for development/testing only. Production requires normal ACK mode
-> for reliable CAN communication.
+---
 
-#### Slave ID Configuration
+## Lisp Extensions
 
-The slave ID is configurable via VESC Tool:
-- **Location:** VESC Tool -> JFBMS Slave tab -> Slave ID (1-8)
-- **Function:** `(bms-get-slave-id)` returns the configured value
-- **Runtime changes:** The demo script reads slave ID on every broadcast, so changing ID in VESC Tool and clicking "Write" takes effect immediately without restart
+### Master Extensions
+| Extension | Description |
+|-----------|-------------|
+| `(master-get-cell-voltage slave-id cell-idx)` | Get cell voltage in V |
+| `(master-get-temp slave-id temp-idx)` | Get temperature in °C |
+| `(master-get-status slave-id)` | Get (balance-mask faults) list |
+| `(master-get-all-cells slave-id)` | Get list of 32 cell voltages |
+| `(master-get-all-temps slave-id)` | Get list of 4 temperatures |
+| `(master-send-balance slave-id mask)` | Send balance command to slave |
+| `(master-slave-active? slave-id)` | Check if slave is responding |
+| `(master-get-active-slaves)` | Get list of active slave IDs |
+| `(master-check-timeouts timeout-ms)` | Mark timed-out slaves as inactive |
+| `(master-reset-data)` | Clear all stored data |
+| `(master-can-read-all)` | Read and parse all buffered CAN messages |
+| `(master-can-available)` | Get count of buffered messages |
+| `(master-can-overflow)` | Get overflow count |
+| `(master-update-vesc-bms)` | Update VESC BMS values for VESC Tool display |
 
-**How it works:**
-1. VESC Tool "Slave ID" field maps to `backup.config.slave_id`
-2. `bms-get-slave-id` Lisp extension reads this value
-3. `can_demo.lisp` calls `(bms-get-slave-id)` on each broadcast loop iteration
+### Slave Extensions
+| Extension | Description |
+|-----------|-------------|
+| `(bms-get-slave-id)` | Get configured slave ID |
+| `(bms-broadcast-all slave-id cells temps bal-mask faults)` | Broadcast all data via CAN |
+
+---
+
+## Configuration
+
+### Master Configuration (VESC Tool)
+- **Number of Slaves**: Expected number of slave devices (1-8)
+- **Slave Timeout**: Time before marking slave as inactive (ms)
+
+### Slave Configuration (VESC Tool)
+- **Slave ID**: Unique ID on CAN bus (1-8)
+- **Cells IC1**: Number of cells on BQ76952 #1 (3-16)
+- **Cells IC2**: Number of cells on BQ76952 #2 (0-16, 0=single chip)
 
 ---
 
 ## Development History
 
-### 2026-01-09: Slave ID Runtime Configuration
-**Problem:** Changing slave ID in VESC Tool didn't affect CAN message IDs
-**Root cause:** Demo script cached slave ID at startup with `(def demo-slave-id 1)`
-**Solution:**
-1. Updated `can_demo.lisp` to call `(bms-get-slave-id)` on every broadcast instead of caching
-2. Confirmed `bms-get-slave-id` reads from `backup.config.slave_id` (VESC Tool field)
+### 2026-01-13: Master CAN Reception Fix & VESC BMS Integration
+- Fixed CAN ACK mode (`HW_CAN_NO_ACK_MODE 0`) on both master and slave
+- Discovered LispBM event system (`event-can-sid`) has a bug - events not delivered to Lisp
+- Implemented direct CAN buffer solution:
+  - Added `hw_can_rx_hook` weak symbol in `comm_can.c` for hardware-specific CAN handling
+  - Master implements circular buffer (64 messages) to capture all CAN messages
+  - New Lisp extensions: `master-can-read-all`, `master-can-available`, `master-can-overflow`
+- Added VESC BMS data integration (`master-update-vesc-bms`) for VESC Tool display
+- Master now successfully receives all 32 cells, 4 temps, and status at 20Hz
+- Removed unnecessary GPIO configuration in `comm_can.c` that was causing signal issues
 
-**Files changed:**
-- `hw_jfbms_slave.c` - Verified `ext_get_slave_id` reads `cfg->slave_id`
-- `can_demo.lisp` - Changed to read slave ID dynamically: `(bms-broadcast-all (bms-get-slave-id) cells temps 1 1)`
+### 2026-01-12: Master Implementation
+- Created JFBMS Master device based on slave architecture
+- Implemented CAN RX via LispBM event system (`event-can-sid`) - later found to be broken
+- Added all master Lisp extensions for data access
 
 ### 2026-01-09: CAN Protocol Implementation
-**Added:** Complete 11-bit CAN master-slave protocol
+- Complete 11-bit CAN master-slave protocol
 - 8 cell voltage messages (32 cells total)
 - 1 temperature message (4 sensors)
 - 1 status message (balance mask + faults)
-- No-ACK mode for standalone testing
+
+### 2026-01-09: Slave ID Runtime Configuration
+- Slave ID now configurable via VESC Tool without restart
 
 ---
 
-## Next Steps
-- [ ] Implement master-side CAN receiver
-- [ ] Add balance command handling (0x500 | slave_id)
-- [ ] Integration testing with real BMS hardware
-- [ ] Disable no-ACK mode for production (set `HW_CAN_NO_ACK_MODE 0`)
+## Troubleshooting
+
+### No CAN communication
+1. Check physical wiring (CANH/CANL, termination)
+2. Verify both devices have `HW_CAN_NO_ACK_MODE 0`
+3. Check baud rate matches (500K default)
+4. Rebuild both firmware after configuration changes
+
+### Master shows "No slaves detected"
+1. Ensure slave is powered and running demo script
+2. Verify CAN bus connection
+3. Check `master-can-available` returns > 0 (messages being received)
+4. Check `master-can-overflow` for buffer overflows
+
+### Known Issues
+- LispBM `event-can-sid` system does not work - use direct buffer approach instead
+- `can-recv-sid` only catches ~10% of messages when slave sends bursts
