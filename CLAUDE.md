@@ -47,8 +47,9 @@ The BMS system consists of:
 ## Building
 
 ### Build Scripts
-- `build_master.bat` - Build master firmware
-- `build_slave.bat` - Build slave firmware
+- `build_master.bat` - Build master firmware only
+- `build_slave.bat` - Build slave firmware only
+- `build_both.bat` - Build both master and slave firmware
 
 ### Manual Build
 ```batch
@@ -135,6 +136,35 @@ For proper Master-Slave communication:
 
 ## Development History
 
+### 2026-01-13: Balancing Fixes, LispBM Corrections & Build Improvements
+
+**BQ76952 Balancing Timeout Fix:**
+- BQ76952 has internal ~30 second timeout for CB_ACTIVE_CELLS command
+- Previously only wrote to chip if value changed - caused balancing to stop after 30s
+- Now always writes CB_ACTIVE_CELLS to refresh timeout, even if value unchanged
+- Master sends balance command every 5 seconds (was 50ms, too frequent)
+
+**LispBM Fixes:**
+- `bitwise-or` only supports 2 arguments in LispBM - replaced with `+` for CAN ID calculation and byte extraction (works because bits don't overlap)
+- Global variable updates must use `(set 'var value)` not `setq` inside blocks
+- Fixed in both master and slave Lisp scripts
+
+**Build System Improvements:**
+- Added `build_both.bat` - builds both master and slave firmware
+- Added `.vscode/settings.json` for proper ESP-IDF VS Code integration
+- Fixed `${ProjectId}` error for other developers
+- Increased `BMS_MAX_CELLS` from 50 to 64 (for dual BQ76952 config)
+- Default CMakeLists.txt builds master (change paths for slave)
+
+**Files Changed:**
+- `main/hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.c` - Always refresh CB_ACTIVE_CELLS
+- `main/hwconf/jetfleet/jfbms_slave/jfbms_slave_main.lisp` - bitwise-or → +
+- `main/hwconf/jetfleet/jfbms_slave/can_demo.lisp` - bitwise-or → +
+- `main/hwconf/jetfleet/jfbms_master/jfbms_master_main.lisp` - 5s balance interval, set 'var fix
+- `main/datatypes.h` - BMS_MAX_CELLS 50 → 64
+
+---
+
 ### 2026-01-13: SOC/SOH Fix, Temperature Filtering & Slave ID from Config
 
 **SOC/SOH Fix:**
@@ -205,6 +235,17 @@ For proper Master-Slave communication:
 - LispBM `event-can-sid` system does not work - use direct buffer approach instead
 - `can-recv-sid` only catches ~10% of messages when slave sends bursts
 - VESC Tool shows temperatures as T1, T2, T3... (hardcoded in app, cannot rename)
+- LispBM `bitwise-or` only accepts 2 arguments - use `+` when bits don't overlap
+- LispBM global variables must be updated with `(set 'var value)` inside functions
+
+### VS Code Build Errors
+If you get `${ProjectId}.map not found` error:
+1. Delete `.vscode` folder
+2. Reopen project in VS Code
+3. Run `ESP-IDF: Configure ESP-IDF Extension`
+4. Set target: `ESP-IDF: Set Espressif Device Target` → `esp32c3`
+
+Or build from terminal instead: `idf.py build`
 
 ### Temperature Sensor Mapping
 
