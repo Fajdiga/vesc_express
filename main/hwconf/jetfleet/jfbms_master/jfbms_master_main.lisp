@@ -1,16 +1,34 @@
 ; JFBMS Master - Counter-based timing (spawn/sleep doesn't work in threads)
 
-(print "=== JFBMS Master v3 ===")
+(print "=== JFBMS Master v4 ===")
 
 ; ============ CONFIGURATION ============
 ; All times in iterations (1 iteration = 100ms with sleep 0.1)
 (def loop-sleep 0.1)      ; 100ms per iteration
 (def bal-interval 10)     ; 10 iterations = 1 second
 (def stats-interval 20)   ; 20 iterations = 2 seconds
+
+; Master cells configuration
+(def master-num-cells 32) ; Number of master's own cells (set to 0 to disable)
 ; =======================================
 
 ; Mutable state: state[0] = loop counter
 (def state (list 0))
+
+; ============================================================================
+; Master Cell Simulation (generates test voltages for VESC Tool display)
+; ============================================================================
+; Generate a list of simulated cell voltages (3.65V - 3.85V range)
+(defun generate-master-cells (num-cells seed) {
+    (var cells '())
+    (var v 3.75)
+    (looprange i 0 num-cells {
+        ; Simple variation based on cell index
+        (setq v (+ 3.65 (* 0.02 (mod (+ i seed) 10))))
+        (setq cells (append cells (list v)))
+    })
+    cells
+})
 
 ; Print slave data
 (defun print-slaves ()
@@ -63,12 +81,23 @@
 ; Init
 (print "Init...")
 (master-reset-data)
+(master-clear-cells)
 (print (str-merge "Config: loop=" (str-from-n loop-sleep "%.2f") "s, bal=" (str-from-n bal-interval "%d") " iter, stats=" (str-from-n stats-interval "%d") " iter"))
+(print (str-merge "Master cells: " (str-from-n master-num-cells "%d")))
 
 ; Main loop
 (loopwhile t {
-    ; Process CAN messages
+    ; Process CAN messages from slaves
     (master-can-read-all)
+
+    ; Set master's own cells (if configured)
+    (if (> master-num-cells 0) {
+        (var cnt (ix state 0))
+        (var master-cells (generate-master-cells master-num-cells cnt))
+        (master-set-cells master-cells)
+    })
+
+    ; Update VESC BMS display (shows master cells + slave cells)
     (master-update-vesc-bms)
     (master-check-timeouts 2000)
 

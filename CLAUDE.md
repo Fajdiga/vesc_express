@@ -20,7 +20,7 @@ The BMS system consists of:
 |------------|--------------|-----|---------|
 | `(0-7 << 7) \| slave_id` | Cell Voltages | 8 | 4 cells per msg, 8 msgs total (32 cells) |
 | `0x400 \| slave_id` | Temperatures | 8 | 4 temps (BQ1-int, Ext1/TS1, Ext2/TS3, BQ2-int) |
-| `0x480 \| slave_id` | Status | 5 | Balance mask (4B) + faults (1B) |
+| `0x480 \| slave_id` | Status | 6 | Balance mask (4B) + faults (1B) + cell count (1B) |
 | `0x500 \| slave_id` | Balance Cmd | 4 | Master -> Slave balance command |
 
 **Data Format:**
@@ -103,6 +103,7 @@ For proper Master-Slave communication:
 | `(master-get-status slave-id)` | Get (balance-mask faults) list |
 | `(master-get-all-cells slave-id)` | Get list of 32 cell voltages |
 | `(master-get-all-temps slave-id)` | Get list of 4 temperatures |
+| `(master-get-cell-count slave-id)` | Get actual cell count from slave |
 | `(master-send-balance slave-id mask)` | Send balance command to slave |
 | `(master-slave-active? slave-id)` | Check if slave is responding |
 | `(master-get-active-slaves)` | Get list of active slave IDs |
@@ -135,6 +136,32 @@ For proper Master-Slave communication:
 ---
 
 ## Development History
+
+### 2026-01-21: Dynamic Cell Count in VESC Tool
+
+**Problem:** VESC Tool always showed 64 cells (32 test + 32 slave), even if the slave had fewer cells configured. Unused cells showed as 0.0V.
+
+**Solution:** Slave now sends actual cell count in status message. Master only displays configured cells.
+
+**Changes:**
+
+**Slave (`hw_jfbms_slave.c`):**
+- Status message extended from 5 to 6 bytes
+- New byte 5: cell count (cells_ic1 + cells_ic2)
+- `can_send_status()` now takes cell_count parameter
+
+**Master (`hw_jfbms_master.c`):**
+- Added `cell_count[MAX_SLAVES]` to `master_bms_data_t` structure
+- `parse_status()` extracts cell count (backwards compatible - defaults to 32)
+- `update_vesc_bms_values()` now:
+  - Only displays actual cells from each slave (no more test cells)
+  - Supports multiple slaves - cells are concatenated
+  - Uses `cell_count` from slave to determine how many cells to show
+- New Lisp extension: `(master-get-cell-count slave-id)`
+
+**Result:** VESC Tool now shows only the configured number of cells (e.g., 16 cells if cells_ic1=16, cells_ic2=0).
+
+---
 
 ### 2026-01-13: Balancing Fixes, LispBM Corrections & Build Improvements
 

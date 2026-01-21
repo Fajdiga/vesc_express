@@ -56,6 +56,7 @@ typedef struct {
 	int16_t temperatures[MAX_SLAVES][TEMPS_PER_SLAVE];    // 0.1 deg C
 	uint32_t balance_mask[MAX_SLAVES];                     // Current balance state
 	uint8_t fault_flags[MAX_SLAVES];                       // Fault flags per slave
+	uint8_t cell_count[MAX_SLAVES];                        // Actual cell count per slave
 	uint32_t last_seen_ms[MAX_SLAVES];                     // Last message timestamp
 	bool active[MAX_SLAVES];                               // Slave is responding
 } master_bms_data_t;

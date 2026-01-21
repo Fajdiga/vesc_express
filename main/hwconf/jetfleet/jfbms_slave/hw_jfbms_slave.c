@@ -129,13 +129,14 @@ static void can_send_temps(uint8_t slave_id, int16_t *temps) {
 }
 
 /**
- * Send status message (1 CAN message, 5 bytes)
+ * Send status message (1 CAN message, 6 bytes)
  * @param slave_id  Slave ID (1-8)
  * @param bal_mask  32-bit balance bitmap
  * @param faults    Fault byte (bit0 = BQ1 init failed, bit1 = BQ2 init failed)
+ * @param cell_count Total number of configured cells (cells_ic1 + cells_ic2)
  */
-static void can_send_status(uint8_t slave_id, uint32_t bal_mask, uint8_t faults) {
-	uint8_t buf[5];
+static void can_send_status(uint8_t slave_id, uint32_t bal_mask, uint8_t faults, uint8_t cell_count) {
+	uint8_t buf[6];
 
 	// Balance mask, little-endian
 	buf[0] = (bal_mask >> 0) & 0xFF;
@@ -143,8 +144,9 @@ static void can_send_status(uint8_t slave_id, uint32_t bal_mask, uint8_t faults)
 	buf[2] = (bal_mask >> 16) & 0xFF;
 	buf[3] = (bal_mask >> 24) & 0xFF;
 	buf[4] = faults;
+	buf[5] = cell_count;
 
-	comm_can_transmit_sid(CAN_ID_STATUS(slave_id), buf, 5);
+	comm_can_transmit_sid(CAN_ID_STATUS(slave_id), buf, 6);
 }
 
 // Get current balancing bitmap from both ICs
@@ -1308,7 +1310,7 @@ static lbm_value ext_broadcast_all(lbm_value *args, lbm_uint argn) {
 	// TX queue is 20 messages, we send 10, so no delays needed
 	can_send_all_cells(slave_id, cells_mv);
 	can_send_temps(slave_id, temps);
-	can_send_status(slave_id, get_bal_bitmap(), faults);
+	can_send_status(slave_id, get_bal_bitmap(), faults, (uint8_t)M_CELLS);
 
 	return ENC_SYM_TRUE;
 }

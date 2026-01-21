@@ -4,5 +4,8 @@
     "idf.flashType": "UART",
     "idf.openOcdConfigs": [
         "board/esp32c3-builtin.cfg"
-    ]
+    ],
+    "idf.espIdfPathWin": "C:\\Users\\mihap\\esp\\v5.5.2\\esp-idf",
+    "idf.toolsPathWin": "C:\\Users\\mihap\\.espressif",
+    "idf.pythonInstallPath": "C:\\Users\\mihap\\.espressif\\tools\\idf-python\\3.11.2\\python.exe"
 }

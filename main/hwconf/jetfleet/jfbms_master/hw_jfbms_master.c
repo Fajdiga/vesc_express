@@ -69,6 +69,11 @@
 static master_bms_data_t m_bms_data;
 static SemaphoreHandle_t m_data_mutex;
 
+// Master's own cells (set via Lisp script, displayed in VESC Tool)
+#define MASTER_MAX_CELLS 32
+static float m_master_cells[MASTER_MAX_CELLS];  // Cell voltages in V (0 = not used)
+static uint8_t m_master_cell_count = 0;         // Number of master cells to display
+
 // ============================================================================
 // CAN Protocol TX Functions
 // ============================================================================
@@ -150,9 +155,10 @@ static void parse_temperatures(uint8_t slave_id, uint8_t *data) {
 /**
  * Parse status message (msg_type 0x9)
  * @param slave_id  Slave ID (1-8)
- * @param data      CAN payload (5 bytes: 4 bytes balance mask + 1 byte faults)
+ * @param data      CAN payload (6 bytes: 4 bytes balance mask + 1 byte faults + 1 byte cell count)
+ * @param len       Data length (5 for old firmware, 6 for new with cell count)
  */
-static void parse_status(uint8_t slave_id, uint8_t *data) {
+static void parse_status(uint8_t slave_id, uint8_t *data, uint8_t len) {
 	if (slave_id < 1 || slave_id > MAX_SLAVES) return;
 
 	uint8_t idx = slave_id - 1;  // Convert to 0-based index
@@ -168,6 +174,13 @@ static void parse_status(uint8_t slave_id, uint8_t *data) {
 
 	// Unpack fault flags
 	m_bms_data.fault_flags[idx] = data[4];
+
+	// Unpack cell count (new field, default to 32 if not present for backwards compatibility)
+	if (len >= 6) {
+		m_bms_data.cell_count[idx] = data[5];
+	} else {
+		m_bms_data.cell_count[idx] = CELLS_PER_SLAVE;  // Default to 32 for old firmware
+	}
 
 	// Update last seen timestamp
 	m_bms_data.last_seen_ms[idx] = xTaskGetTickCount() * portTICK_PERIOD_MS;
@@ -349,6 +362,109 @@ static lbm_value ext_master_get_all_temps(lbm_value *args, lbm_uint argn) {
 	return temps_list;
 }
 
+// (master-get-cell-count slave-id)
+// Returns the actual number of cells configured on the slave
+static lbm_value ext_master_get_cell_count(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(1);
+
+	uint8_t slave_id = lbm_dec_as_u32(args[0]);
+
+	if (slave_id < 1 || slave_id > MAX_SLAVES) return ENC_SYM_NIL;
+
+	uint8_t idx = slave_id - 1;
+
+	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
+	bool active = m_bms_data.active[idx];
+	uint8_t count = m_bms_data.cell_count[idx];
+	xSemaphoreGive(m_data_mutex);
+
+	if (!active) return ENC_SYM_NIL;
+	if (count == 0) return lbm_enc_i(CELLS_PER_SLAVE);  // Default for old firmware
+
+	return lbm_enc_i(count);
+}
+
+// ============================================================================
+// Master's Own Cells (for VESC Tool display)
+// ============================================================================
+
+// (master-set-cell cell-idx voltage)
+// Set master's own cell voltage (for VESC Tool display)
+// cell-idx: 0-31, voltage: in V (0 = not used/hide)
+static lbm_value ext_master_set_cell(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(2);
+
+	uint8_t idx = lbm_dec_as_u32(args[0]);
+	float voltage = lbm_dec_as_float(args[1]);
+
+	if (idx >= MASTER_MAX_CELLS) return ENC_SYM_NIL;
+
+	m_master_cells[idx] = voltage;
+
+	// Update cell count if needed
+	if (voltage > 0 && idx >= m_master_cell_count) {
+		m_master_cell_count = idx + 1;
+	}
+
+	return ENC_SYM_TRUE;
+}
+
+// (master-set-cells cell-list)
+// Set all master cells from a list of voltages
+static lbm_value ext_master_set_cells(lbm_value *args, lbm_uint argn) {
+	if (argn != 1 || !lbm_is_list(args[0])) return ENC_SYM_EERROR;
+
+	// Clear all cells first
+	for (int i = 0; i < MASTER_MAX_CELLS; i++) {
+		m_master_cells[i] = 0.0f;
+	}
+	m_master_cell_count = 0;
+
+	// Set cells from list
+	lbm_value curr = args[0];
+	uint8_t idx = 0;
+
+	while (lbm_is_cons(curr) && idx < MASTER_MAX_CELLS) {
+		lbm_value cell = lbm_car(curr);
+		if (lbm_is_number(cell)) {
+			float v = lbm_dec_as_float(cell);
+			m_master_cells[idx] = v;
+			if (v > 0) {
+				m_master_cell_count = idx + 1;
+			}
+		}
+		idx++;
+		curr = lbm_cdr(curr);
+	}
+
+	return lbm_enc_i(idx);  // Return number of cells set
+}
+
+// (master-get-own-cell cell-idx)
+// Get master's own cell voltage
+static lbm_value ext_master_get_own_cell(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(1);
+
+	uint8_t idx = lbm_dec_as_u32(args[0]);
+	if (idx >= MASTER_MAX_CELLS) return ENC_SYM_NIL;
+
+	return lbm_enc_float(m_master_cells[idx]);
+}
+
+// (master-clear-cells)
+// Clear all master cells
+static lbm_value ext_master_clear_cells(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+
+	for (int i = 0; i < MASTER_MAX_CELLS; i++) {
+		m_master_cells[i] = 0.0f;
+	}
+	m_master_cell_count = 0;
+
+	return ENC_SYM_TRUE;
+}
+
 // (master-send-balance slave-id mask)
 // Send balance command to a slave
 static lbm_value ext_master_send_balance(lbm_value *args, lbm_uint argn) {
@@ -495,7 +611,7 @@ static lbm_value ext_master_parse_can_msg(lbm_value *args, lbm_uint argn) {
 		case 0x9:
 			// Status (0x480 | slave_id)
 			if (len >= 5) {
-				parse_status(slave_id, data);
+				parse_status(slave_id, data, len);
 			}
 			break;
 		default:
@@ -739,7 +855,7 @@ static lbm_value ext_master_can_read_all(lbm_value *args, lbm_uint argn) {
 					if (msg->len >= 8) parse_temperatures(slave_id, msg->data);
 					break;
 				case 0x9:
-					if (msg->len >= 5) parse_status(slave_id, msg->data);
+					if (msg->len >= 5) parse_status(slave_id, msg->data, msg->len);
 					break;
 			}
 		}
@@ -760,20 +876,9 @@ static lbm_value ext_master_can_overflow(lbm_value *args, lbm_uint argn) {
 // VESC BMS Data Integration
 // ============================================================================
 
-// Number of test cells (master's "own" cells with random values)
-#define NUM_TEST_CELLS 32
-#define SLAVE_CELL_OFFSET 32  // Slave cells start at index 32
-
-// Simple pseudo-random number generator state
-static uint32_t prng_state = 12345;
-
-static uint32_t simple_prng(void) {
-	prng_state = prng_state * 1103515245 + 12345;
-	return (prng_state >> 16) & 0x7FFF;
-}
-
-// Update VESC BMS values from master data (for VESC Tool display)
-// Layout: Cells 0-31 = test/random (master), Cells 32-63 = from first active slave
+// Update VESC BMS values from master + slave data (for VESC Tool display)
+// Shows: Master cells first (from Lisp), then slave cells (from CAN)
+// Only cells with voltage > 0 are displayed
 static void update_vesc_bms_values(void) {
 	volatile bms_values *bms = bms_get_values();
 
@@ -783,29 +888,53 @@ static void update_vesc_bms_values(void) {
 	float v_max = 0.0f;
 
 	// ========================================
-	// Part 1: Test cells (0 to 31)
-	// Random voltages around 3.65-3.85V
+	// Part 1: Master's own cells (from Lisp script)
+	// Only include cells with voltage > 0
 	// ========================================
-	for (int i = 0; i < NUM_TEST_CELLS; i++) {
-		// Generate voltage 3650-3850 mV (random variation)
-		uint32_t rand_offset = simple_prng() % 200;  // 0-199 mV variation
-		float v = (3650.0f + (float)rand_offset) / 1000.0f;
-
-		bms->v_cell[num_cells] = v;
-		bms->bal_state[num_cells] = 0;  // Test cells not balancing
-		v_tot += v;
-		if (v < v_min) v_min = v;
-		if (v > v_max) v_max = v;
-		num_cells++;
+	for (int i = 0; i < MASTER_MAX_CELLS && num_cells < BMS_MAX_CELLS; i++) {
+		float v = m_master_cells[i];
+		if (v > 0.0f) {
+			bms->v_cell[num_cells] = v;
+			bms->bal_state[num_cells] = 0;  // Master cells don't balance
+			v_tot += v;
+			if (v < v_min) v_min = v;
+			if (v > v_max) v_max = v;
+			num_cells++;
+		}
 	}
 
 	// ========================================
-	// Part 2: Slave cells (32 to 63)
-	// 32 cells from first active slave
+	// Part 2: Slave cells (from CAN)
+	// Only include cells with voltage > 0
 	// ========================================
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 
-	// Find first active slave
+	for (int slave = 0; slave < MAX_SLAVES && num_cells < BMS_MAX_CELLS; slave++) {
+		if (!m_bms_data.active[slave]) continue;
+
+		// Get actual cell count for this slave
+		int slave_cell_count = m_bms_data.cell_count[slave];
+		if (slave_cell_count < 3 || slave_cell_count > CELLS_PER_SLAVE) {
+			slave_cell_count = CELLS_PER_SLAVE;
+		}
+
+		// Add cells from this slave - only cells with valid voltage
+		for (int i = 0; i < slave_cell_count && num_cells < BMS_MAX_CELLS; i++) {
+			uint16_t mv = m_bms_data.cell_voltages[slave][i];
+			if (mv == 0 || mv == 0xFFFF) {
+				continue;  // Skip empty or error cells
+			}
+			float v = (float)mv / 1000.0f;
+			bms->v_cell[num_cells] = v;
+			bms->bal_state[num_cells] = (m_bms_data.balance_mask[slave] >> i) & 1;
+			v_tot += v;
+			if (v < v_min) v_min = v;
+			if (v > v_max) v_max = v;
+			num_cells++;
+		}
+	}
+
+	// Find first active slave for temperature data
 	int active_slave = -1;
 	for (int i = 0; i < MAX_SLAVES; i++) {
 		if (m_bms_data.active[i]) {
@@ -815,26 +944,7 @@ static void update_vesc_bms_values(void) {
 	}
 
 	if (active_slave >= 0) {
-		// Add slave cells starting at position SLAVE_CELL_OFFSET (32)
-		for (int i = 0; i < CELLS_PER_SLAVE && num_cells < BMS_MAX_CELLS; i++) {
-			uint16_t mv = m_bms_data.cell_voltages[active_slave][i];
-			float v;
-			if (mv > 0 && mv < 0xFFFF) {
-				v = (float)mv / 1000.0f;
-			} else {
-				v = 0.0f;  // Not populated or error
-			}
-			bms->v_cell[num_cells] = v;
-			bms->bal_state[num_cells] = (m_bms_data.balance_mask[active_slave] >> i) & 1;
-			if (v > 0) {
-				v_tot += v;
-				if (v < v_min) v_min = v;
-				if (v > v_max) v_max = v;
-			}
-			num_cells++;
-		}
-
-		// Temperatures from slave
+		// Temperatures from first active slave
 		int num_temps = 0;
 		float t_max = -273.0f;
 		for (int i = 0; i < TEMPS_PER_SLAVE; i++) {
@@ -851,15 +961,16 @@ static void update_vesc_bms_values(void) {
 		bms->temp_ic = (num_temps > 0) ? bms->temps_adc[0] : 0.0f;
 
 		// Balancing state
-		bms->is_balancing = (m_bms_data.balance_mask[active_slave] != 0) ? 1 : 0;
+		uint32_t combined_bal = 0;
+		for (int i = 0; i < MAX_SLAVES; i++) {
+			if (m_bms_data.active[i] && m_bms_data.balance_mask[i] != 0) {
+				combined_bal = 1;
+				break;
+			}
+		}
+		bms->is_balancing = combined_bal;
 		bms->can_id = active_slave + 1;
 	} else {
-		// No active slave - fill remaining cells with zeros
-		for (int i = num_cells; i < BMS_MAX_CELLS; i++) {
-			bms->v_cell[i] = 0.0f;
-			bms->bal_state[i] = 0;
-		}
-		num_cells = NUM_TEST_CELLS;  // Only test cells
 		bms->temp_adc_num = 0;
 		bms->temp_max_cell = 0.0f;
 		bms->temp_ic = 0.0f;
@@ -868,6 +979,12 @@ static void update_vesc_bms_values(void) {
 	}
 
 	xSemaphoreGive(m_data_mutex);
+
+	// Clear remaining cell slots
+	for (int i = num_cells; i < BMS_MAX_CELLS; i++) {
+		bms->v_cell[i] = 0.0f;
+		bms->bal_state[i] = 0;
+	}
 
 	// Update totals
 	bms->cell_num = num_cells;
@@ -878,14 +995,13 @@ static void update_vesc_bms_values(void) {
 	// Update timestamp
 	bms->update_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
 
-	// Simple SOC estimate based on cell voltage (rough approximation)
-	// Li-Ion: 3.0V = 0%, 4.2V = 100%
+	// SOC estimate based on average cell voltage
 	float avg_v = (num_cells > 0) ? (v_tot / num_cells) : 3.7f;
 	bms->soc = (avg_v - 3.0f) / (4.2f - 3.0f);
 	if (bms->soc < 0.0f) bms->soc = 0.0f;
 	if (bms->soc > 1.0f) bms->soc = 1.0f;
 
-	bms->soh = 1.0f;  // Assume 100% health (VESC expects 0.0-1.0)
+	bms->soh = 1.0f;
 }
 
 // (master-update-vesc-bms) - Update VESC BMS values for display in VESC Tool
@@ -913,6 +1029,13 @@ static void load_extensions(bool main_found) {
 	lbm_add_extension("master-get-status", ext_master_get_status);
 	lbm_add_extension("master-get-all-cells", ext_master_get_all_cells);
 	lbm_add_extension("master-get-all-temps", ext_master_get_all_temps);
+	lbm_add_extension("master-get-cell-count", ext_master_get_cell_count);
+
+	// Master's own cells (for VESC Tool display)
+	lbm_add_extension("master-set-cell", ext_master_set_cell);
+	lbm_add_extension("master-set-cells", ext_master_set_cells);
+	lbm_add_extension("master-get-own-cell", ext_master_get_own_cell);
+	lbm_add_extension("master-clear-cells", ext_master_clear_cells);
 
 	// Control extensions
 	lbm_add_extension("master-send-balance", ext_master_send_balance);
@@ -957,6 +1080,10 @@ void hw_init(void) {
 
 	// Initialize BMS data structure
 	memset(&m_bms_data, 0, sizeof(m_bms_data));
+
+	// Initialize master's own cells to 0
+	memset(m_master_cells, 0, sizeof(m_master_cells));
+	m_master_cell_count = 0;
 
 	// Initialize temperatures to invalid marker
 	for (int s = 0; s < MAX_SLAVES; s++) {
