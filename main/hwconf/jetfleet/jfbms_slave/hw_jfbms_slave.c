@@ -1443,6 +1443,103 @@ static lbm_value ext_slave_can_read(lbm_value *args, lbm_uint argn) {
 	return lbm_cons(lbm_enc_u32(msg->id), data_arr);
 }
 
+// ============================================================================
+// VESC BMS Data Integration (for VESC Tool display when connected to slave)
+// ============================================================================
+
+// (slave-update-vesc-bms cells-list temps-list)
+// Update VESC BMS values for display in VESC Tool
+// cells-list: list of cell voltages in V from (bms-get-vcells)
+// temps-list: list of temperatures in C from (bms-get-temps)
+static lbm_value ext_slave_update_vesc_bms(lbm_value *args, lbm_uint argn) {
+	if (argn < 2) {
+		return ENC_SYM_EERROR;
+	}
+
+	if (!lbm_is_list(args[0]) || !lbm_is_list(args[1])) {
+		return ENC_SYM_EERROR;
+	}
+
+	volatile bms_values *bms = bms_get_values();
+
+	int num_cells = 0;
+	float v_tot = 0.0f;
+	float v_min = 9999.0f;
+	float v_max = 0.0f;
+
+	// Extract cell voltages from list (pass all values through, no filtering)
+	uint32_t bal_bitmap = get_bal_bitmap();
+	lbm_value curr = args[0];
+	while (lbm_is_cons(curr) && num_cells < BMS_MAX_CELLS) {
+		lbm_value cell = lbm_car(curr);
+		if (lbm_is_number(cell)) {
+			float v = lbm_dec_as_float(cell);
+			bms->v_cell[num_cells] = v;
+			bms->bal_state[num_cells] = (bal_bitmap >> num_cells) & 1;
+			v_tot += v;
+			if (v < v_min) v_min = v;
+			if (v > v_max) v_max = v;
+			num_cells++;
+		}
+		curr = lbm_cdr(curr);
+	}
+
+	// Extract temperatures from list (only skip 999.0 invalid marker)
+	int num_temps = 0;
+	float t_max = -273.0f;
+	curr = args[1];
+	while (lbm_is_cons(curr) && num_temps < BMS_MAX_TEMPS) {
+		lbm_value temp = lbm_car(curr);
+		if (lbm_is_number(temp)) {
+			float t = lbm_dec_as_float(temp);
+			// Only skip 999.0 invalid marker (means sensor not connected)
+			if (t < 900.0f) {
+				bms->temps_adc[num_temps] = t;
+				if (t > t_max) t_max = t;
+				num_temps++;
+			}
+		}
+		curr = lbm_cdr(curr);
+	}
+
+	// Clear remaining cell slots
+	for (int i = num_cells; i < BMS_MAX_CELLS; i++) {
+		bms->v_cell[i] = 0.0f;
+		bms->bal_state[i] = 0;
+	}
+
+	// Update cell totals
+	bms->cell_num = num_cells;
+	bms->v_tot = v_tot;
+	bms->v_cell_min = (num_cells > 0) ? v_min : 0.0f;
+	bms->v_cell_max = (num_cells > 0) ? v_max : 0.0f;
+
+	// Update temperature data
+	bms->temp_adc_num = num_temps;
+	bms->temp_max_cell = (num_temps > 0) ? t_max : 0.0f;
+	bms->temp_ic = (num_temps > 0) ? bms->temps_adc[0] : 0.0f;  // BQ1 internal temp
+
+	// Balancing state
+	bms->is_balancing = (get_bal_bitmap() != 0) ? 1 : 0;
+
+	// Slave ID from config
+	main_config_t *cfg = (main_config_t *)&backup.config;
+	bms->can_id = cfg->slave_id;
+
+	// Update timestamp
+	bms->update_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+	// SOC estimate based on average cell voltage (simple linear approximation)
+	float avg_v = (num_cells > 0) ? (v_tot / num_cells) : 3.7f;
+	bms->soc = (avg_v - 3.0f) / (4.2f - 3.0f);
+	if (bms->soc < 0.0f) bms->soc = 0.0f;
+	if (bms->soc > 1.0f) bms->soc = 1.0f;
+
+	bms->soh = 1.0f;
+
+	return ENC_SYM_TRUE;
+}
+
 
 static void load_extensions(bool main_found) {
 	if (main_found) {
@@ -1488,6 +1585,9 @@ static void load_extensions(bool main_found) {
 	// Direct CAN buffer extensions (bypass broken event system)
 	lbm_add_extension("slave-can-available", ext_slave_can_available);
 	lbm_add_extension("slave-can-read", ext_slave_can_read);
+
+	// VESC BMS integration (for VESC Tool display when connected to slave)
+	lbm_add_extension("slave-update-vesc-bms", ext_slave_update_vesc_bms);
 
 	// HW-specific commands
 	lbm_add_extension("bms-direct-cmd", ext_direct_cmd);

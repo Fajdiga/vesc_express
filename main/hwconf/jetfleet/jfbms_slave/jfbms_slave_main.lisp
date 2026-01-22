@@ -118,6 +118,9 @@
         ; Broadcast all data via CAN (cell msgs + 1 temp + 1 status)
         (bms-broadcast-all slave-id cells temps bq1-ok bq2-ok)
 
+        ; Update local VESC BMS values (for VESC Tool display when connected to slave)
+        (slave-update-vesc-bms cells temps)
+
         ; Check balance watchdog
         (check-bal-watchdog)
 

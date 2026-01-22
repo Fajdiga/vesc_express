@@ -2,7 +2,14 @@
 
 ## Claude Code Instructions
 
-**IMPORTANT:** After completing any code change or task, you MUST update the "Development History" section at the bottom of this file with:
+**WORKFLOW - ALWAYS FOLLOW THIS:**
+1. **PROPOSE FIRST** - Before making ANY code changes, describe what you plan to change and why
+2. **WAIT FOR APPROVAL** - Do not implement until the user explicitly approves the approach
+3. **THEN IMPLEMENT** - Only after approval, make the changes
+4. **TEST & CONFIRM** - Wait until user confirms changes are working
+5. **UPDATE HISTORY** - Only after confirmed working, update Development History section
+
+**Development History:** Update the "Development History" section at the bottom of this file ONLY after changes are tested and confirmed working:
 1. Today's date as a new ### heading (if not already present for today)
 2. Brief description of what was changed and why
 3. Files modified
@@ -98,7 +105,7 @@ For proper Master-Slave communication:
 ### Slave
 - `main/hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.c` - CAN TX logic, BQ76952 communication
 - `main/hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.h` - Hardware configuration
-- `main/hwconf/jetfleet/jfbms_slave/can_demo.lisp` - Demo script (simulated data)
+- `main/hwconf/jetfleet/jfbms_slave/jfbms_slave_main.lisp` - Main script (BQ76952 communication, CAN broadcast)
 
 ### Common
 - `main/comm_can.c` - CAN driver with `hw_can_rx_hook` for hardware-specific handling
@@ -131,6 +138,7 @@ For proper Master-Slave communication:
 |-----------|-------------|
 | `(bms-get-slave-id)` | Get configured slave ID |
 | `(bms-broadcast-all slave-id cells temps bal-mask faults)` | Broadcast all data via CAN |
+| `(slave-update-vesc-bms cells temps)` | Update VESC BMS values for VESC Tool display |
 
 ---
 
@@ -149,131 +157,19 @@ For proper Master-Slave communication:
 
 ## Development History
 
-### 2026-01-21: Dynamic Cell Count in VESC Tool
+### 2026-01-09: Slave ID Runtime Configuration
+- Slave ID now configurable via VESC Tool without restart
 
-**Problem:** VESC Tool always showed 64 cells (32 test + 32 slave), even if the slave had fewer cells configured. Unused cells showed as 0.0V.
+### 2026-01-09: CAN Protocol Implementation
+- Complete 11-bit CAN master-slave protocol
+- 8 cell voltage messages (32 cells total)
+- 1 temperature message (4 sensors)
+- 1 status message (balance mask + faults)
 
-**Solution:** Slave now sends actual cell count in status message. Master only displays configured cells.
-
-**Changes:**
-
-**Slave (`hw_jfbms_slave.c`):**
-- Status message extended from 5 to 6 bytes
-- New byte 5: cell count (cells_ic1 + cells_ic2)
-- `can_send_status()` now takes cell_count parameter
-
-**Master (`hw_jfbms_master.c`):**
-- Added `cell_count[MAX_SLAVES]` to `master_bms_data_t` structure
-- `parse_status()` extracts cell count (backwards compatible - defaults to 32)
-- `update_vesc_bms_values()` now:
-  - Only displays actual cells from each slave (no more test cells)
-  - Supports multiple slaves - cells are concatenated
-  - Uses `cell_count` from slave to determine how many cells to show
-- New Lisp extension: `(master-get-cell-count slave-id)`
-
-**Result:** VESC Tool now shows only the configured number of cells (e.g., 16 cells if cells_ic1=16, cells_ic2=0).
-
----
-
-### 2026-01-22: CAN Bus Optimization - Send Only Required Cell Messages
-
-**Problem:** Slave always sent 8 cell voltage messages (32 cells) even if only 12 cells were configured. This wasted CAN bus bandwidth unnecessarily.
-
-**Solution:** Slave now only sends the cell messages needed for configured cells.
-
-**Changes:**
-
-**Slave (`hw_jfbms_slave.c`):**
-- `can_send_all_cells()` now calculates required messages: `num_msgs = (M_CELLS + 3) / 4`
-- 12 cells = 3 messages, 16 cells = 4 messages, etc.
-
-**CAN Bus Load Reduction:**
-| Cells | Before (msgs/cycle) | After (msgs/cycle) | Reduction |
-|-------|---------------------|--------------------| ----------|
-| 12    | 10                  | 5                  | 50%       |
-| 16    | 10                  | 6                  | 40%       |
-| 20    | 10                  | 7                  | 30%       |
-| 32    | 10                  | 10                 | 0%        |
-
-**Note:** Cell count in Status message (from 2026-01-21 change) enables this optimization - master knows exact cell count, doesn't need all 32 positions.
-
-**Protocol Documentation:** Updated `BMS_MASTER_SLAVE_PROTOCOL.md` with new transmission sequence and optimization details.
-
----
-
-### 2026-01-22: Slave Balancing Refresh Optimization
-
-**Problem:** Slave was refreshing BQ76952 balancing every 100ms in the main loop, even though master only sends balance commands every 1 second. This caused unnecessary I2C traffic (10 writes/sec instead of 1).
-
-**Solution:** Removed redundant 100ms balancing refresh from main loop. Balancing is now only refreshed when a balance command is received from master.
-
-**Changes:**
-
-**Slave (`jfbms_slave_main.lisp`):**
-- Removed lines that called `bms-set-bal-bitmap` every 100ms in main loop
-- Balancing refresh now only occurs in `process-can-messages()` when master sends command
-
-**Result:** I2C traffic reduced from ~10 writes/sec to 1 write/sec. BQ76952 18-second timeout still satisfied since master sends commands every 1 second.
-
----
-
-### 2026-01-13: Balancing Fixes, LispBM Corrections & Build Improvements
-
-**BQ76952 Balancing Timeout Fix:**
-- BQ76952 has internal ~18 second timeout for CB_ACTIVE_CELLS command
-- Writing the SAME value does NOT reset the timeout - must use TOGGLE approach
-- Fix: Write 0 first, then write actual mask to reset internal timer
-- Adjacent cells cannot balance simultaneously (BQ76952 limitation) - use odd/even groups
-- Master sends balance command every 1 second to slave
-- Slave refreshes BQ76952 when balance command received (toggle approach in C code)
-
-**LispBM Fixes:**
-- `bitwise-or` only supports 2 arguments in LispBM - replaced with `+` for CAN ID calculation and byte extraction (works because bits don't overlap)
-- `(systime)` resets each `loopwhile` iteration - use counter-based timing instead
-- Global variables (`def`, `setq`, `set`) don't persist across loop iterations - use mutable list: `(def state (list 0))` with `(setix state 0 value)` to update
-- `(to-str x)` includes type suffix like `"0u32"` - use `(str-from-n x "%d")` for clean output
-- Fixed in both master and slave Lisp scripts
-
-**Build System Improvements:**
-- Added `build_both.bat` - builds both master and slave firmware
-- Added `.vscode/settings.json` for proper ESP-IDF VS Code integration
-- Fixed `${ProjectId}` error for other developers
-- Increased `BMS_MAX_CELLS` from 50 to 64 (for dual BQ76952 config)
-- Default CMakeLists.txt builds master (change paths for slave)
-
-**Files Changed:**
-- `main/hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.c` - Always refresh CB_ACTIVE_CELLS
-- `main/hwconf/jetfleet/jfbms_slave/jfbms_slave_main.lisp` - bitwise-or → +
-- `main/hwconf/jetfleet/jfbms_slave/can_demo.lisp` - bitwise-or → +
-- `main/hwconf/jetfleet/jfbms_master/jfbms_master_main.lisp` - Counter-based timing, mutable state list, str-from-n formatting
-- `main/datatypes.h` - BMS_MAX_CELLS 50 → 64
-
----
-
-### 2026-01-13: SOC/SOH Fix, Temperature Filtering & Slave ID from Config
-
-**SOC/SOH Fix:**
-- Fixed SOC and SOH calculation - VESC expects 0.0-1.0 (fraction), not 0-100 (percent)
-- Was showing 1724% SOH due to incorrect scaling
-
-**Temperature Improvements:**
-- Invalid temperatures now correctly use `0x7FFF` marker instead of `-1.0°C`
-- Changed `NAN_TO_M1` macro to `NAN_TO_INVALID` returning 999.0°C (outside valid range)
-- Master filters out invalid temps and only displays valid ones
-- Temperature naming in Lisp output:
-  - `BQ1` = BQ76952 #1 internal die temperature
-  - `Ext1` = External NTC on TS1 pin
-  - `Ext2` = External NTC on TS3 pin
-  - `BQ2` = BQ76952 #2 internal die temperature
-- Note: VESC Tool still shows T1, T2, T3... (hardcoded in app)
-
-**Slave Configuration:**
-- Slave ID now reads from VESC Tool config via `(bms-get-slave-id)` instead of hardcoded value
-- Fixed Lisp syntax errors (`var` → `def` for top-level, `spawn-trap` → `spawn`)
-
-**Debug Features:**
-- Added debug mode to master script showing raw CAN messages with parsed values
-- Shows first 20 raw messages then switches to normal operation
+### 2026-01-12: Master Implementation
+- Created JFBMS Master device based on slave architecture
+- Implemented CAN RX via LispBM event system (`event-can-sid`) - later found to be broken
+- Added all master Lisp extensions for data access
 
 ### 2026-01-13: Master CAN Reception Fix & VESC BMS Integration
 - Fixed CAN ACK mode (`HW_CAN_NO_ACK_MODE 0`) on both master and slave
@@ -286,19 +182,32 @@ For proper Master-Slave communication:
 - Master now successfully receives all 32 cells, 4 temps, and status at 20Hz
 - Removed unnecessary GPIO configuration in `comm_can.c` that was causing signal issues
 
-### 2026-01-12: Master Implementation
-- Created JFBMS Master device based on slave architecture
-- Implemented CAN RX via LispBM event system (`event-can-sid`) - later found to be broken
-- Added all master Lisp extensions for data access
+### 2026-01-13: SOC/SOH Fix, Temperature Filtering & Slave ID from Config
+- Fixed SOC and SOH calculation - VESC expects 0.0-1.0 (fraction), not 0-100 (percent)
+- Invalid temperatures now correctly use `0x7FFF` marker instead of `-1.0°C`
+- Slave ID now reads from VESC Tool config via `(bms-get-slave-id)` instead of hardcoded value
 
-### 2026-01-09: CAN Protocol Implementation
-- Complete 11-bit CAN master-slave protocol
-- 8 cell voltage messages (32 cells total)
-- 1 temperature message (4 sensors)
-- 1 status message (balance mask + faults)
+### 2026-01-13: Balancing Fixes, LispBM Corrections & Build Improvements
+- BQ76952 balancing timeout fix: use TOGGLE approach (write 0, then value) to reset ~18s internal timer
+- LispBM fixes: `bitwise-or` → `+`, counter-based timing instead of `systime`, mutable list for state
+- Build system: Added `build_both.bat`, fixed VS Code integration, increased `BMS_MAX_CELLS` to 64
 
-### 2026-01-09: Slave ID Runtime Configuration
-- Slave ID now configurable via VESC Tool without restart
+### 2026-01-21: Dynamic Cell Count in VESC Tool
+- Slave sends actual cell count in status message (byte 5)
+- Master only displays configured cells, no more empty 0.0V slots
+- New extension: `(master-get-cell-count slave-id)`
+
+### 2026-01-22: CAN Bus Optimization
+- Slave only sends required cell messages (12 cells = 3 msgs instead of 8)
+- Reduced CAN bus load by 40-50% for typical configurations
+
+### 2026-01-22: Slave Balancing Refresh Optimization
+- Removed redundant 100ms balancing refresh from main loop
+- I2C traffic reduced from ~10 writes/sec to 1 write/sec
+
+### 2026-01-22: VESC Tool BMS Display on Slave
+- Added `slave-update-vesc-bms` extension for local VESC BMS display
+- VESC Tool now shows cell voltages, temperatures when connected to slave
 
 ---
 
