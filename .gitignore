@@ -10,3 +10,16 @@ sdkconfig.old
 # feel like making that decision right now...
 managed_components/
 dependencies.lock
+
+# User-specific / local files
+.vscode/
+.cache/
+.clangd
+build_master/
+build_slave/
+
+# IDE and editor files
+*.swp
+*.swo
+*~
+.idea/

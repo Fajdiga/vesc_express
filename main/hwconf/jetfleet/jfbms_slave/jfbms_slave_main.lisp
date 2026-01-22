@@ -115,12 +115,7 @@
                               " BalMask: 0x" (str-from-n (bms-get-bal-bitmap) "%08X")))
         })
 
-        ; Refresh BQ balancing every 100ms to test if this fixes 30s timeout
-        (var current-mask (bms-get-bal-bitmap))
-        (if (> current-mask 0)
-            (bms-set-bal-bitmap current-mask))
-
-        ; Broadcast all data via CAN (8 cell msgs + 1 temp + 1 status)
+        ; Broadcast all data via CAN (cell msgs + 1 temp + 1 status)
         (bms-broadcast-all slave-id cells temps bq1-ok bq2-ok)
 
         ; Check balance watchdog

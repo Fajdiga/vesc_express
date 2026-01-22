@@ -10,7 +10,8 @@
 - Uses 11-bit standard CAN IDs (not 29-bit extended like VESC protocol)
 - Slaves broadcast data periodically (no polling)
 - Master sends only balance commands
-- Always sends all 32 cell positions (zeros for unpopulated, 0xFFFF for read errors)
+- Only sends cell voltage messages needed for configured cells (optimizes CAN bus load)
+- Status message includes cell count so master knows configuration
 - Data format matches BQ76952 native format for easy integration
 
 ---
@@ -77,7 +78,7 @@ Bit:  10  9  8  7 │ 6  5  4 │ 3  2  1  0
 | 0x6  | Slave→Master | Cell voltages 25-28 |
 | 0x7  | Slave→Master | Cell voltages 29-32 |
 | 0x8  | Slave→Master | Temperatures |
-| 0x9  | Slave→Master | Status (balance state + faults) |
+| 0x9  | Slave→Master | Status (balance state + faults + cell count) |
 | 0xA  | Master→Slave | Balance command |
 | 0xB-0xF | - | Reserved |
 
@@ -111,8 +112,8 @@ Byte:   0      1      2      3      4      5      6      7
 | 0xFFFF | BQ chip failed to initialize (all cells on that chip) |
 
 **Cell Position Mapping:**
-- Cells 1-16: BQ1 chip (positions always sent, zeros if not populated)
-- Cells 17-32: BQ2 chip (positions always sent, zeros if not populated)
+- Cells 1-16: BQ1 chip (messages sent only if cells configured)
+- Cells 17-32: BQ2 chip (messages sent only if cells_ic2 > 0)
 
 Master infers cell configuration from non-zero voltages. Example with 5s on BQ1, 5s on BQ2:
 ```
@@ -175,20 +176,21 @@ data[1] = (temp >> 8) & 0xFF;  // 0x00
 **CAN ID:** `0x480 | slave_id`
 
 ```
-Byte:   0      1      2      3      4
-     ┌──────┬──────┬──────┬──────┬──────┐
-     │BalMsk│BalMsk│BalMsk│BalMsk│Faults│
-     │ [7:0]│[15:8]│[23:16]│[31:24]│      │
-     └──────┴──────┴──────┴──────┴──────┘
+Byte:   0      1      2      3      4      5
+     ┌──────┬──────┬──────┬──────┬──────┬──────┐
+     │BalMsk│BalMsk│BalMsk│BalMsk│Faults│CellCt│
+     │ [7:0]│[15:8]│[23:16]│[31:24]│      │      │
+     └──────┴──────┴──────┴──────┴──────┴──────┘
 ```
 
-**DLC:** 5 bytes
+**DLC:** 6 bytes (2 bytes reserved for future use)
 
 **Fields:**
 | Bytes | Field | Description |
 |-------|-------|-------------|
 | 0-3 | BalanceMask | 32-bit bitmap, bit N = cell N is currently balancing |
 | 4 | Faults | Fault flags (see below) |
+| 5 | CellCount | Total configured cells (cells_ic1 + cells_ic2), range 3-32 |
 
 **Fault Byte (Byte 4):**
 | Bit | Meaning |
@@ -197,7 +199,12 @@ Byte:   0      1      2      3      4
 | 1 | BQ2 initialization failed |
 | 2-7 | Reserved (set to 0) |
 
+**CellCount (Byte 5):**
+Tells the master exactly how many cells are configured on this slave. This allows the master to display only actual cells in VESC Tool instead of showing zeros for unpopulated positions.
+
 This message confirms which cells are actually balancing, allowing master to verify balance commands were applied. The fault bits indicate if slave failed to initialize a BQ76952 chip at startup.
+
+**Backwards Compatibility:** Master accepts both 5-byte (old firmware) and 6-byte (new firmware) status messages. If CellCount byte is missing, master assumes 32 cells.
 
 **Note:** Single-chip slaves (no BQ2) set cells 17-32 to 0x0000 with fault bit 1 = 0 (not an error, just not present).
 
@@ -241,19 +248,25 @@ Master is responsible for respecting BQ chip limits - only set bits for cells th
 Each slave sends its messages back-to-back as fast as the CAN bus allows:
 
 ```
-Cell voltages 1-4   (always, zeros for unpopulated)
-Cell voltages 5-8   (always)
-Cell voltages 9-12  (always)
-Cell voltages 13-16 (always)
-Cell voltages 17-20 (always)
-Cell voltages 21-24 (always)
-Cell voltages 25-28 (always)
-Cell voltages 29-32 (always)
+Cell voltages 1-4   (if cells >= 1)
+Cell voltages 5-8   (if cells >= 5)
+Cell voltages 9-12  (if cells >= 9)
+Cell voltages 13-16 (if cells >= 13)
+Cell voltages 17-20 (if cells >= 17)
+Cell voltages 21-24 (if cells >= 21)
+Cell voltages 25-28 (if cells >= 25)
+Cell voltages 29-32 (if cells >= 29)
 Temperatures
 Status
 ```
 
-**Total per slave:** 10 messages × 100ms = 100 messages/second per slave
+**Message count depends on cell configuration:**
+| Cells | Cell Messages | Total Messages | Messages/sec |
+|-------|---------------|----------------|--------------|
+| 12    | 3             | 5              | 50           |
+| 16    | 4             | 6              | 60           |
+| 20    | 5             | 7              | 70           |
+| 32    | 8             | 10             | 100          |
 
 **No artificial delays needed.** CAN arbitration automatically handles bus access:
 - If bus is idle → transmit immediately
@@ -295,7 +308,7 @@ Balance (slave 8):   0x508
 ### Master Integration
 - Receives slave data via standard CAN RX
 - Aggregates all cell voltages into single array (zeros = not present)
-- Infers cell configuration from non-zero voltage positions
+- Uses cell count from Status message to know exact configuration
 - Global min/max voltage across all slaves for balancing decisions
 - Resends balance commands periodically (<10s) to maintain balancing
 - Retries balance command if Status doesn't match expected
@@ -303,7 +316,8 @@ Balance (slave 8):   0x508
 ### Slave Implementation
 - Initializes BQ76952 chips at startup, sets fault bits if init fails
 - Reads BQ76952 at ~50ms internally
-- Broadcasts all 32 cell positions every 100ms (zeros for unpopulated, 0xFFFF if init failed)
+- Broadcasts only required cell messages every 100ms (optimizes CAN bus load)
+- Sends cell count in Status message so master knows configuration
 - Listens for balance commands matching its ID (0x501-0x508)
 - Applies balance mask to BQ76952 CB_ACTIVE_CELLS register
 - Stops balancing if no command received for 10 seconds (watchdog)

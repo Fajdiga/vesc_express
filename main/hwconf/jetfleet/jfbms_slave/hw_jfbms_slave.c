@@ -63,7 +63,7 @@ static char *error_comm_bq2 = "BQ2 communication error";
 // CAN ID Format: (msg_type << 7) | slave_id
 //
 // Message Types (Slave -> Master):
-//   0x0-0x7 = Cell voltages (4 cells per message, 8 messages for 32 cells)
+//   0x0-0x7 = Cell voltages (4 cells per message, only sends messages needed)
 //   0x8     = Temperatures (4 temps)
 //   0x9     = Status (balance mask + faults)
 //
@@ -91,12 +91,17 @@ static bool subcommands_write16(uint8_t dev_addr, uint16_t command, uint16_t dat
 // ============================================================================
 
 /**
- * Send all 32 cell positions (8 CAN messages, 4 cells each)
+ * Send cell voltages (only messages needed for configured cell count)
+ * Optimization: 12 cells sends 3 messages instead of 8, reducing CAN bus load
  * @param slave_id  Slave ID (1-8)
- * @param cells_mv  Array of 32 cell voltages in mV (0 = not populated, 0xFFFF = error)
+ * @param cells_mv  Array of cell voltages in mV (0 = not populated, 0xFFFF = error)
  */
 static void can_send_all_cells(uint8_t slave_id, uint16_t *cells_mv) {
-	for (uint8_t msg_type = 0; msg_type < 8; msg_type++) {
+	// Only send messages needed for configured cells (4 cells per message)
+	uint8_t num_msgs = (M_CELLS + 3) / 4;  // Round up: 12 cells = 3 msgs
+	if (num_msgs > 8) num_msgs = 8;        // Cap at 8 messages (32 cells max)
+
+	for (uint8_t msg_type = 0; msg_type < num_msgs; msg_type++) {
 		uint8_t buf[8];
 		uint8_t base_cell = msg_type * 4;
 

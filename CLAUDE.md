@@ -1,5 +1,17 @@
 # JFBMS Project Status
 
+## Claude Code Instructions
+
+**IMPORTANT:** After completing any code change or task, you MUST update the "Development History" section at the bottom of this file with:
+1. Today's date as a new ### heading (if not already present for today)
+2. Brief description of what was changed and why
+3. Files modified
+4. Any important technical details or gotchas discovered
+
+Keep entries concise but informative for future reference. This ensures project continuity and documents all changes.
+
+---
+
 ## Current Stage: Master-Slave Communication - WORKING
 
 **Date:** 2026-01-13
@@ -163,6 +175,48 @@ For proper Master-Slave communication:
 
 ---
 
+### 2026-01-22: CAN Bus Optimization - Send Only Required Cell Messages
+
+**Problem:** Slave always sent 8 cell voltage messages (32 cells) even if only 12 cells were configured. This wasted CAN bus bandwidth unnecessarily.
+
+**Solution:** Slave now only sends the cell messages needed for configured cells.
+
+**Changes:**
+
+**Slave (`hw_jfbms_slave.c`):**
+- `can_send_all_cells()` now calculates required messages: `num_msgs = (M_CELLS + 3) / 4`
+- 12 cells = 3 messages, 16 cells = 4 messages, etc.
+
+**CAN Bus Load Reduction:**
+| Cells | Before (msgs/cycle) | After (msgs/cycle) | Reduction |
+|-------|---------------------|--------------------| ----------|
+| 12    | 10                  | 5                  | 50%       |
+| 16    | 10                  | 6                  | 40%       |
+| 20    | 10                  | 7                  | 30%       |
+| 32    | 10                  | 10                 | 0%        |
+
+**Note:** Cell count in Status message (from 2026-01-21 change) enables this optimization - master knows exact cell count, doesn't need all 32 positions.
+
+**Protocol Documentation:** Updated `BMS_MASTER_SLAVE_PROTOCOL.md` with new transmission sequence and optimization details.
+
+---
+
+### 2026-01-22: Slave Balancing Refresh Optimization
+
+**Problem:** Slave was refreshing BQ76952 balancing every 100ms in the main loop, even though master only sends balance commands every 1 second. This caused unnecessary I2C traffic (10 writes/sec instead of 1).
+
+**Solution:** Removed redundant 100ms balancing refresh from main loop. Balancing is now only refreshed when a balance command is received from master.
+
+**Changes:**
+
+**Slave (`jfbms_slave_main.lisp`):**
+- Removed lines that called `bms-set-bal-bitmap` every 100ms in main loop
+- Balancing refresh now only occurs in `process-can-messages()` when master sends command
+
+**Result:** I2C traffic reduced from ~10 writes/sec to 1 write/sec. BQ76952 18-second timeout still satisfied since master sends commands every 1 second.
+
+---
+
 ### 2026-01-13: Balancing Fixes, LispBM Corrections & Build Improvements
 
 **BQ76952 Balancing Timeout Fix:**
@@ -171,7 +225,7 @@ For proper Master-Slave communication:
 - Fix: Write 0 first, then write actual mask to reset internal timer
 - Adjacent cells cannot balance simultaneously (BQ76952 limitation) - use odd/even groups
 - Master sends balance command every 1 second to slave
-- Slave refreshes BQ76952 every 100ms with toggle approach
+- Slave refreshes BQ76952 when balance command received (toggle approach in C code)
 
 **LispBM Fixes:**
 - `bitwise-or` only supports 2 arguments in LispBM - replaced with `+` for CAN ID calculation and byte extraction (works because bits don't overlap)
