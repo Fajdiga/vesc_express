@@ -33,6 +33,7 @@
 #include "comm_can.h"
 #include "bms.h"
 #include "buffer.h"
+#include "driver/ledc.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -81,6 +82,7 @@ static char *error_comm_bq2 = "BQ2 communication error";
 #define CAN_ID_TEMPS(slave_id)        (0x400 | (slave_id))
 #define CAN_ID_STATUS(slave_id)       (0x480 | (slave_id))
 #define CAN_ID_BAL_CMD(slave_id)      (0x500 | (slave_id))
+#define CAN_ID_BUZZER_CMD(slave_id)   (0x580 | (slave_id))
 
 // Forward declarations (functions defined later in file)
 static void select_bq_chip(uint8_t chip_num);
@@ -1377,6 +1379,77 @@ static lbm_value ext_get_slave_id(lbm_value *args, lbm_uint argn) {
 }
 
 // ============================================================================
+// Buzzer Beep Task
+// ============================================================================
+
+#define BUZZER_LEDC_CHANNEL  LEDC_CHANNEL_0
+#define BUZZER_LEDC_TIMER    LEDC_TIMER_0
+#define BUZZER_FREQ_HZ       4000
+#define BUZZER_DUTY_BITS     LEDC_TIMER_10_BIT
+#define BUZZER_DUTY_ON       512  // 50% of 1024
+
+static volatile uint8_t buzzer_beep_count = 0;
+static volatile uint16_t buzzer_beep_duration_ms = 100;
+static TaskHandle_t buzzer_task_handle = NULL;
+
+static void buzzer_pwm_on(void) {
+	ledc_timer_config_t timer_cfg = {
+		.speed_mode       = LEDC_LOW_SPEED_MODE,
+		.timer_num        = BUZZER_LEDC_TIMER,
+		.duty_resolution  = BUZZER_DUTY_BITS,
+		.freq_hz          = BUZZER_FREQ_HZ,
+		.clk_cfg          = LEDC_AUTO_CLK,
+	};
+	ledc_timer_config(&timer_cfg);
+
+	ledc_channel_config_t ch_cfg = {
+		.speed_mode     = LEDC_LOW_SPEED_MODE,
+		.channel        = BUZZER_LEDC_CHANNEL,
+		.timer_sel      = BUZZER_LEDC_TIMER,
+		.intr_type      = LEDC_INTR_DISABLE,
+		.gpio_num       = PIN_BUZZER,
+		.duty           = BUZZER_DUTY_ON,
+		.hpoint         = 0,
+	};
+	ledc_channel_config(&ch_cfg);
+}
+
+static void buzzer_pwm_off(void) {
+	ledc_set_duty(LEDC_LOW_SPEED_MODE, BUZZER_LEDC_CHANNEL, 0);
+	ledc_update_duty(LEDC_LOW_SPEED_MODE, BUZZER_LEDC_CHANNEL);
+	ledc_stop(LEDC_LOW_SPEED_MODE, BUZZER_LEDC_CHANNEL, 0);
+	gpio_set_level(PIN_BUZZER, 0);
+}
+
+static void buzzer_task(void *arg) {
+	(void)arg;
+	while (true) {
+		// Wait for notification
+		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+		uint8_t count = buzzer_beep_count;
+		uint16_t dur = buzzer_beep_duration_ms;
+
+		for (uint8_t i = 0; i < count; i++) {
+			buzzer_pwm_on();
+			vTaskDelay(pdMS_TO_TICKS(dur));
+			buzzer_pwm_off();
+			if (i < count - 1) {
+				vTaskDelay(pdMS_TO_TICKS(dur));
+			}
+		}
+	}
+}
+
+static void buzzer_request_beeps(uint8_t count, uint16_t duration_ms) {
+	buzzer_beep_count = count;
+	buzzer_beep_duration_ms = duration_ms;
+	if (buzzer_task_handle) {
+		xTaskNotifyGive(buzzer_task_handle);
+	}
+}
+
+// ============================================================================
 // Direct CAN RX Buffer - bypasses broken event system
 // ============================================================================
 
@@ -1396,6 +1469,19 @@ static volatile uint32_t can_rx_overflow = 0;
 // Hardware CAN hook - called from comm_can.c for every received message
 void hw_can_rx_hook(uint32_t id, uint8_t *data, int len, bool is_ext) {
 	if (is_ext) return;  // Only handle standard 11-bit IDs
+
+	// Handle buzzer command directly (don't buffer it)
+	// CAN ID 0x580 | slave_id, data: [count(u8), duration_ms_lo(u8), duration_ms_hi(u8)]
+	uint8_t slave_id = id & 0x7F;
+	(void)slave_id;  // Could filter by own slave_id if needed
+	if ((id & 0x780) == 0x580 && len >= 3) {
+		uint8_t count = data[0];
+		uint16_t duration_ms = (uint16_t)data[1] | ((uint16_t)data[2] << 8);
+		if (count > 0 && count <= 20 && duration_ms > 0 && duration_ms <= 5000) {
+			buzzer_request_beeps(count, duration_ms);
+		}
+		return;
+	}
 
 	int next_write = (can_rx_write + 1) % CAN_BUF_SIZE;
 	if (next_write == can_rx_read) {
@@ -1638,6 +1724,9 @@ void hw_init(void) {
 	gpconf.pin_bit_mask = BIT(PIN_BUZZER);
 	gpconf.mode         = GPIO_MODE_OUTPUT;
 	gpio_config(&gpconf);
+
+	// Create buzzer beep task
+	xTaskCreate(buzzer_task, "buzzer", 1024, NULL, 5, &buzzer_task_handle);
 
 	// Initialize I2C
 	i2c_config_t conf = {

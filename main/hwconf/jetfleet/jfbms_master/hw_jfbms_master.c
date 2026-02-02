@@ -60,6 +60,7 @@
 #define CAN_ID_TEMPS(slave_id)        (0x400 | (slave_id))
 #define CAN_ID_STATUS(slave_id)       (0x480 | (slave_id))
 #define CAN_ID_BAL_CMD(slave_id)      (0x500 | (slave_id))
+#define CAN_ID_BUZZER_CMD(slave_id)   (0x580 | (slave_id))
 
 // Extract slave_id and msg_type from CAN ID
 #define CAN_GET_SLAVE_ID(id)          ((id) & 0x7F)
@@ -93,6 +94,20 @@ static void can_send_balance_cmd(uint8_t slave_id, uint32_t bal_mask) {
 	buf[3] = (bal_mask >> 24) & 0xFF;
 
 	comm_can_transmit_sid(CAN_ID_BAL_CMD(slave_id), buf, 4);
+}
+
+/**
+ * Send buzzer beep command to a slave
+ * @param slave_id     Slave ID (1-8)
+ * @param count        Number of beeps (1-20)
+ * @param duration_ms  Duration of each beep in ms (1-5000)
+ */
+static void can_send_buzzer_cmd(uint8_t slave_id, uint8_t count, uint16_t duration_ms) {
+	uint8_t buf[3];
+	buf[0] = count;
+	buf[1] = (duration_ms >> 0) & 0xFF;
+	buf[2] = (duration_ms >> 8) & 0xFF;
+	comm_can_transmit_sid(CAN_ID_BUZZER_CMD(slave_id), buf, 3);
 }
 
 // ============================================================================
@@ -476,6 +491,24 @@ static lbm_value ext_master_send_balance(lbm_value *args, lbm_uint argn) {
 	if (slave_id < 1 || slave_id > MAX_SLAVES) return ENC_SYM_NIL;
 
 	can_send_balance_cmd(slave_id, mask);
+
+	return ENC_SYM_TRUE;
+}
+
+// (do-beeps slave-id count duration-ms)
+// Send buzzer beep command to a slave via CAN
+static lbm_value ext_do_beeps(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(3);
+
+	uint8_t slave_id = lbm_dec_as_u32(args[0]);
+	uint8_t count = lbm_dec_as_u32(args[1]);
+	uint16_t duration_ms = lbm_dec_as_u32(args[2]);
+
+	if (slave_id < 1 || slave_id > MAX_SLAVES) return ENC_SYM_NIL;
+	if (count == 0 || count > 20) return ENC_SYM_NIL;
+	if (duration_ms == 0 || duration_ms > 5000) return ENC_SYM_NIL;
+
+	can_send_buzzer_cmd(slave_id, count, duration_ms);
 
 	return ENC_SYM_TRUE;
 }
@@ -1039,6 +1072,7 @@ static void load_extensions(bool main_found) {
 
 	// Control extensions
 	lbm_add_extension("master-send-balance", ext_master_send_balance);
+	lbm_add_extension("do-beeps", ext_do_beeps);
 
 	// Status extensions
 	lbm_add_extension("master-slave-active?", ext_master_slave_active);

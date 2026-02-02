@@ -15,6 +15,14 @@
 ; Mutable state: state[0] = loop counter
 (def state (list 0))
 
+; Track which slaves were previously active (0 = not seen, 1 = seen)
+; Index 0-7 for slave IDs 1-8
+(def prev-active (list 0 0 0 0 0 0 0 0))
+
+; Pending beep: counter value when beep should fire (0 = no pending beep)
+; Index 0-7 for slave IDs 1-8
+(def beep-at (list 0 0 0 0 0 0 0 0))
+
 ; ============================================================================
 ; Master Cell Simulation (generates test voltages for VESC Tool display)
 ; ============================================================================
@@ -90,6 +98,27 @@
     ; Process CAN messages from slaves
     (master-can-read-all)
 
+    ; Check for newly connected slaves - schedule beep with 1s delay
+    (var slaves (master-get-active-slaves))
+    (if slaves
+        (loopforeach s slaves {
+            (var idx (- s 1))
+            (if (and (>= idx 0) (< idx 8) (= (ix prev-active idx) 0)) {
+                (print (str-merge "New slave " (str-from-n s "%d") " connected!"))
+                (setix beep-at idx (+ (ix state 0) 10))
+                (setix prev-active idx 1)
+            })
+        }))
+
+    ; Fire pending beeps (1s after connection detected)
+    (looprange i 0 8 {
+        (var ba (ix beep-at i))
+        (if (and (> ba 0) (>= (ix state 0) ba)) {
+            (do-beeps (+ i 1) 2 100)
+            (setix beep-at i 0)
+        })
+    })
+
     ; Set master's own cells (if configured)
     (if (> master-num-cells 0) {
         (var cnt (ix state 0))
@@ -100,6 +129,14 @@
     ; Update VESC BMS display (shows master cells + slave cells)
     (master-update-vesc-bms)
     (master-check-timeouts 2000)
+
+    ; Reset prev-active for slaves that went inactive (so reconnect triggers beep)
+    (looprange i 0 8 {
+        (if (and (= (ix prev-active i) 1) (not (master-slave-active? (+ i 1)))) {
+            (setix prev-active i 0)
+            (setix beep-at i 0)
+        })
+    })
 
     ; Increment counter
     (setix state 0 (+ (ix state 0) 1))
