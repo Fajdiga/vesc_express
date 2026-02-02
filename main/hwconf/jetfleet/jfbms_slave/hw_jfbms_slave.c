@@ -82,7 +82,6 @@ static char *error_comm_bq2 = "BQ2 communication error";
 #define CAN_ID_TEMPS(slave_id)        (0x400 | (slave_id))
 #define CAN_ID_STATUS(slave_id)       (0x480 | (slave_id))
 #define CAN_ID_BAL_CMD(slave_id)      (0x500 | (slave_id))
-#define CAN_ID_BUZZER_CMD(slave_id)   (0x580 | (slave_id))
 
 // Forward declarations (functions defined later in file)
 static void select_bq_chip(uint8_t chip_num);
@@ -1449,6 +1448,18 @@ static void buzzer_request_beeps(uint8_t count, uint16_t duration_ms) {
 	}
 }
 
+// (buzzer-beep count duration-ms)
+// Low-level: play count beeps of given duration via FreeRTOS buzzer task
+static lbm_value ext_buzzer_beep(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(2);
+	uint8_t count = lbm_dec_as_u32(args[0]);
+	uint16_t duration_ms = lbm_dec_as_u32(args[1]);
+	if (count == 0 || count > 20) return ENC_SYM_NIL;
+	if (duration_ms == 0 || duration_ms > 5000) return ENC_SYM_NIL;
+	buzzer_request_beeps(count, duration_ms);
+	return ENC_SYM_TRUE;
+}
+
 // ============================================================================
 // Direct CAN RX Buffer - bypasses broken event system
 // ============================================================================
@@ -1467,25 +1478,12 @@ static volatile int can_rx_read = 0;
 static volatile uint32_t can_rx_overflow = 0;
 
 // Hardware CAN hook - called from comm_can.c for every received message
+// All messages buffered for Lisp processing (including balance cmd byte 4 buzzer code)
 void hw_can_rx_hook(uint32_t id, uint8_t *data, int len, bool is_ext) {
 	if (is_ext) return;  // Only handle standard 11-bit IDs
 
-	// Handle buzzer command directly (don't buffer it)
-	// CAN ID 0x580 | slave_id, data: [count(u8), duration_ms_lo(u8), duration_ms_hi(u8)]
-	uint8_t slave_id = id & 0x7F;
-	(void)slave_id;  // Could filter by own slave_id if needed
-	if ((id & 0x780) == 0x580 && len >= 3) {
-		uint8_t count = data[0];
-		uint16_t duration_ms = (uint16_t)data[1] | ((uint16_t)data[2] << 8);
-		if (count > 0 && count <= 20 && duration_ms > 0 && duration_ms <= 5000) {
-			buzzer_request_beeps(count, duration_ms);
-		}
-		return;
-	}
-
 	int next_write = (can_rx_write + 1) % CAN_BUF_SIZE;
 	if (next_write == can_rx_read) {
-		// Buffer full - overflow
 		can_rx_overflow++;
 		return;
 	}
@@ -1658,6 +1656,7 @@ static void load_extensions(bool main_found) {
 
 	// Buzzer control
 	lbm_add_extension("bms-set-buzzer", ext_set_buzzer);
+	lbm_add_extension("buzzer-beep", ext_buzzer_beep);
 
 	// CAN protocol for master-slave communication (11-bit IDs)
 	lbm_add_extension("bms-broadcast-all", ext_broadcast_all);

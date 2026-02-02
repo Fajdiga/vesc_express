@@ -23,10 +23,30 @@
 (def bal-state (list 0))  ; state[0] = iterations since last balance command (0 = no cmd received)
 
 ; ============================================================================
+; Buzzer Beep Code Handler
+; ============================================================================
+; Beep codes received in byte 4 of balance command (DLC 5)
+; Patterns defined here so they can be modified without reflashing firmware
+
+(defun handle-beep (code)
+    (cond
+        ((= code 0x01) (buzzer-beep 2 100))    ; POWER_ON: 2 short beeps
+        ((= code 0x02) (buzzer-beep 1 500))    ; POWER_OFF: 1 long beep
+        ((= code 0x03) (buzzer-beep 3 100))    ; CHARGE_COMPLETE: 3 short beeps
+        ((= code 0x04) (buzzer-beep 4 60))     ; SHUTDOWN: 4 fast beeps
+        ((= code 0x10) (buzzer-beep 1 200))    ; ERR_OVER_TEMP: 1 beep
+        ((= code 0x11) (buzzer-beep 2 200))    ; ERR_CELL_HIGH: 2 beeps
+        ((= code 0x12) (buzzer-beep 3 200))    ; ERR_CELL_LOW: 3 beeps
+        ((= code 0x13) (buzzer-beep 4 200))    ; ERR_OVERCURRENT: 4 beeps
+        ((= code 0x14) (buzzer-beep 5 200))    ; ERR_BQ_COMM: 5 beeps
+    )
+)
+
+; ============================================================================
 ; CAN RX Handler for Balance Commands from Master
 ; ============================================================================
 ; Balance command CAN ID: 0x500 | slave_id
-; Data: 4 bytes balance bitmap (little-endian uint32)
+; Data: 4 bytes balance bitmap (little-endian uint32) + optional byte 4 buzzer code
 ; Uses direct CAN buffer (bypasses broken event-can-sid system)
 
 (defun process-can-messages () {
@@ -49,6 +69,12 @@
                 (if result
                     (print (str-merge "BAL OK: 0x" (str-from-n bal-mask "%08X")))
                     (print (str-merge "BAL FAIL: 0x" (str-from-n bal-mask "%08X"))))
+
+                ; Extract buzzer beep code from byte 4 if present (DLC >= 5)
+                (if (>= (buflen data) 5) {
+                    (var beep-code (bufget-u8 data 4))
+                    (if (not (= beep-code 0)) (handle-beep beep-code))
+                })
             })
         })
     })

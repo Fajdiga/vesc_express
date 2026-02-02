@@ -79,7 +79,7 @@ Bit:  10  9  8  7 │ 6  5  4 │ 3  2  1  0
 | 0x7  | Slave→Master | Cell voltages 29-32 |
 | 0x8  | Slave→Master | Temperatures |
 | 0x9  | Slave→Master | Status (balance state + faults + cell count) |
-| 0xA  | Master→Slave | Balance command |
+| 0xA  | Master→Slave | Balance command + Buzzer beep code |
 | 0xB-0xF | - | Reserved |
 
 ---
@@ -215,21 +215,43 @@ This message confirms which cells are actually balancing, allowing master to ver
 **CAN ID:** `0x500 | slave_id` (slave_id = 1-8)
 
 ```
-Byte:   0      1      2      3
-     ┌──────┬──────┬──────┬──────┐
-     │BalMsk│BalMsk│BalMsk│BalMsk│
-     │ [7:0]│[15:8]│[23:16]│[31:24]│
-     └──────┴──────┴──────┴──────┘
+Byte:   0      1      2      3      4
+     ┌──────┬──────┬──────┬──────┬──────┐
+     │BalMsk│BalMsk│BalMsk│BalMsk│Buzzer│
+     │ [7:0]│[15:8]│[23:16]│[31:24]│Code │
+     └──────┴──────┴──────┴──────┴──────┘
 ```
 
-**DLC:** 4 bytes
+**DLC:** 5 bytes
 
 **Fields:**
-- BalanceMask (bytes 0-3): 32-bit bitmap, bit N = balance cell N
+| Bytes | Field | Description |
+|-------|-------|-------------|
+| 0-3 | BalanceMask | 32-bit bitmap, bit N = balance cell N |
+| 4 | BuzzerCode | Buzzer beep code (see table below) |
 
 Master is responsible for respecting BQ chip limits - only set bits for cells that should actually balance.
 
+**Buzzer Beep Codes (Byte 4):**
+
+| Code | Name | Beep Pattern |
+|------|------|-------------|
+| 0x00 | NONE | No beep (stop any active error pattern) |
+| 0x01 | POWER_ON | 2 short beeps |
+| 0x02 | POWER_OFF | 1 long beep |
+| 0x03 | CHARGE_COMPLETE | 3 short beeps |
+| 0x04 | SHUTDOWN | 4 fast beeps |
+| 0x10 | ERR_OVER_TEMP | 1 beep, pause, repeat |
+| 0x11 | ERR_CELL_HIGH | 2 beeps, pause, repeat |
+| 0x12 | ERR_CELL_LOW | 3 beeps, pause, repeat |
+| 0x13 | ERR_OVERCURRENT | 4 beeps, pause, repeat |
+| 0x14 | ERR_BQ_COMM | 5 beeps, pause, repeat |
+
+Error codes (0x10+) repeat continuously until a new command (e.g., NONE 0x00) is sent. One-shot codes (0x01-0x04) play once per received command.
+
 **Balance Watchdog:** Slave stops all balancing if no balance command received for **10 seconds**. Master must periodically resend balance command (even if unchanged) to maintain balancing.
+
+**Backwards Compatibility:** Slave accepts both 4-byte (old firmware, no buzzer) and 5-byte (new firmware, with buzzer) balance commands. If byte 4 is missing, slave treats buzzer code as 0x00 (NONE).
 
 ---
 
