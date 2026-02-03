@@ -175,7 +175,7 @@ if((DEFINED ENV{HW_SRC}) OR (DEFINED ENV{HW_HEADER}))
 else()
   message(STATUS "Using default hardware: jfbms_slave")
       add_compile_definitions(
-          HW_SOURCE=\"hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.c\"
-          HW_HEADER=\"hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.h\"
+          HW_SOURCE=\"hwconf/jetfleet/jfbms_master/hw_jfbms_master.c\"
+          HW_HEADER=\"hwconf/jetfleet/jfbms_master/hw_jfbms_master.h\"
       )
 endif()

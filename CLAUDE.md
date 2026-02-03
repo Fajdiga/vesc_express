@@ -278,3 +278,11 @@ Or build from terminal instead: `idf.py build`
 - Uses `bms-init 16 16` to set C-level M_CELLS for correct CAN message count
 - Changed default CMakeLists.txt build from master to slave
 - Files: `jfbms_slave_sim.lisp` (new), `CMakeLists.txt`
+
+### 2026-02-03: BMS_MAX_CELLS Increase & Buffer Overflow Fix
+- Increased `BMS_MAX_CELLS` from 64 to 255 to support up to 8 slaves (8×32=256 cells)
+- 255 chosen because VESC protocol sends cell_num as single byte (0-255)
+- Fixed buffer overflow in `bms_process_cmd`: `send_buffer` was 256 bytes but 255 cells need ~964 bytes
+- Changed `send_buffer` to `static uint8_t send_buffer[1024]` to avoid stack overflow
+- Changed default CMakeLists.txt build target from slave to master
+- Files modified: `datatypes.h`, `bms.c`, `main/CMakeLists.txt`
