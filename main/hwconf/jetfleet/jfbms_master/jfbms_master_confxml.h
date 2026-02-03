@@ -1,4 +1,5 @@
-// JFBMS Master XML configuration
+// JFBMS Master confxml header
+// Uses VBMS32 settings XML data until regenerated with master-specific settings
 
 #ifndef JFBMS_MASTER_CONFXML_H_
 #define JFBMS_MASTER_CONFXML_H_
@@ -8,7 +9,7 @@
 #include <stdbool.h>
 
 // Constants
-#define DATA_MAIN_CONFIG_T__SIZE		1500
+#define DATA_MAIN_CONFIG_T__SIZE		6755
 
 // Variables
 extern uint8_t data_main_config_t_[];

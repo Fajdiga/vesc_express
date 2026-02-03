@@ -254,3 +254,27 @@ Or build from terminal instead: `idf.py build`
 | 3 | T4 | BQ2 | BQ76952 #2 internal die temperature |
 
 **Invalid temperature marker:** `0x7FFF` (3276.7°C) - filtered out, not displayed
+
+### 2026-02-02: Buzzer Beep Codes via CAN
+- Moved buzzer beep codes into balance command byte 4 (DLC 5) instead of separate CAN message
+- Master sends beep code along with balance mask in single command
+- Slave decodes beep code and plays pattern via `handle-beep` function
+- Backwards compatible: slave accepts both 4-byte (old) and 5-byte (new) balance commands
+- Beep patterns defined in Lisp for easy modification without reflashing
+
+### 2026-02-03: Master BQ76952 Integration (Standalone + Slave Aggregation)
+- Rewrote master to include full BQ76952 I2C support (based on VBMS32 architecture)
+- Master can now read its own local cells via BQ76952 AND receive slave cells via CAN
+- `master-update-vesc-bms` combines local BQ76952 cells + slave cells into single VESC BMS display
+- Added all BQ76952 Lisp extensions to master (bms-init, bms-get-vcells, bms-get-temps, etc.)
+- Added BQ769x2 register definitions header (`bq769x2_defs.h`)
+- Master can work standalone (32 local cells) or with slaves (local + remote cells)
+- Files modified: `hw_jfbms_master.c/h`, `jfbms_master_conf_default.h`, `jfbms_master_confparser.c/h`, `jfbms_master_confxml.c/h`, `bq769x2_defs.h` (new)
+
+### 2026-02-03: Slave CAN Simulator
+- Created `jfbms_slave_sim.lisp` for testing master CAN protocol without real battery hardware
+- Simulates 32 cells (~3.65-3.75V with per-cell imbalance and random drift) and 4 temperatures
+- Broadcasts at 10 Hz (100ms) matching protocol spec
+- Uses `bms-init 16 16` to set C-level M_CELLS for correct CAN message count
+- Changed default CMakeLists.txt build from master to slave
+- Files: `jfbms_slave_sim.lisp` (new), `CMakeLists.txt`

@@ -1,5 +1,6 @@
 /*
-	Copyright 2025 Benjamin Vedder	benjamin@vedder.se
+	Copyright 2024 Benjamin Vedder	benjamin@vedder.se
+	Copyright 2025 JetFleet
 
 	This file is part of the VESC firmware.
 
@@ -17,8 +18,10 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
     */
 
-#ifndef MAIN_HWCONF_VESC_JFBMS_MASTER_H_
-#define MAIN_HWCONF_VESC_JFBMS_MASTER_H_
+#ifndef MAIN_HWCONF_JETFLEET_JFBMS_MASTER_H_
+#define MAIN_HWCONF_JETFLEET_JFBMS_MASTER_H_
+
+// JFBMS Master: VBMS32 hardware + CAN master for slave communication
 
 #include "adc.h"
 #include "driver/gpio.h"
@@ -26,12 +29,15 @@
 
 #define HW_NAME						"JFBMS_MASTER"
 
+#define PCB_VERSION					2
+
 #define HW_EARLY_LBM_INIT
 #define HW_NO_UART
-#define HW_IS_MASTER
 #define HW_INIT_HOOK()				hw_init()
-#define HW_CAN_PING_SCAN_ENABLED	0  // Disable VESC CAN ping scan - master uses 11-bit protocol
-#define HW_CAN_NO_ACK_MODE			0  // Normal ACK mode for reliable communication
+#define USER_EXTENSION_STORAGE_SIZE	50
+
+// CAN: Normal ACK mode for reliable master-slave communication
+#define HW_CAN_NO_ACK_MODE			0
 
 // Configuration overrides
 #define OVR_CONF_PARSER_C			"jfbms_master_confparser.c"
@@ -43,64 +49,205 @@
 #define OVR_CONF_DESERIALIZE		jfbms_master_confparser_deserialize_main_config_t
 #define OVR_CONF_SET_DEFAULTS		jfbms_master_confparser_set_defaults_main_config_t
 #define OVR_CONF_MAIN_CONFIG
-#define VAR_INIT_CODE				259763460
-
-// Master-specific constants
-#define MAX_SLAVES					8
-#define CELLS_PER_SLAVE				32
-#define TEMPS_PER_SLAVE				4
-
-// Master BMS data structure - stores aggregated data from all slaves
-typedef struct {
-	uint16_t cell_voltages[MAX_SLAVES][CELLS_PER_SLAVE];  // mV per cell
-	int16_t temperatures[MAX_SLAVES][TEMPS_PER_SLAVE];    // 0.1 deg C
-	uint32_t balance_mask[MAX_SLAVES];                     // Current balance state
-	uint8_t fault_flags[MAX_SLAVES];                       // Fault flags per slave
-	uint8_t cell_count[MAX_SLAVES];                        // Actual cell count per slave
-	uint32_t last_seen_ms[MAX_SLAVES];                     // Last message timestamp
-	bool active[MAX_SLAVES];                               // Slave is responding
-} master_bms_data_t;
+#define VAR_INIT_CODE				259763462
 
 typedef struct {
-	int num_slaves;          // Number of expected slaves (1-8)
-	CAN_BAUD can_baud_rate;  // CAN baud rate (should be 500K per protocol)
-	int slave_timeout_ms;    // Timeout for detecting offline slaves (default: 1000ms)
+	int controller_id;
+	CAN_BAUD can_baud_rate;
+	int can_status_rate_hz;
+	WIFI_MODE wifi_mode;
+	char wifi_sta_ssid[36];
+	char wifi_sta_key[26];
+	char wifi_ap_ssid[36];
+	char wifi_ap_key[26];
+	bool use_tcp_local;
+	bool use_tcp_hub;
+	char tcp_hub_url[36];
+	uint16_t tcp_hub_port;
+	char tcp_hub_id[26];
+	char tcp_hub_pass[26];
+	BLE_MODE ble_mode;
+	char ble_name[9];
+	uint32_t ble_pin;
+	uint32_t ble_service_capacity;
+	uint32_t ble_chr_descr_capacity;
 
-	// Compatibility fields (not used by master, but needed for compilation)
-	int controller_id;      // Not used - master aggregates from all slaves
-	int can_status_rate_hz; // Not used by master
-	WIFI_MODE wifi_mode;    // Not used by master
-	char wifi_sta_ssid[36]; // Not used by master
-	char wifi_sta_key[26];  // Not used by master
-	char wifi_ap_ssid[36];  // Not used by master
-	char wifi_ap_key[26];   // Not used by master
-	bool use_tcp_local;     // Not used by master
-	bool use_tcp_hub;       // Not used by master
-	char tcp_hub_url[36];   // Not used by master
-	uint16_t tcp_hub_port;  // Not used by master
-	char tcp_hub_id[26];    // Not used by master
-	char tcp_hub_pass[26];  // Not used by master
-	BLE_MODE ble_mode;      // Not used by master
-	char ble_name[9];       // Not used by master
-	uint32_t ble_pin;       // Not used by master
-	uint32_t ble_service_capacity;    // Not used by master
-	uint32_t ble_chr_descr_capacity;  // Not used by master
+	// Cells on first balance IC
+	int cells_ic1;
+
+	// Cells on second balance IC
+	int cells_ic2;
+
+	// Number of external temperature sensors
+	int temp_num;
+
+	// Battery amp hours
+	float batt_ah;
+
+	// Maximum simultaneous balancing channels
+	int max_bal_ch;
+
+	// Use amp hours for columb counting
+	bool soc_use_ah;
+
+	// Block sleep mode
+	bool block_sleep;
+
+	// Cell voltage when empty
+	float vc_empty;
+
+	// Cell voltage when full
+	float vc_full;
+
+	// Start balancing if cell voltage is this much above the minimum cell voltage
+	float vc_balance_start;
+
+	// Stop balancing when cell voltage is this much above the minimum cell voltage
+	float vc_balance_end;
+
+	// Start charging when max cell voltage is below this voltage
+	float vc_charge_start;
+
+	// End charging when max cell voltage is above this voltage
+	float vc_charge_end;
+
+	// Only allow charging if all cells are above this voltage
+	float vc_charge_min;
+
+	// Only allow balancing if all cells are above this voltage
+	float vc_balance_min;
+
+	// Only allow balancing when the current magnitude is below this value
+	float balance_max_current;
+
+	// Current must be above this magnitude for the Ah and Wh couters to run
+	float min_current_ah_wh_cnt;
+
+	// Enter sleep mode when the current magnitude is below this value
+	float min_current_sleep;
+
+	// Charge port voltage at which a charger is considered plugged in
+	float v_charge_detect;
+
+	// Only allow charging when the cell temperature is below this value
+	float t_charge_max;
+
+	// Only allow charging when the MOSFET temperature is below this value
+	float t_charge_max_mos;
+
+	// Regular sleep time
+	float sleep_regular;
+
+	// Long sleep time, for when SOC is low
+	float sleep_long;
+
+	// Stop charging when the charge current goes below this value
+	float min_charge_current;
+
+	// Maximum allowed charging current
+	float max_charge_current;
+
+	// Filter constant for SoC filter
+	float soc_filter_const;
+
+	// Do not allow balancing above this cell temperature
+	float t_bal_max_cell;
+
+	// Do not allow balancing above this balance IC temperature
+	float t_bal_max_ic;
+
+	// Only allow charging when the cell temperature is above this value
+	float t_charge_min;
+
+	// Enable temperature monitoring during charging
+	bool t_charge_mon_en;
+
+	// Maximum precharge time
+	float psw_t_pchg;
+
+	// Shortcircuit protection enabled
+	bool psw_scd_en;
+
+	// Shortcircuit protection threshold
+	int psw_scd_tres;
+
+	// Enable overtemperature protection
+	bool t_psw_en;
+
+	// Turn off power switch when MOSFET temperature is above this value
+	float t_psw_max_mos;
+
+	// Wait for init done before enabling power switch
+	bool psw_wait_init;
+
+	// --- Master-specific parameters ---
+
+	// Number of expected slave devices (1-8)
+	int num_slaves;
+
+	// Slave timeout in ms
+	int slave_timeout_ms;
 } main_config_t;
 
 // Default setting Overrides
-#define HW_DEFAULT_ID				1
+#define HW_DEFAULT_ID				3
+
+// Board variant: set to 1 for CAN on GPIO 0/1, set to 0 for CAN on GPIO 6/7
+#define JFBMS_USE_CAN_IO_0_1		1
 
 // CAN
+#if JFBMS_USE_CAN_IO_0_1
+#define CAN_TX_GPIO_NUM				1
+#define CAN_RX_GPIO_NUM				0
+#else
 #define CAN_TX_GPIO_NUM				7
 #define CAN_RX_GPIO_NUM				6
+#endif
+
+// Other pins
+#define PIN_SDA						21
+#define PIN_SCL						20
+#define PIN_ENABLE					2
+#define PIN_OUT_EN					4
+#define PIN_CHG_EN					5
+#define PIN_PCHG_EN					8
+#define PIN_COM_EN					9
+#define PIN_PSW_EN					10
+
+// ADC - only available when CAN is on GPIO 6/7 (GPIO 0/1 free for ADC)
+#if !JFBMS_USE_CAN_IO_0_1
+#define HW_ADC_CH0					ADC1_CHANNEL_0 // DIV_CHG
+#define HW_ADC_CH1					ADC1_CHANNEL_1 // DIV_OUT
+#endif
 
 // Parameters
 #define HW_R_SHUNT					0.0002
 
+// Macros
+#if JFBMS_USE_CAN_IO_0_1
+#define HW_GET_VOUT()				(0.0)
+#define HW_GET_VCHG()				(0.0)
+#else
+#define HW_GET_VOUT()				((adc_get_voltage(ADC1_CHANNEL_1) * (220.0e3 + 4.7e3)) / 4.7e3)
+#define HW_GET_VCHG()				((adc_get_voltage(ADC1_CHANNEL_0) * (220.0e3 + 4.7e3)) / 4.7e3)
+#endif
+
+// Master slave data storage
+#define MAX_SLAVES					8
+#define CELLS_PER_SLAVE				32
+#define TEMPS_PER_SLAVE				4
+
+typedef struct {
+	uint16_t cell_voltages[MAX_SLAVES][CELLS_PER_SLAVE];  // mV
+	int16_t  temperatures[MAX_SLAVES][TEMPS_PER_SLAVE];   // 0.1 deg C
+	uint32_t balance_mask[MAX_SLAVES];
+	uint8_t  fault_flags[MAX_SLAVES];
+	uint8_t  cell_count[MAX_SLAVES];
+	uint32_t last_seen_ms[MAX_SLAVES];
+	bool     active[MAX_SLAVES];
+} master_bms_data_t;
+
 // Functions
 void hw_init(void);
 
-// Master data access functions
-master_bms_data_t* hw_master_get_data(void);
-
-#endif /* MAIN_HWCONF_VESC_JFBMS_MASTER_H_ */
+#endif /* MAIN_HWCONF_JETFLEET_JFBMS_MASTER_H_ */

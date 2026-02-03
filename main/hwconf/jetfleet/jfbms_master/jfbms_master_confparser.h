@@ -1,4 +1,4 @@
-// JFBMS Master configuration parser
+// JFBMS Master config parser header
 
 #ifndef JFBMS_MASTER_CONFPARSER_H_
 #define JFBMS_MASTER_CONFPARSER_H_
@@ -8,8 +8,7 @@
 #include <stdbool.h>
 
 // Constants
-#define MAIN_CONFIG_T_SIGNATURE		2747705582
-#define SERIALIZED_CONFIG_LENGTH	10
+#define MAIN_CONFIG_T_SIGNATURE		822273783
 
 // Functions
 int32_t jfbms_master_confparser_serialize_main_config_t(uint8_t *buffer, const main_config_t *conf);

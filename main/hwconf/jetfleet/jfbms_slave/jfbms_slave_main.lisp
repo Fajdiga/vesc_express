@@ -203,8 +203,4 @@
     (print "Entering diagnostic mode due to init failure")
     (loopwhile t {
         (print (str-merge "I2C detect 0x08: " (if (i2c-detect-addr 0x08) "OK" "FAIL")))
-        ; Broadcast empty data with fault flags
-        (bms-broadcast-all slave-id '() '() false false)
-        (sleep 1.0)
-    })
-})
+        ; Broadcs

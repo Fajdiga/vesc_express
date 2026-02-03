@@ -196,8 +196,8 @@ typedef struct {
 #define HW_DEFAULT_ID				3
 
 // CAN
-#define CAN_TX_GPIO_NUM				7
-#define CAN_RX_GPIO_NUM				6
+#define CAN_TX_GPIO_NUM				1
+#define CAN_RX_GPIO_NUM				0
 
 // Other pins
 #define PIN_SDA						21
@@ -209,16 +209,16 @@ typedef struct {
 #define PIN_COM_EN					9
 #define PIN_PSW_EN					10
 
-// ADC
-#define HW_ADC_CH0					ADC1_CHANNEL_0 // DIV_CHG
-#define HW_ADC_CH1					ADC1_CHANNEL_1 // DIV_OUT
+// ADC - disabled, GPIO 0/1 used for CAN
+//#define HW_ADC_CH0				ADC1_CHANNEL_0 // DIV_CHG
+//#define HW_ADC_CH1				ADC1_CHANNEL_1 // DIV_OUT
 
 // Parameters
 #define HW_R_SHUNT					0.0002
 
-// Macros
-#define HW_GET_VOUT()				((adc_get_voltage(ADC1_CHANNEL_1) * (220.0e3 + 4.7e3)) / 4.7e3)
-#define HW_GET_VCHG()				((adc_get_voltage(ADC1_CHANNEL_0) * (220.0e3 + 4.7e3)) / 4.7e3)
+// Macros - ADC not available, GPIO 0/1 used for CAN
+#define HW_GET_VOUT()				(0.0)
+#define HW_GET_VCHG()				(0.0)
 
 // Functions
 void hw_init(void);
