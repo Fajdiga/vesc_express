@@ -123,7 +123,7 @@ For proper Master-Slave communication:
 | `(master-get-all-cells slave-id)` | Get list of 32 cell voltages |
 | `(master-get-all-temps slave-id)` | Get list of 4 temperatures |
 | `(master-get-cell-count slave-id)` | Get actual cell count from slave |
-| `(master-send-balance slave-id mask)` | Send balance command to slave |
+| `(master-send-balance slave-id mask beep-code)` | Send balance command with buzzer beep code to slave |
 | `(master-slave-active? slave-id)` | Check if slave is responding |
 | `(master-get-active-slaves)` | Get list of active slave IDs |
 | `(master-check-timeouts timeout-ms)` | Mark timed-out slaves as inactive |
@@ -286,3 +286,12 @@ Or build from terminal instead: `idf.py build`
 - Changed `send_buffer` to `static uint8_t send_buffer[1024]` to avoid stack overflow
 - Changed default CMakeLists.txt build target from slave to master
 - Files modified: `datatypes.h`, `bms.c`, `main/CMakeLists.txt`
+
+### 2026-02-04: Faster Slave Disconnect Detection & Buzzer Alert
+- Slave connect/disconnect check now runs every loop iteration (100ms) instead of every 5 seconds
+- Reduced slave timeout from 2000ms to 500ms for faster disconnect detection
+- `master-send-balance` now always sends 5 bytes (balance mask + beep code), requires 3 args
+- On slave disconnect, master sends buzzer alert (0x04 SHUTDOWN: 4 fast beeps) to all remaining active slaves
+- Balance mask sent as 0 during alert; regular balancing loop restores correct mask on next cycle
+- Added CAN RX processing to slave simulator (`jfbms_slave_sim.lisp`) for balance command and buzzer testing
+- Files modified: `hw_jfbms_master.c`, `jfbms_master_main.lisp`, `jfbms_slave_sim.lisp`, `CLAUDE.md`

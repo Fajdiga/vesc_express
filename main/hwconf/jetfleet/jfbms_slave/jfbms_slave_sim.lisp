@@ -41,13 +41,47 @@
 })
 
 ; ============================================================================
-; Main Simulation Loop - Broadcast every 1 second
+; CAN RX Handler for Balance Commands from Master
+; ============================================================================
+(defun process-can-messages () {
+    (var expected-bal-id (+ 0x500 slave-id))
+    (loopwhile (> (slave-can-available) 0) {
+        (var msg (slave-can-read))
+        (if msg {
+            (var can-id (car msg))
+            (var data (cdr msg))
+            (if (= can-id expected-bal-id) {
+                ; Extract 32-bit balance mask (little-endian)
+                (var bal-mask (+ (bufget-u8 data 0)
+                    (shl (bufget-u8 data 1) 8)
+                    (shl (bufget-u8 data 2) 16)
+                    (shl (bufget-u8 data 3) 24)))
+                (print (str-merge "SIM BAL: 0x" (str-from-n bal-mask "%08X")))
+
+                ; Extract buzzer beep code from byte 4 if present (DLC >= 5)
+                (if (>= (buflen data) 5) {
+                    (var beep-code (bufget-u8 data 4))
+                    (if (not (= beep-code 0)) {
+                        (print (str-merge "SIM BEEP: 0x" (str-from-n beep-code "%02X")))
+                        (buzzer-beep 4 60)
+                    })
+                })
+            })
+        })
+    })
+})
+
+; ============================================================================
+; Main Simulation Loop - Broadcast every 100ms
 ; ============================================================================
 
 (defun main-thd () {
     (var loop-count 0)
 
     (loopwhile t {
+        ; Process incoming CAN messages (balance + buzzer commands from master)
+        (process-can-messages)
+
         ; Build cell voltage list with random drift
         (var cells '())
         (looprange i 0 total-cells {

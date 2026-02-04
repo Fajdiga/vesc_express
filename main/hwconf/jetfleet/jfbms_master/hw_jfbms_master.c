@@ -576,14 +576,15 @@ static void parse_slave_message(uint32_t id, uint8_t *data, int len) {
 	xSemaphoreGive(m_data_mutex);
 }
 
-// Send balance command to slave
-static void send_balance_cmd(uint8_t slave_id, uint32_t mask) {
-	uint8_t buf[4];
+// Send balance command with buzzer beep code to slave
+static void send_balance_cmd(uint8_t slave_id, uint32_t mask, uint8_t beep_code) {
+	uint8_t buf[5];
 	buf[0] = (mask >> 0) & 0xFF;
 	buf[1] = (mask >> 8) & 0xFF;
 	buf[2] = (mask >> 16) & 0xFF;
 	buf[3] = (mask >> 24) & 0xFF;
-	comm_can_transmit_sid(CAN_ID_BAL_CMD(slave_id), buf, 4);
+	buf[4] = beep_code;
+	comm_can_transmit_sid(CAN_ID_BAL_CMD(slave_id), buf, 5);
 }
 
 // ============================================================================
@@ -1604,18 +1605,19 @@ static lbm_value ext_master_get_active_slaves(lbm_value *args, lbm_uint argn) {
 	return list;
 }
 
-// (master-send-balance slave-id mask) - Send balance command to slave
+// (master-send-balance slave-id mask beep-code) - Send balance command with buzzer to slave
 static lbm_value ext_master_send_balance(lbm_value *args, lbm_uint argn) {
-	LBM_CHECK_ARGN_NUMBER(2);
+	LBM_CHECK_ARGN_NUMBER(3);
 
 	int slave_id = lbm_dec_as_i32(args[0]);
 	uint32_t mask = lbm_dec_as_u32(args[1]);
+	uint8_t beep_code = (uint8_t)lbm_dec_as_u32(args[2]);
 
 	if (slave_id < 1 || slave_id > MAX_SLAVES) {
 		return ENC_SYM_NIL;
 	}
 
-	send_balance_cmd(slave_id, mask);
+	send_balance_cmd(slave_id, mask, beep_code);
 	return ENC_SYM_TRUE;
 }
 
