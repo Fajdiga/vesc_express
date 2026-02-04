@@ -559,7 +559,7 @@ static void parse_slave_message(uint32_t id, uint8_t *data, int len) {
 			}
 		}
 	} else if (msg_type == 0x09) {
-		// Status message: balance mask (4B) + faults (1B) + cell count (1B)
+		// Status message: balance mask (4B) + faults (1B) + cells_ic1 (1B) + cells_ic2 (1B)
 		if (len >= 5) {
 			m_bms_data.balance_mask[idx] =
 				(uint32_t)data[0] |
@@ -567,8 +567,15 @@ static void parse_slave_message(uint32_t id, uint8_t *data, int len) {
 				((uint32_t)data[2] << 16) |
 				((uint32_t)data[3] << 24);
 			m_bms_data.fault_flags[idx] = data[4];
-			if (len >= 6) {
-				m_bms_data.cell_count[idx] = data[5];
+			if (len >= 7) {
+				// New format: cells_ic1 + cells_ic2 as separate bytes
+				m_bms_data.cells_ic1[idx] = data[5];
+				m_bms_data.cells_ic2[idx] = data[6];
+			} else if (len >= 6) {
+				// Old format: single cell_count byte, assume split at 16
+				uint8_t total = data[5];
+				m_bms_data.cells_ic1[idx] = (total > 16) ? 16 : total;
+				m_bms_data.cells_ic2[idx] = (total > 16) ? (total - 16) : 0;
 			}
 		}
 	}
@@ -1502,7 +1509,7 @@ static lbm_value ext_master_get_slave_cells(lbm_value *args, lbm_uint argn) {
 
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 
-	int num_cells = m_bms_data.cell_count[idx];
+	int num_cells = m_bms_data.cells_ic1[idx] + m_bms_data.cells_ic2[idx];
 	if (num_cells == 0) num_cells = CELLS_PER_SLAVE;
 	if (num_cells > CELLS_PER_SLAVE) num_cells = CELLS_PER_SLAVE;
 
@@ -1544,7 +1551,7 @@ static lbm_value ext_master_get_slave_temps(lbm_value *args, lbm_uint argn) {
 	return ts_list;
 }
 
-// (master-get-slave-status slave-id) - Get (balance-mask faults cell-count)
+// (master-get-slave-status slave-id) - Get (balance-mask faults cells-ic1 cells-ic2)
 static lbm_value ext_master_get_slave_status(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 
@@ -1558,7 +1565,8 @@ static lbm_value ext_master_get_slave_status(lbm_value *args, lbm_uint argn) {
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 
 	lbm_value res = ENC_SYM_NIL;
-	res = lbm_cons(lbm_enc_i(m_bms_data.cell_count[idx]), res);
+	res = lbm_cons(lbm_enc_i(m_bms_data.cells_ic2[idx]), res);
+	res = lbm_cons(lbm_enc_i(m_bms_data.cells_ic1[idx]), res);
 	res = lbm_cons(lbm_enc_i(m_bms_data.fault_flags[idx]), res);
 	res = lbm_cons(lbm_enc_u32(m_bms_data.balance_mask[idx]), res);
 
@@ -1605,18 +1613,22 @@ static lbm_value ext_master_get_active_slaves(lbm_value *args, lbm_uint argn) {
 	return list;
 }
 
-// (master-send-balance slave-id mask beep-code) - Send balance command with buzzer to slave
+// (master-send-balance slave-id ic1-mask ic2-mask beep-code)
+// Takes IC1 and IC2 masks separately to avoid LispBM 28-bit integer overflow
+// when combining into a 32-bit balance mask (IC1 bits 0-15, IC2 bits 16-31)
 static lbm_value ext_master_send_balance(lbm_value *args, lbm_uint argn) {
-	LBM_CHECK_ARGN_NUMBER(3);
+	LBM_CHECK_ARGN_NUMBER(4);
 
 	int slave_id = lbm_dec_as_i32(args[0]);
-	uint32_t mask = lbm_dec_as_u32(args[1]);
-	uint8_t beep_code = (uint8_t)lbm_dec_as_u32(args[2]);
+	uint32_t ic1_mask = lbm_dec_as_u32(args[1]) & 0xFFFF;
+	uint32_t ic2_mask = lbm_dec_as_u32(args[2]) & 0xFFFF;
+	uint8_t beep_code = (uint8_t)lbm_dec_as_u32(args[3]);
 
 	if (slave_id < 1 || slave_id > MAX_SLAVES) {
 		return ENC_SYM_NIL;
 	}
 
+	uint32_t mask = ic1_mask | (ic2_mask << 16);
 	send_balance_cmd(slave_id, mask, beep_code);
 	return ENC_SYM_TRUE;
 }
@@ -1669,7 +1681,7 @@ static lbm_value ext_master_reset_slaves(lbm_value *args, lbm_uint argn) {
 	return ENC_SYM_TRUE;
 }
 
-// (master-get-cell-count slave-id) - Get actual cell count from slave
+// (master-get-cell-count slave-id) - Get total cell count from slave (ic1 + ic2)
 static lbm_value ext_master_get_cell_count(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 
@@ -1681,7 +1693,43 @@ static lbm_value ext_master_get_cell_count(lbm_value *args, lbm_uint argn) {
 	int idx = slave_id - 1;
 
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
-	int count = m_bms_data.cell_count[idx];
+	int count = m_bms_data.cells_ic1[idx] + m_bms_data.cells_ic2[idx];
+	xSemaphoreGive(m_data_mutex);
+
+	return lbm_enc_i(count);
+}
+
+// (master-get-cells-ic1 slave-id) - Get cells on BQ1 from slave
+static lbm_value ext_master_get_cells_ic1(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(1);
+
+	int slave_id = lbm_dec_as_i32(args[0]);
+	if (slave_id < 1 || slave_id > MAX_SLAVES) {
+		return lbm_enc_i(0);
+	}
+
+	int idx = slave_id - 1;
+
+	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
+	int count = m_bms_data.cells_ic1[idx];
+	xSemaphoreGive(m_data_mutex);
+
+	return lbm_enc_i(count);
+}
+
+// (master-get-cells-ic2 slave-id) - Get cells on BQ2 from slave
+static lbm_value ext_master_get_cells_ic2(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(1);
+
+	int slave_id = lbm_dec_as_i32(args[0]);
+	if (slave_id < 1 || slave_id > MAX_SLAVES) {
+		return lbm_enc_i(0);
+	}
+
+	int idx = slave_id - 1;
+
+	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
+	int count = m_bms_data.cells_ic2[idx];
 	xSemaphoreGive(m_data_mutex);
 
 	return lbm_enc_i(count);
@@ -1742,7 +1790,7 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 	for (int s = 0; s < MAX_SLAVES && total_cells < BMS_MAX_CELLS; s++) {
 		if (!m_bms_data.active[s]) continue;
 
-		int num_cells = m_bms_data.cell_count[s];
+		int num_cells = m_bms_data.cells_ic1[s] + m_bms_data.cells_ic2[s];
 		if (num_cells == 0) continue;
 		if (num_cells > CELLS_PER_SLAVE) num_cells = CELLS_PER_SLAVE;
 
@@ -1818,9 +1866,9 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 	for (int i = 0; i < MAX_SLAVES; i++) {
 		if (m_bms_data.active[i]) {
-			commands_printf_lisp("Slave %d: active, cells=%d, faults=0x%02X, bal=0x%08lX",
-				i + 1, m_bms_data.cell_count[i], m_bms_data.fault_flags[i],
-				(unsigned long)m_bms_data.balance_mask[i]);
+			commands_printf_lisp("Slave %d: active, ic1=%d, ic2=%d, faults=0x%02X, bal=0x%08lX",
+				i + 1, m_bms_data.cells_ic1[i], m_bms_data.cells_ic2[i],
+				m_bms_data.fault_flags[i], (unsigned long)m_bms_data.balance_mask[i]);
 		}
 	}
 	xSemaphoreGive(m_data_mutex);
@@ -1911,6 +1959,8 @@ static void load_extensions(bool main_found) {
 	lbm_add_extension("master-slave-active?", ext_master_slave_active);
 	lbm_add_extension("master-get-active-slaves", ext_master_get_active_slaves);
 	lbm_add_extension("master-get-cell-count", ext_master_get_cell_count);
+	lbm_add_extension("master-get-cells-ic1", ext_master_get_cells_ic1);
+	lbm_add_extension("master-get-cells-ic2", ext_master_get_cells_ic2);
 
 	// Slave control
 	lbm_add_extension("master-send-balance", ext_master_send_balance);

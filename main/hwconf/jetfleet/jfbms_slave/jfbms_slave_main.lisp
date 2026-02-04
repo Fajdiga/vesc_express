@@ -58,17 +58,17 @@
             (var can-id (car msg))
             (var data (cdr msg))
             (if (= can-id expected-bal-id) {
-                ; Extract 32-bit balance mask (little-endian)
-                (var bal-mask (+ (bufget-u8 data 0)
-                    (shl (bufget-u8 data 1) 8)
-                    (shl (bufget-u8 data 2) 16)
-                    (shl (bufget-u8 data 3) 24)))
-                (var result (bms-set-bal-bitmap bal-mask))
+                ; Extract IC1 and IC2 masks separately (16-bit each, avoids 28-bit overflow)
+                (var ic1-mask (+ (bufget-u8 data 0) (shl (bufget-u8 data 1) 8)))
+                (var ic2-mask (+ (bufget-u8 data 2) (shl (bufget-u8 data 3) 8)))
+                (var result (bms-set-bal-bitmap ic1-mask ic2-mask))
                 ; Reset watchdog counter (1 = command received, will increment each loop)
                 (setix bal-state 0 1)
                 (if result
-                    (print (str-merge "BAL OK: 0x" (str-from-n bal-mask "%08X")))
-                    (print (str-merge "BAL FAIL: 0x" (str-from-n bal-mask "%08X"))))
+                    (print (str-merge "BAL OK: IC1=0x" (str-from-n ic1-mask "%04X")
+                        " IC2=0x" (str-from-n ic2-mask "%04X")))
+                    (print (str-merge "BAL FAIL: IC1=0x" (str-from-n ic1-mask "%04X")
+                        " IC2=0x" (str-from-n ic2-mask "%04X"))))
 
                 ; Extract buzzer beep code from byte 4 if present (DLC >= 5)
                 (if (>= (buflen data) 5) {

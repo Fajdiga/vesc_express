@@ -193,7 +193,7 @@ typedef struct {
 #define HW_DEFAULT_ID				3
 
 // Board variant: set to 1 for CAN on GPIO 0/1, set to 0 for CAN on GPIO 6/7
-#define JFBMS_USE_CAN_IO_0_1		0
+#define JFBMS_USE_CAN_IO_0_1		1
 
 // CAN
 #if JFBMS_USE_CAN_IO_0_1
@@ -242,7 +242,8 @@ typedef struct {
 	int16_t  temperatures[MAX_SLAVES][TEMPS_PER_SLAVE];   // 0.1 deg C
 	uint32_t balance_mask[MAX_SLAVES];
 	uint8_t  fault_flags[MAX_SLAVES];
-	uint8_t  cell_count[MAX_SLAVES];
+	uint8_t  cells_ic1[MAX_SLAVES];
+	uint8_t  cells_ic2[MAX_SLAVES];
 	uint32_t last_seen_ms[MAX_SLAVES];
 	bool     active[MAX_SLAVES];
 } master_bms_data_t;

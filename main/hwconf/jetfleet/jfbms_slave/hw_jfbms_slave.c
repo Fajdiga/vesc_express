@@ -135,14 +135,15 @@ static void can_send_temps(uint8_t slave_id, int16_t *temps) {
 }
 
 /**
- * Send status message (1 CAN message, 6 bytes)
- * @param slave_id  Slave ID (1-8)
- * @param bal_mask  32-bit balance bitmap
- * @param faults    Fault byte (bit0 = BQ1 init failed, bit1 = BQ2 init failed)
- * @param cell_count Total number of configured cells (cells_ic1 + cells_ic2)
+ * Send status message (1 CAN message, 7 bytes)
+ * @param slave_id   Slave ID (1-8)
+ * @param bal_mask   32-bit balance bitmap
+ * @param faults     Fault byte (bit0 = BQ1 init failed, bit1 = BQ2 init failed)
+ * @param cells_ic1  Number of cells on BQ1 (0-16)
+ * @param cells_ic2  Number of cells on BQ2 (0-16)
  */
-static void can_send_status(uint8_t slave_id, uint32_t bal_mask, uint8_t faults, uint8_t cell_count) {
-	uint8_t buf[6];
+static void can_send_status(uint8_t slave_id, uint32_t bal_mask, uint8_t faults, uint8_t cells_ic1, uint8_t cells_ic2) {
+	uint8_t buf[7];
 
 	// Balance mask, little-endian
 	buf[0] = (bal_mask >> 0) & 0xFF;
@@ -150,9 +151,10 @@ static void can_send_status(uint8_t slave_id, uint32_t bal_mask, uint8_t faults,
 	buf[2] = (bal_mask >> 16) & 0xFF;
 	buf[3] = (bal_mask >> 24) & 0xFF;
 	buf[4] = faults;
-	buf[5] = cell_count;
+	buf[5] = cells_ic1;
+	buf[6] = cells_ic2;
 
-	comm_can_transmit_sid(CAN_ID_STATUS(slave_id), buf, 6);
+	comm_can_transmit_sid(CAN_ID_STATUS(slave_id), buf, 7);
 }
 
 // Get current balancing bitmap from both ICs
@@ -1316,17 +1318,20 @@ static lbm_value ext_broadcast_all(lbm_value *args, lbm_uint argn) {
 	// TX queue is 20 messages, we send 10, so no delays needed
 	can_send_all_cells(slave_id, cells_mv);
 	can_send_temps(slave_id, temps);
-	can_send_status(slave_id, get_bal_bitmap(), faults, (uint8_t)M_CELLS);
+	can_send_status(slave_id, get_bal_bitmap(), faults, (uint8_t)m_cells_ic1, (uint8_t)m_cells_ic2);
 
 	return ENC_SYM_TRUE;
 }
 
-// (bms-set-bal-bitmap bitmap)
-// Set balancing state from 32-bit bitmap (for master control)
+// (bms-set-bal-bitmap ic1-mask ic2-mask)
+// Set balancing state from two 16-bit masks (avoids LispBM 28-bit integer overflow)
+// C code combines: bitmap = ic1_mask | (ic2_mask << 16)
 static lbm_value ext_set_bal_bitmap(lbm_value *args, lbm_uint argn) {
-	LBM_CHECK_ARGN_NUMBER(1);
+	LBM_CHECK_ARGN_NUMBER(2);
 
-	uint32_t bitmap = lbm_dec_as_u32(args[0]);
+	uint32_t ic1_mask = lbm_dec_as_u32(args[0]) & 0xFFFF;
+	uint32_t ic2_mask = lbm_dec_as_u32(args[1]) & 0xFFFF;
+	uint32_t bitmap = ic1_mask | (ic2_mask << 16);
 
 	xSemaphoreTake(bq_mutex, portMAX_DELAY);
 	bool res = apply_bal_bitmap(bitmap);
@@ -1356,14 +1361,14 @@ static lbm_value ext_stop_balancing(lbm_value *args, lbm_uint argn) {
 	return res ? ENC_SYM_TRUE : ENC_SYM_EERROR;
 }
 
-// (bms-set-bal-bitmap-demo bitmap)
+// (bms-set-bal-bitmap-demo ic1-mask ic2-mask)
 // Set balance mask directly without writing to BQ chips (for demo/testing)
+// Takes two 16-bit masks to avoid LispBM 28-bit integer overflow
 static lbm_value ext_set_bal_bitmap_demo(lbm_value *args, lbm_uint argn) {
-	LBM_CHECK_ARGN_NUMBER(1);
+	LBM_CHECK_ARGN_NUMBER(2);
 
-	uint32_t bitmap = lbm_dec_as_u32(args[0]);
-	m_bal_state_ic1 = bitmap & 0xFFFF;
-	m_bal_state_ic2 = (bitmap >> 16) & 0xFFFF;
+	m_bal_state_ic1 = lbm_dec_as_u32(args[0]) & 0xFFFF;
+	m_bal_state_ic2 = lbm_dec_as_u32(args[1]) & 0xFFFF;
 
 	return ENC_SYM_TRUE;
 }

@@ -39,8 +39,8 @@ The BMS system consists of:
 |------------|--------------|-----|---------|
 | `(0-7 << 7) \| slave_id` | Cell Voltages | 8 | 4 cells per msg, 8 msgs total (32 cells) |
 | `0x400 \| slave_id` | Temperatures | 8 | 4 temps (BQ1-int, Ext1/TS1, Ext2/TS3, BQ2-int) |
-| `0x480 \| slave_id` | Status | 6 | Balance mask (4B) + faults (1B) + cell count (1B) |
-| `0x500 \| slave_id` | Balance Cmd | 4 | Master -> Slave balance command |
+| `0x480 \| slave_id` | Status | 7 | Balance mask (4B) + faults (1B) + cells_ic1 (1B) + cells_ic2 (1B) |
+| `0x500 \| slave_id` | Balance Cmd | 5 | Master -> Slave balance command + buzzer beep code |
 
 **Data Format:**
 - Cell voltages: uint16 mV, little-endian (0x0000 = not populated, 0xFFFF = error)
@@ -122,8 +122,10 @@ For proper Master-Slave communication:
 | `(master-get-status slave-id)` | Get (balance-mask faults) list |
 | `(master-get-all-cells slave-id)` | Get list of 32 cell voltages |
 | `(master-get-all-temps slave-id)` | Get list of 4 temperatures |
-| `(master-get-cell-count slave-id)` | Get actual cell count from slave |
-| `(master-send-balance slave-id mask beep-code)` | Send balance command with buzzer beep code to slave |
+| `(master-get-cell-count slave-id)` | Get total cell count from slave (ic1+ic2) |
+| `(master-get-cells-ic1 slave-id)` | Get number of cells on BQ1 from slave |
+| `(master-get-cells-ic2 slave-id)` | Get number of cells on BQ2 from slave |
+| `(master-send-balance slave-id ic1-mask ic2-mask beep-code)` | Send balance command (IC masks combined in C to avoid 28-bit overflow) |
 | `(master-slave-active? slave-id)` | Check if slave is responding |
 | `(master-get-active-slaves)` | Get list of active slave IDs |
 | `(master-check-timeouts timeout-ms)` | Mark timed-out slaves as inactive |
@@ -234,6 +236,7 @@ For proper Master-Slave communication:
 - LispBM global variables (`def`, `setq`, `set`) don't persist in loops - use mutable list with `(setix list idx value)`
 - BQ76952 CB_ACTIVE_CELLS requires TOGGLE (write 0, then value) to reset ~18s internal timeout
 - BQ76952 cannot balance adjacent cells simultaneously - must alternate odd/even cell groups
+- LispBM uses 28-bit integers (4 tag bits in 32-bit word) - max value 0x7FFFFFF. Never construct 32-bit values in Lisp; pass 16-bit halves to C extensions instead
 
 ### VS Code Build Errors
 If you get `${ProjectId}.map not found` error:
@@ -290,8 +293,21 @@ Or build from terminal instead: `idf.py build`
 ### 2026-02-04: Faster Slave Disconnect Detection & Buzzer Alert
 - Slave connect/disconnect check now runs every loop iteration (100ms) instead of every 5 seconds
 - Reduced slave timeout from 2000ms to 500ms for faster disconnect detection
-- `master-send-balance` now always sends 5 bytes (balance mask + beep code), requires 3 args
+- `master-send-balance` now always sends 5 bytes (balance mask + beep code)
 - On slave disconnect, master sends buzzer alert (0x04 SHUTDOWN: 4 fast beeps) to all remaining active slaves
 - Balance mask sent as 0 during alert; regular balancing loop restores correct mask on next cycle
 - Added CAN RX processing to slave simulator (`jfbms_slave_sim.lisp`) for balance command and buzzer testing
 - Files modified: `hw_jfbms_master.c`, `jfbms_master_main.lisp`, `jfbms_slave_sim.lisp`, `CLAUDE.md`
+
+### 2026-02-04: Even/Odd Balancing Algorithm & 28-bit Integer Overflow Fix
+- Replaced greedy no-adjacent-cell algorithm with even/odd group approach (matches Harmony32)
+  - Cells split into even-indexed (0,2,4,...) and odd-indexed (1,3,5,...) groups
+  - Pick group with more cells above threshold, select up to max_bal_ch highest voltage first
+  - With N cells per IC, max balanced = floor(N/2) (16 cells → 8, 10 → 5)
+- Fixed LispBM 28-bit integer overflow: `(shl mask 16)` silently truncated upper bits
+  - `master-send-balance` now takes 4 args: `(slave-id ic1-mask ic2-mask beep-code)`, C combines them
+  - `bms-set-bal-bitmap` now takes 2 args: `(ic1-mask ic2-mask)`, C combines them
+  - `bms-set-bal-bitmap-demo` same change for simulator
+  - No 32-bit integers constructed in Lisp anywhere; all combining done in C
+- Balance cycle reduced from 8s to 1s for responsive VESC Tool updates
+- Files modified: `hw_jfbms_master.c`, `hw_jfbms_slave.c`, `jfbms_master_main.lisp`, `jfbms_slave_main.lisp`, `jfbms_slave_sim.lisp`, `CLAUDE.md`

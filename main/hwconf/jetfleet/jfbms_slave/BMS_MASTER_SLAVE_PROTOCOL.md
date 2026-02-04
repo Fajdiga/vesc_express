@@ -11,7 +11,7 @@
 - Slaves broadcast data periodically (no polling)
 - Master sends only balance commands
 - Only sends cell voltage messages needed for configured cells (optimizes CAN bus load)
-- Status message includes cell count so master knows configuration
+- Status message includes cells_ic1 and cells_ic2 so master knows per-IC configuration
 - Data format matches BQ76952 native format for easy integration
 
 ---
@@ -78,7 +78,7 @@ Bit:  10  9  8  7 │ 6  5  4 │ 3  2  1  0
 | 0x6  | Slave→Master | Cell voltages 25-28 |
 | 0x7  | Slave→Master | Cell voltages 29-32 |
 | 0x8  | Slave→Master | Temperatures |
-| 0x9  | Slave→Master | Status (balance state + faults + cell count) |
+| 0x9  | Slave→Master | Status (balance state + faults + cells per IC) |
 | 0xA  | Master→Slave | Balance command + Buzzer beep code |
 | 0xB-0xF | - | Reserved |
 
@@ -176,21 +176,22 @@ data[1] = (temp >> 8) & 0xFF;  // 0x00
 **CAN ID:** `0x480 | slave_id`
 
 ```
-Byte:   0      1      2      3      4      5
-     ┌──────┬──────┬──────┬──────┬──────┬──────┐
-     │BalMsk│BalMsk│BalMsk│BalMsk│Faults│CellCt│
-     │ [7:0]│[15:8]│[23:16]│[31:24]│      │      │
-     └──────┴──────┴──────┴──────┴──────┴──────┘
+Byte:   0      1      2      3      4      5      6
+     ┌──────┬──────┬──────┬──────┬──────┬──────┬──────┐
+     │BalMsk│BalMsk│BalMsk│BalMsk│Faults│IC1Cnt│IC2Cnt│
+     │ [7:0]│[15:8]│[23:16]│[31:24]│      │      │      │
+     └──────┴──────┴──────┴──────┴──────┴──────┴──────┘
 ```
 
-**DLC:** 6 bytes (2 bytes reserved for future use)
+**DLC:** 7 bytes (1 byte reserved for future use)
 
 **Fields:**
 | Bytes | Field | Description |
 |-------|-------|-------------|
 | 0-3 | BalanceMask | 32-bit bitmap, bit N = cell N is currently balancing |
 | 4 | Faults | Fault flags (see below) |
-| 5 | CellCount | Total configured cells (cells_ic1 + cells_ic2), range 3-32 |
+| 5 | CellsIC1 | Number of cells on BQ1 (0-16) |
+| 6 | CellsIC2 | Number of cells on BQ2 (0-16, 0 = single chip) |
 
 **Fault Byte (Byte 4):**
 | Bit | Meaning |
@@ -199,14 +200,17 @@ Byte:   0      1      2      3      4      5
 | 1 | BQ2 initialization failed |
 | 2-7 | Reserved (set to 0) |
 
-**CellCount (Byte 5):**
-Tells the master exactly how many cells are configured on this slave. This allows the master to display only actual cells in VESC Tool instead of showing zeros for unpopulated positions.
+**CellsIC1 / CellsIC2 (Bytes 5-6):**
+Tells the master the exact cell configuration per BQ76952 chip. This is critical for:
+- Displaying only actual cells in VESC Tool (no zeros for unpopulated positions)
+- Building the correct balance mask (bits 0-15 = IC1, bits 16-31 = IC2)
+- Applying per-IC balance channel limits and adjacent-cell rules
 
 This message confirms which cells are actually balancing, allowing master to verify balance commands were applied. The fault bits indicate if slave failed to initialize a BQ76952 chip at startup.
 
-**Backwards Compatibility:** Master accepts both 5-byte (old firmware) and 6-byte (new firmware) status messages. If CellCount byte is missing, master assumes 32 cells.
+**Backwards Compatibility:** Master accepts old 6-byte format (single CellCount byte) and interprets it as: ic1 = min(16, count), ic2 = max(0, count - 16). Master also accepts 5-byte format (no cell count) and assumes 16+16.
 
-**Note:** Single-chip slaves (no BQ2) set cells 17-32 to 0x0000 with fault bit 1 = 0 (not an error, just not present).
+**Note:** Single-chip slaves (no BQ2) set CellsIC2 = 0 and cells 17-32 to 0x0000 with fault bit 1 = 0 (not an error, just not present).
 
 ---
 
@@ -330,7 +334,7 @@ Balance (slave 8):   0x508
 ### Master Integration
 - Receives slave data via standard CAN RX
 - Aggregates all cell voltages into single array (zeros = not present)
-- Uses cell count from Status message to know exact configuration
+- Uses cells_ic1/cells_ic2 from Status message to know exact IC configuration
 - Global min/max voltage across all slaves for balancing decisions
 - Resends balance commands periodically (<10s) to maintain balancing
 - Retries balance command if Status doesn't match expected
@@ -339,7 +343,7 @@ Balance (slave 8):   0x508
 - Initializes BQ76952 chips at startup, sets fault bits if init fails
 - Reads BQ76952 at ~50ms internally
 - Broadcasts only required cell messages every 100ms (optimizes CAN bus load)
-- Sends cell count in Status message so master knows configuration
+- Sends cells_ic1 and cells_ic2 in Status message so master knows per-IC configuration
 - Listens for balance commands matching its ID (0x501-0x508)
 - Applies balance mask to BQ76952 CB_ACTIVE_CELLS register
 - Stops balancing if no command received for 10 seconds (watchdog)
