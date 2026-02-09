@@ -184,9 +184,6 @@ typedef struct {
 
 	// Number of expected slave devices (1-8)
 	int num_slaves;
-
-	// Slave timeout in ms
-	int slave_timeout_ms;
 } main_config_t;
 
 // Default setting Overrides

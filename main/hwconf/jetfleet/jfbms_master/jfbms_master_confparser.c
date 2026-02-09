@@ -74,7 +74,7 @@ int32_t jfbms_master_confparser_serialize_main_config_t(uint8_t *buffer, const m
 	buffer_append_float16(buffer, conf->t_psw_max_mos, 10, &ind);
 	buffer[ind++] = conf->psw_wait_init;
 
-	// Note: num_slaves and slave_timeout_ms are NOT serialized here
+	// Note: num_slaves is NOT serialized here
 	// to maintain compatibility with VBMS32 confxml data.
 	// Use bms-get-param / bms-set-param in Lisp to access them.
 
@@ -152,7 +152,7 @@ bool jfbms_master_confparser_deserialize_main_config_t(const uint8_t *buffer, ma
 	conf->t_psw_max_mos = buffer_get_float16(buffer, 10, &ind);
 	conf->psw_wait_init = buffer[ind++];
 
-	// num_slaves and slave_timeout_ms not in serialized data;
+	// num_slaves not in serialized data;
 	// they keep their default values from set_defaults.
 
 	return true;
@@ -216,5 +216,4 @@ void jfbms_master_confparser_set_defaults_main_config_t(main_config_t *conf) {
 
 	// Master-specific defaults
 	conf->num_slaves = CONF_NUM_SLAVES;
-	conf->slave_timeout_ms = CONF_SLAVE_TIMEOUT_MS;
 }

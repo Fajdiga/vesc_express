@@ -281,10 +281,5 @@
 #define CONF_NUM_SLAVES 1
 #endif
 
-// Slave Timeout (ms)
-#ifndef CONF_SLAVE_TIMEOUT_MS
-#define CONF_SLAVE_TIMEOUT_MS 2000
-#endif
-
 // JFBMS_MASTER_CONF_DEFAULT_H_
 #endif
