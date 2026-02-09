@@ -17,6 +17,8 @@
 ; Balancing state - mutable list for loop persistence
 ; state[0] = 1 if currently balancing, 0 if not
 (def bal-state (list 0))
+; True when manual balance was requested from VESC Tool
+(def bal-request false)
 
 ; ============================================================================
 ; Balance Helper: compute balance mask for one BQ76952 IC group
@@ -106,16 +108,51 @@
     cnt
 })
 
+; Stop local and slave balancing outputs
+(defun stop-all-balancing () {
+    (var local-ic1 (bms-get-param 'cells_ic1))
+    (var local-ic2 (bms-get-param 'cells_ic2))
+    (var local-total (+ local-ic1 local-ic2))
+
+    (if (> local-total 0) {
+        (trap (looprange i 0 local-total (bms-set-bal i 0)))
+    })
+
+    (var sid 1)
+    (loopwhile (<= sid 8) {
+        (if (master-slave-active? sid)
+            (master-send-balance sid 0 0 0)
+        )
+        (setq sid (+ sid 1))
+    })
+
+    (setix bal-state 0 0)
+})
+
+; Handle balance start/stop commands from VESC Tool
+(defun event-handler ()
+    (loopwhile t
+        (recv
+            ((event-bms-force-bal (? v)) {
+                    (setq bal-request (= v 1))
+                    (if bal-request
+                        (print "BAL CMD: start")
+                        (print "BAL CMD: stop")
+                    )
+            })
+            (_ nil)
+)))
+
 ; ============================================================================
 ; Balance Thread
 ; ============================================================================
-; Every 8 seconds: read cached slave voltages, compute balance masks, send.
+; Every second: read cached slave voltages, compute balance masks, send.
 ; No pause needed for slave cells (they send voltages continuously via CAN).
 ; Only local BQ needs pause for clean I2C readings (when wired).
-; 8s cycle keeps us within the slave's 10s balance watchdog.
+; 1s cycle keeps us within the slave's 10s balance watchdog.
 
 (defun balance-thd () (loopwhile t {
-    ; Read config each iteration so changes take effect
+    ; Read package config each iteration so threshold changes take effect
     (var max-ch (bms-get-param 'max_bal_ch))
     (var bal-start (bms-get-param 'vc_balance_start))
     (var bal-end (bms-get-param 'vc_balance_end))
@@ -126,163 +163,163 @@
     (var is-bal (= (ix bal-state 0) 1))
     (var threshold (if is-bal bal-end bal-start))
 
-    ; --- Step 1: Read all cell voltages and find global minimum ---
-    (var global-min 9.0)
-    (var global-max 0.0)
-    (var any-cells false)
-
-    ; Read local BQ cells (if configured)
-    ; Uses trap to handle BQ not wired/initialized - errors won't crash thread
-    (var local-cells nil)
-    (if (> local-total 0) {
-        (match (trap {
-            (looprange i 0 local-total (bms-set-bal i 0))
-            (sleep 2.0)
-            (bms-get-vcells)
+    (if (not bal-request) {
+        ; Keep outputs off until user requests balancing from VESC Tool
+        (if (= (ix bal-state 0) 1) {
+            (print "BAL: stopped by command")
         })
-            ((exit-ok (? cells)) {
-                (if (and cells (> (length cells) 0)) {
-                    (setq local-cells cells)
+        (stop-all-balancing)
+    } {
+        ; --- Step 1: Read all cell voltages and find global minimum ---
+        (var global-min 9.0)
+        (var global-max 0.0)
+        (var any-cells false)
+
+        ; Read local BQ cells (if configured)
+        ; Uses trap to handle BQ not wired/initialized - errors won't crash thread
+        (var local-cells nil)
+        (if (> local-total 0) {
+            (match (trap {
+                (looprange i 0 local-total (bms-set-bal i 0))
+                (sleep 2.0)
+                (bms-get-vcells)
+            })
+                ((exit-ok (? cells)) {
+                    (if (and cells (> (length cells) 0)) {
+                        (setq local-cells cells)
+                        (setq any-cells true)
+                        (loopforeach v local-cells {
+                            (if (< v global-min) (setq global-min v))
+                            (if (> v global-max) (setq global-max v))
+                        })
+                    })
+                })
+                (_ nil) ; BQ not wired or comm error - skip local cells
+            )
+        })
+
+        ; Read slave cells from CAN cache (no pause needed)
+        ; Store as list of (slave-id cells ic1-count ic2-count)
+        (var slave-data '())
+        (var sid 1)
+        (loopwhile (<= sid 8) {
+            (if (master-slave-active? sid) {
+                (var cells (master-get-slave-cells sid))
+                (var s-ic1 (master-get-cells-ic1 sid))
+                (var s-ic2 (master-get-cells-ic2 sid))
+                (var cnt (+ s-ic1 s-ic2))
+                (if (and cells (> (length cells) 0) (= (length cells) cnt)) {
                     (setq any-cells true)
-                    (loopforeach v local-cells {
+                    (setq slave-data (cons (list sid cells s-ic1 s-ic2) slave-data))
+                    (loopforeach v cells {
                         (if (< v global-min) (setq global-min v))
                         (if (> v global-max) (setq global-max v))
                     })
                 })
             })
-            (_ nil) ; BQ not wired or comm error - skip local cells
-        )
-    })
-
-    ; Read slave cells from CAN cache (no pause needed)
-    ; Store as list of (slave-id cells ic1-count ic2-count)
-    (var slave-data '())
-    (var sid 1)
-    (loopwhile (<= sid 8) {
-        (if (master-slave-active? sid) {
-            (var cells (master-get-slave-cells sid))
-            (var s-ic1 (master-get-cells-ic1 sid))
-            (var s-ic2 (master-get-cells-ic2 sid))
-            (var cnt (+ s-ic1 s-ic2))
-            (if (and cells (> (length cells) 0) (= (length cells) cnt)) {
-                (setq any-cells true)
-                (setq slave-data (cons (list sid cells s-ic1 s-ic2) slave-data))
-                (loopforeach v cells {
-                    (if (< v global-min) (setq global-min v))
-                    (if (> v global-max) (setq global-max v))
-                })
-            })
-        })
-        (setq sid (+ sid 1))
-    })
-
-    ; --- Debug: print voltage summary ---
-    (print "--- BAL cycle ---")
-    (if any-cells {
-        (print (str-merge "Vmin=" (str-from-n global-min "%.3fV")
-            " Vmax=" (str-from-n global-max "%.3fV")
-            " spread=" (str-from-n (* (- global-max global-min) 1000.0) "%.0fmV")
-            " thr=" (str-from-n (* threshold 1000.0) "%.0fmV")
-            " max_ch=" (str-from-n max-ch "%d")))
-    } (print "No cells available"))
-
-    ; --- Step 2: Check if balancing is allowed ---
-    (var bal-allowed (and
-            any-cells
-            (> global-min bal-min)
-    ))
-
-    (if (and any-cells (not bal-allowed))
-        (print (str-merge "BAL blocked: Vmin " (str-from-n global-min "%.3fV")
-            " < bal_min " (str-from-n bal-min "%.3fV")))
-    )
-
-    (if bal-allowed {
-        ; --- Step 3: Balance each IC group ---
-        (var total-bal-cells 0)
-
-        ; Local BQ (single IC on master) - trap in case BQ not wired
-        (if (and local-cells (> (length local-cells) 0)) {
-            (var local-mask (balance-ic-group local-cells global-min threshold max-ch))
-            (trap (looprange i 0 (length local-cells) {
-                (bms-set-bal i (if (> (bitwise-and local-mask (shl 1 i)) 0) 1 0))
-            }))
-            (if (> local-mask 0) {
-                (print "Local BQ:")
-                (setq total-bal-cells (+ total-bal-cells
-                    (print-bal-ic "Local" local-cells local-mask global-min)))
-            })
-        })
-
-        ; Slave ICs
-        (loopforeach sd slave-data {
-            (var s-id (ix sd 0))
-            (var cells (ix sd 1))
-            (var ic1-cnt (ix sd 2))
-            (var ic2-cnt (ix sd 3))
-
-            ; Extract IC1 voltages (cells 0 to ic1-cnt-1)
-            (var ic1-volts (map (fn (i) (ix cells i)) (range ic1-cnt)))
-
-            ; Extract IC2 voltages (cells ic1-cnt to total-1)
-            (var ic2-volts (if (> ic2-cnt 0)
-                (map (fn (i) (ix cells (+ ic1-cnt i))) (range ic2-cnt))
-                '()
-            ))
-
-            ; Compute balance masks per IC
-            (var ic1-mask (balance-ic-group ic1-volts global-min threshold max-ch))
-            (var ic2-mask (if (> ic2-cnt 0)
-                (balance-ic-group ic2-volts global-min threshold max-ch)
-                0
-            ))
-
-            ; Send IC1 and IC2 masks separately to C code (avoids 28-bit overflow)
-            ; C code combines: mask = ic1_mask | (ic2_mask << 16)
-            (master-send-balance s-id ic1-mask ic2-mask 0)
-
-            ; Debug: print per-IC details
-            (var s-label (str-merge "S" (str-from-n s-id "%d")))
-            (if (> ic1-mask 0) {
-                (print (str-merge s-label "-BQ1 (" (str-from-n ic1-cnt "%d") " cells):"))
-                (setq total-bal-cells (+ total-bal-cells
-                    (print-bal-ic (str-merge s-label "-BQ1") ic1-volts ic1-mask global-min)))
-            })
-            (if (> ic2-mask 0) {
-                (print (str-merge s-label "-BQ2 (" (str-from-n ic2-cnt "%d") " cells):"))
-                (setq total-bal-cells (+ total-bal-cells
-                    (print-bal-ic (str-merge s-label "-BQ2") ic2-volts ic2-mask global-min)))
-            })
-
-            (print (str-merge s-label " IC1=0x" (str-from-n ic1-mask "%04X")
-                " IC2=0x" (str-from-n ic2-mask "%04X")))
-        })
-
-        ; Update balancing state
-        (if (> total-bal-cells 0) {
-            (setix bal-state 0 1)
-            (print (str-merge "BAL TOTAL: " (str-from-n total-bal-cells "%d") " cells"))
-        } {
-            (setix bal-state 0 0)
-            (print "BAL: no cells above threshold")
-        })
-    } {
-        ; Balancing not allowed - stop all
-        (if (> local-total 0) {
-            (trap (looprange i 0 local-total (bms-set-bal i 0)))
-        })
-        (setq sid 1)
-        (loopwhile (<= sid 8) {
-            (if (master-slave-active? sid)
-                (master-send-balance sid 0 0 0)
-            )
             (setq sid (+ sid 1))
         })
 
-        (if (= (ix bal-state 0) 1)
-            (print "BAL: stopped")
+        ; --- Debug: print voltage summary ---
+        (print "--- BAL cycle ---")
+        (if any-cells {
+            (print (str-merge "Vmin=" (str-from-n global-min "%.3fV")
+                " Vmax=" (str-from-n global-max "%.3fV")
+                " spread=" (str-from-n (* (- global-max global-min) 1000.0) "%.0fmV")
+                " thr=" (str-from-n (* threshold 1000.0) "%.0fmV")
+                " max_ch=" (str-from-n max-ch "%d")))
+        } (print "No cells available"))
+
+        ; --- Step 2: Check if balancing is allowed ---
+        (var bal-allowed (and
+                any-cells
+                (> global-min bal-min)
+        ))
+
+        (if (and any-cells (not bal-allowed))
+            (print (str-merge "BAL blocked: Vmin " (str-from-n global-min "%.3fV")
+                " < bal_min " (str-from-n bal-min "%.3fV")))
         )
-        (setix bal-state 0 0)
+
+        (if bal-allowed {
+            ; --- Step 3: Balance each IC group ---
+            (var total-bal-cells 0)
+
+            ; Local BQ (single IC on master) - trap in case BQ not wired
+            (if (and local-cells (> (length local-cells) 0)) {
+                (var local-mask (balance-ic-group local-cells global-min threshold max-ch))
+                (trap (looprange i 0 (length local-cells) {
+                    (bms-set-bal i (if (> (bitwise-and local-mask (shl 1 i)) 0) 1 0))
+                }))
+                (if (> local-mask 0) {
+                    (print "Local BQ:")
+                    (setq total-bal-cells (+ total-bal-cells
+                        (print-bal-ic "Local" local-cells local-mask global-min)))
+                })
+            })
+
+            ; Slave ICs
+            (loopforeach sd slave-data {
+                (var s-id (ix sd 0))
+                (var cells (ix sd 1))
+                (var ic1-cnt (ix sd 2))
+                (var ic2-cnt (ix sd 3))
+
+                ; Extract IC1 voltages (cells 0 to ic1-cnt-1)
+                (var ic1-volts (map (fn (i) (ix cells i)) (range ic1-cnt)))
+
+                ; Extract IC2 voltages (cells ic1-cnt to total-1)
+                (var ic2-volts (if (> ic2-cnt 0)
+                    (map (fn (i) (ix cells (+ ic1-cnt i))) (range ic2-cnt))
+                    '()
+                ))
+
+                ; Compute balance masks per IC
+                (var ic1-mask (balance-ic-group ic1-volts global-min threshold max-ch))
+                (var ic2-mask (if (> ic2-cnt 0)
+                    (balance-ic-group ic2-volts global-min threshold max-ch)
+                    0
+                ))
+
+                ; Send IC1 and IC2 masks separately to C code (avoids 28-bit overflow)
+                ; C code combines: mask = ic1_mask | (ic2_mask << 16)
+                (master-send-balance s-id ic1-mask ic2-mask 0)
+
+                ; Debug: print per-IC details
+                (var s-label (str-merge "S" (str-from-n s-id "%d")))
+                (if (> ic1-mask 0) {
+                    (print (str-merge s-label "-BQ1 (" (str-from-n ic1-cnt "%d") " cells):"))
+                    (setq total-bal-cells (+ total-bal-cells
+                        (print-bal-ic (str-merge s-label "-BQ1") ic1-volts ic1-mask global-min)))
+                })
+                (if (> ic2-mask 0) {
+                    (print (str-merge s-label "-BQ2 (" (str-from-n ic2-cnt "%d") " cells):"))
+                    (setq total-bal-cells (+ total-bal-cells
+                        (print-bal-ic (str-merge s-label "-BQ2") ic2-volts ic2-mask global-min)))
+                })
+
+                (print (str-merge s-label " IC1=0x" (str-from-n ic1-mask "%04X")
+                    " IC2=0x" (str-from-n ic2-mask "%04X")))
+            })
+
+            ; Update balancing state
+            (if (> total-bal-cells 0) {
+                (setix bal-state 0 1)
+                (print (str-merge "BAL TOTAL: " (str-from-n total-bal-cells "%d") " cells"))
+            } {
+                (setix bal-state 0 0)
+                (setq bal-request false)
+                (print "BAL: target reached")
+            })
+        } {
+            ; Balancing blocked by voltage/cell availability. Stop and end request.
+            (stop-all-balancing)
+            (setq bal-request false)
+            (if any-cells
+                (print "BAL: stopped (conditions not met)")
+                (print "BAL: stopped (no cells available)")
+            )
+        })
     })
 
     ; --- Step 4: Wait before next cycle ---
@@ -293,6 +330,10 @@
 ; ============================================================================
 ; Main Loop
 ; ============================================================================
+
+; Register BMS command events used by VESC Tool
+(event-register-handler (spawn event-handler))
+(event-enable 'event-bms-force-bal)
 
 ; Spawn balance thread
 (spawn 200 balance-thd)

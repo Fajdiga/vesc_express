@@ -311,3 +311,14 @@ Or build from terminal instead: `idf.py build`
   - No 32-bit integers constructed in Lisp anywhere; all combining done in C
 - Balance cycle reduced from 8s to 1s for responsive VESC Tool updates
 - Files modified: `hw_jfbms_master.c`, `hw_jfbms_slave.c`, `jfbms_master_main.lisp`, `jfbms_slave_main.lisp`, `jfbms_slave_sim.lisp`, `CLAUDE.md`
+
+### 2026-02-09: Manual Balance Start/Stop Wiring in Master Script
+- Added VESC Tool BMS command handling in master Lisp script:
+  - Registered `event-bms-force-bal` and added `event-handler` thread
+  - `BAL START/STOP` now controls a manual balance request gate (`bal-request`)
+- Balancing thresholds remain package-config driven (`vc_balance_start`, `vc_balance_end`, `vc_balance_min`)
+- Added `stop-all-balancing` helper to force local + slave balance outputs off when stopped
+- Removed `event-bms-bal-ovr` control path so override payload does not change start/stop state
+- Balancing now auto-stops when delta falls below end threshold and logs `BAL: target reached`
+- Files modified: `main/hwconf/jetfleet/jfbms_master/jfbms_master_main.lisp`, `CLAUDE.md`
+- Status: NOT TESTED on hardware yet
