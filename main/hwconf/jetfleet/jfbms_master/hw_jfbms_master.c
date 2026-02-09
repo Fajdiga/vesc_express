@@ -1791,15 +1791,15 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 
 		for (int c = 0; c < num_cells && total_cells < BMS_MAX_CELLS; c++) {
 			uint16_t mv = m_bms_data.cell_voltages[s][c];
-			float v = (mv != 0 && mv != 0xFFFF) ? (float)mv / 1000.0f : -1.0f;
-			bms->v_cell[total_cells] = v;
-			bms->bal_state[total_cells] = (m_bms_data.balance_mask[s] >> c) & 1;
-			if (v > 0) {
+			if (mv != 0 && mv != 0xFFFF) {
+				float v = (float)mv / 1000.0f;
+				bms->v_cell[total_cells] = v;
+				bms->bal_state[total_cells] = (m_bms_data.balance_mask[s] >> c) & 1;
 				v_tot += v;
 				if (v < v_min) v_min = v;
 				if (v > v_max) v_max = v;
+				total_cells++;
 			}
-			total_cells++;
 		}
 
 		// Add slave temperatures
