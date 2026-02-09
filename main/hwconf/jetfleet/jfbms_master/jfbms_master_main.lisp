@@ -332,13 +332,18 @@
 ; ============================================================================
 
 ; Register BMS command events used by VESC Tool
-(event-register-handler (spawn event-handler))
-(event-enable 'event-bms-force-bal)
+; TODO: re-enable after main loop confirmed working
+;(event-register-handler (spawn event-handler))
+;(event-enable 'event-bms-force-bal)
+(print "Event handler disabled for debug")
 
 ; Spawn balance thread
+(print "Spawning balance thread...")
 (spawn 200 balance-thd)
+(print "Balance thread spawned")
 
 ; Main loop - CAN drain at 100 Hz, everything else at 10 Hz
+(print "Entering main loop...")
 (def loop-cnt 0)
 (loopwhile t {
     ; Drain CAN buffer every 10ms (100 Hz) - prevents overflow with multiple slaves
