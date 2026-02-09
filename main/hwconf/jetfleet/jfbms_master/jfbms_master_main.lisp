@@ -339,7 +339,7 @@
 (spawn 200 balance-thd)
 
 ; Main loop - CAN drain at 100 Hz, everything else at 10 Hz
-(var loop-cnt 0)
+(def loop-cnt 0)
 (loopwhile t {
     ; Drain CAN buffer every 10ms (100 Hz) - prevents overflow with multiple slaves
     (master-can-read-all)
