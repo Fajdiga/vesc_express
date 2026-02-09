@@ -57,7 +57,7 @@
         (if msg {
             (var can-id (car msg))
             (var data (cdr msg))
-            (if (= can-id expected-bal-id) {
+            (if (and (= can-id expected-bal-id) (>= (buflen data) 4)) {
                 ; Extract IC1 and IC2 masks separately (16-bit each, avoids 28-bit overflow)
                 (var ic1-mask (+ (bufget-u8 data 0) (shl (bufget-u8 data 1) 8)))
                 (var ic2-mask (+ (bufget-u8 data 2) (shl (bufget-u8 data 3) 8)))
@@ -203,4 +203,8 @@
     (print "Entering diagnostic mode due to init failure")
     (loopwhile t {
         (print (str-merge "I2C detect 0x08: " (if (i2c-detect-addr 0x08) "OK" "FAIL")))
-        ; Broadcs
+        ; Broadcast empty data with fault flags
+        (bms-broadcast-all slave-id '() '() false false)
+        (sleep 1.0)
+    })
+})

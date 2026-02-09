@@ -251,7 +251,7 @@ Master is responsible for respecting BQ chip limits - only set bits for cells th
 | 0x13 | ERR_OVERCURRENT | 4 beeps, pause, repeat |
 | 0x14 | ERR_BQ_COMM | 5 beeps, pause, repeat |
 
-Error codes (0x10+) repeat continuously until a new command (e.g., NONE 0x00) is sent. One-shot codes (0x01-0x04) play once per received command.
+All beep codes (0x01-0x14) play once per received command. For error alerts, the master re-sends the beep code with each balance command to sustain the alert.
 
 **Balance Watchdog:** Slave stops all balancing if no balance command received for **10 seconds**. Master must periodically resend balance command (even if unchanged) to maintain balancing.
 
@@ -265,7 +265,7 @@ Error codes (0x10+) repeat continuously until a new command (e.g., NONE 0x00) is
 |-----------|-------|-------------|
 | Broadcast interval | 100ms | Slaves send all data every 100ms |
 | Bus access | Automatic | CAN hardware handles arbitration - sends when bus is free |
-| Slave timeout | 2000ms | Master marks slave offline if no data |
+| Slave timeout | 500ms | Master marks slave offline if no data |
 | Balance update | As needed | Master sends when balance mask changes |
 | Balance watchdog | 10s | Slave stops balancing if no command received |
 
@@ -354,8 +354,7 @@ Balance (slave 8):   0x508
 | BQ1 init failed | Set fault bit 0, send 0xFFFF for cells 1-16 | Detect via fault byte, mark slave faulty |
 | BQ2 init failed | Set fault bit 1, send 0xFFFF for cells 17-32 | Detect via fault byte, mark slave faulty |
 | No balance cmd (10s) | Stop all balancing | N/A (master should resend periodically) |
-| Slave offline | N/A | Mark offline after 2s timeout |
+| Slave offline | N/A | Mark offline after 500ms timeout |
 | Single-chip slave | Cells 17-32 = 0x0000, fault bit 1 = 0 | Normal operation (not an error) |
 
 ---
-

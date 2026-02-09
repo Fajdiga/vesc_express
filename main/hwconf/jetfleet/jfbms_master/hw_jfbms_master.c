@@ -72,7 +72,7 @@ static char *error_comm_bq2 = "BQ2 communication error";
 #define CAN_ID_BAL_CMD(slave_id)      (0x500 | (slave_id))
 
 // CAN RX circular buffer for 11-bit messages
-#define CAN_BUF_SIZE 64
+#define CAN_BUF_SIZE 128
 
 typedef struct {
 	uint32_t id;
@@ -1135,7 +1135,6 @@ typedef struct {
 	lbm_uint psw_wait_init;
 	// Master-specific
 	lbm_uint num_slaves;
-	lbm_uint slave_timeout_ms;
 } vesc_syms;
 
 static vesc_syms syms_vesc = {0};
@@ -1216,8 +1215,6 @@ static bool compare_symbol(lbm_uint sym, lbm_uint *comp) {
 			lbm_add_symbol_const("psw_wait_init", comp);
 		} else if (comp == &syms_vesc.num_slaves) {
 			lbm_add_symbol_const("num_slaves", comp);
-		} else if (comp == &syms_vesc.slave_timeout_ms) {
-			lbm_add_symbol_const("slave_timeout_ms", comp);
 		}
 	}
 
@@ -1350,8 +1347,6 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 		res = get_or_set_bool(set, &cfg->psw_wait_init, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.num_slaves)) {
 		res = get_or_set_i(set, &cfg->num_slaves, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.slave_timeout_ms)) {
-		res = get_or_set_i(set, &cfg->slave_timeout_ms, &set_arg);
 	}
 
 	return res;
@@ -1796,15 +1791,15 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 
 		for (int c = 0; c < num_cells && total_cells < BMS_MAX_CELLS; c++) {
 			uint16_t mv = m_bms_data.cell_voltages[s][c];
-			if (mv != 0 && mv != 0xFFFF) {
-				float v = (float)mv / 1000.0f;
-				bms->v_cell[total_cells] = v;
-				bms->bal_state[total_cells] = (m_bms_data.balance_mask[s] >> c) & 1;
+			float v = (mv != 0 && mv != 0xFFFF) ? (float)mv / 1000.0f : -1.0f;
+			bms->v_cell[total_cells] = v;
+			bms->bal_state[total_cells] = (m_bms_data.balance_mask[s] >> c) & 1;
+			if (v > 0) {
 				v_tot += v;
 				if (v < v_min) v_min = v;
 				if (v > v_max) v_max = v;
-				total_cells++;
 			}
+			total_cells++;
 		}
 
 		// Add slave temperatures

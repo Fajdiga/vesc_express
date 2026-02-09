@@ -322,3 +322,13 @@ Or build from terminal instead: `idf.py build`
 - Balancing now auto-stops when delta falls below end threshold and logs `BAL: target reached`
 - Files modified: `main/hwconf/jetfleet/jfbms_master/jfbms_master_main.lisp`, `CLAUDE.md`
 - Status: NOT TESTED on hardware yet
+
+### 2026-02-09: CAN Buffer Overflow Prevention & Protocol Hardening
+- Increased CAN RX buffer from 64 to 128 messages (`CAN_BUF_SIZE`)
+- Master main loop now runs at 100 Hz (10ms) for CAN drain, with 10 Hz gating for VESC BMS updates/timeouts/disconnect checks
+- Added DLC guard on slave balance command: checks `(>= (buflen data) 4)` before reading mask bytes
+- Fixed cell dropout breaking balance mask alignment: invalid cells now occupy slot as `-1.0f` instead of being skipped
+- Updated protocol doc: all buzzer beep codes are one-shot (master re-sends to sustain alerts)
+- Restored truncated `jfbms_slave_main.lisp` diagnostic loop (was cut off at EOF since commit `7830da4`)
+- Files modified: `hw_jfbms_master.c`, `jfbms_master_main.lisp`, `jfbms_slave_main.lisp`, `BMS_MASTER_SLAVE_PROTOCOL.md`
+- Status: NOT TESTED on hardware yet
