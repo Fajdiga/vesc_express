@@ -159,6 +159,16 @@ For proper Master-Slave communication:
 
 ## Development History
 
+### 2026-02-10: Slave TWAI Hardware Filter & CAN Filter Hook Refactor
+- Added a board-specific CAN filter hook path so `comm_can.c` can use hardware-defined TWAI filters when provided, while defaulting to `ACCEPT_ALL` for other hardware.
+- Implemented `hw_can_get_filter_config(...)` in JFBMS slave to accept only master balance command ID `0x500 | slave_id` in TWAI hardware.
+- Removed redundant slave software ID check in `hw_can_rx_hook` and rely on hardware filter for standard-ID selection.
+- Filter reconfiguration now runs both on CAN start and baud-rate reinit.
+- Files modified:
+  - `main/comm_can.c`
+  - `main/hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.c`
+- Note: Changes are implemented and committed; runtime verification on hardware is still required.
+
 ### 2026-01-09: Slave ID Runtime Configuration
 - Slave ID now configurable via VESC Tool without restart
 

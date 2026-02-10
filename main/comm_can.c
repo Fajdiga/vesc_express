@@ -56,7 +56,7 @@ static psw_status psw_stat[CAN_STATUS_MSGS_TO_STORE];
 #define RXBUF_LEN					50
 
 static twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
-static const twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+static twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 #if HW_CAN_NO_ACK_MODE
 static twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(0, 0, TWAI_MODE_NO_ACK);
 #else
@@ -90,6 +90,20 @@ static volatile uint32_t rx_total_cnt = 0;  // Total received messages counter
 
 // Private functions
 static void update_baud(CAN_BAUD baudrate);
+static void update_filter(void);
+
+static void update_filter(void) {
+	f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+
+	// Hardware-specific CAN filter hook (weak symbol, can be overridden)
+	extern bool hw_can_get_filter_config(twai_filter_config_t *cfg) __attribute__((weak));
+	if (hw_can_get_filter_config) {
+		twai_filter_config_t hw_filter;
+		if (hw_can_get_filter_config(&hw_filter)) {
+			f_config = hw_filter;
+		}
+	}
+}
 
 static void send_packet_wrapper(unsigned char *data, unsigned int len) {
 	comm_can_send_buffer(rx_buffer_last_id, data, len, rx_buffer_response_type);
@@ -823,6 +837,7 @@ void comm_can_start(int pin_tx, int pin_rx) {
 	}
 
 	update_baud(backup.config.can_baud_rate);
+	update_filter();
 
 	g_config.tx_queue_len = 20;
 	g_config.rx_queue_len = 20;
@@ -905,6 +920,7 @@ void comm_can_update_baudrate(int delay_msec) {
 	}
 
 	update_baud(backup.config.can_baud_rate);
+	update_filter();
 	twai_driver_install(&g_config, &t_config, &f_config);
 	twai_start();
 

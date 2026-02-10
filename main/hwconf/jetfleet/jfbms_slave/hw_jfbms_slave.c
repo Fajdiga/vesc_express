@@ -25,6 +25,7 @@
 #include "lbm_defines.h"
 #include "main.h"
 #include "driver/i2c.h"
+#include "driver/twai.h"
 #include "esp_sleep.h"
 #include "lispif.h"
 #include "lispbm.h"
@@ -57,6 +58,28 @@ static uint16_t m_bal_state_ic2 = 0;
 // Error messages
 static char *error_comm_bq1 = "BQ1 communication error";
 static char *error_comm_bq2 = "BQ2 communication error";
+
+bool hw_can_get_filter_config(twai_filter_config_t *cfg) {
+	if (!cfg) {
+		return false;
+	}
+
+	main_config_t *conf = (main_config_t *)&backup.config;
+	uint32_t slave_id = (uint32_t)conf->slave_id & 0x7FU;
+	uint32_t my_bal_id = 0x500U | slave_id;
+
+	*cfg = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+
+	/*
+	 * Match one standard 11-bit ID in hardware.
+	 * TWAI acceptance layout for standard IDs uses bits [31:21].
+	 * Mask bit = 0 means "compare", bit = 1 means "don't care".
+	 */
+	cfg->acceptance_code = my_bal_id << 21;
+	cfg->acceptance_mask = ~(0x7FFU << 21);
+	cfg->single_filter = true;
+	return true;
+}
 
 // ============================================================================
 // BMS Master-Slave CAN Protocol (11-bit Standard IDs)
@@ -1482,15 +1505,10 @@ static volatile int can_rx_write = 0;
 static volatile int can_rx_read = 0;
 static volatile uint32_t can_rx_overflow = 0;
 
-// Hardware CAN hook - called from comm_can.c for every received message
-// Only buffer messages addressed to this slave (balance command ID = 0x500 | slave_id)
+// Hardware CAN hook - called from comm_can.c for every received message.
+// ID filtering is handled in TWAI hardware filter for slave builds.
 void hw_can_rx_hook(uint32_t id, uint8_t *data, int len, bool is_ext) {
 	if (is_ext) return;  // Only handle standard 11-bit IDs
-
-	// Filter: only accept balance commands for this slave
-	main_config_t *cfg = (main_config_t *)&backup.config;
-	uint32_t my_bal_id = 0x500 | (uint32_t)cfg->slave_id;
-	if (id != my_bal_id) return;
 
 	int next_write = (can_rx_write + 1) % CAN_BUF_SIZE;
 	if (next_write == can_rx_read) {
