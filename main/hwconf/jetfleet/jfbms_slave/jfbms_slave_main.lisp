@@ -21,6 +21,8 @@
 ; If no command received, stop all balancing for safety
 ; Using counter: 100 iterations × 100ms = 10 seconds
 (def bal-state (list 0))  ; state[0] = iterations since last balance command (0 = no cmd received)
+; Flag: set to 1 when a balance command was received in process-can-messages
+(def bal-rx-flag (list 0))
 
 ; ============================================================================
 ; Buzzer Beep Code Handler
@@ -51,6 +53,7 @@
 
 (defun process-can-messages () {
     (var expected-bal-id (+ 0x500 slave-id))
+    (setix bal-rx-flag 0 0)
     ; Process all available CAN messages
     (loopwhile (> (slave-can-available) 0) {
         (var msg (slave-can-read))
@@ -61,14 +64,20 @@
                 ; Extract IC1 and IC2 masks separately (16-bit each, avoids 28-bit overflow)
                 (var ic1-mask (+ (bufget-u8 data 0) (shl (bufget-u8 data 1) 8)))
                 (var ic2-mask (+ (bufget-u8 data 2) (shl (bufget-u8 data 3) 8)))
+                ; Apply to BQ immediately
                 (var result (bms-set-bal-bitmap ic1-mask ic2-mask))
+                ; Read back actual mask from BQ to confirm
+                (var actual (bms-get-bal-bitmap))
                 ; Reset watchdog counter (1 = command received, will increment each loop)
                 (setix bal-state 0 1)
+                (setix bal-rx-flag 0 1)
                 (if result
                     (print (str-merge "BAL OK: IC1=0x" (str-from-n ic1-mask "%04X")
-                        " IC2=0x" (str-from-n ic2-mask "%04X")))
+                        " IC2=0x" (str-from-n ic2-mask "%04X")
+                        " actual=0x" (str-from-n actual "%08X")))
                     (print (str-merge "BAL FAIL: IC1=0x" (str-from-n ic1-mask "%04X")
-                        " IC2=0x" (str-from-n ic2-mask "%04X"))))
+                        " IC2=0x" (str-from-n ic2-mask "%04X")
+                        " actual=0x" (str-from-n actual "%08X"))))
 
                 ; Extract buzzer beep code from byte 4 if present (DLC >= 5)
                 (if (>= (buflen data) 5) {
@@ -122,10 +131,16 @@
             (setq cells '())
         } (setq bq1-ok true))
 
+        ; Check CAN again after slow I2C reads so balance commands aren't delayed
+        (process-can-messages)
+
         ; Read temperatures (BQ1-Int, TS1, TS3, BQ2-Int)
         (var temps (bms-get-temps))
         (if (eq temps nil)
             (setq temps '(-273.0 -273.0 -273.0 -273.0)))
+
+        ; Check CAN again after temperature I2C reads
+        (process-can-messages)
 
         ; Check BQ2 status from temperature (invalid if < -200)
         (if (> cells-ic2 0) {
@@ -133,6 +148,11 @@
                 (setq bq2-ok true)
                 (setq bq2-ok false))
         })
+
+        ; If a balance command was received, broadcast status immediately
+        ; so master sees the updated balance mask without waiting for next cycle
+        (if (= (ix bal-rx-flag 0) 1)
+            (bms-broadcast-all slave-id cells temps bq1-ok bq2-ok))
 
         ; Debug: print every 10 loops (1 second)
         (setq loop-count (+ loop-count 1))

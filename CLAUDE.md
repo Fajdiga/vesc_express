@@ -331,3 +331,17 @@ Or build from terminal instead: `idf.py build`
 - Restored truncated `jfbms_slave_main.lisp` diagnostic loop (was cut off at EOF since commit `7830da4`)
 - Files modified: `hw_jfbms_master.c`, `jfbms_master_main.lisp`, `jfbms_slave_main.lisp`, `BMS_MASTER_SLAVE_PROTOCOL.md`
 - Status: NOT TESTED on hardware yet
+
+### 2026-02-10: Simultaneous Slave Balancing Fix & CAN RX Optimization
+- Fixed slaves responding to balance commands with up to 2s stagger
+- Root cause: slave `hw_can_rx_hook` buffered ALL CAN bus traffic (other slaves' broadcasts filled 16-msg buffer, dropping master's balance command)
+- Fix: CAN RX hook now filters by slave ID — only buffers messages matching `0x500 | slave_id`, discards all other traffic
+- Increased slave CAN RX buffer from 16 to 64 messages for safety margin
+- Master balance thread split into 3 phases: compute all masks → send all commands in tight loop → debug print after
+- Added `bal-request` check before send phase and post-cycle immediate stop for responsive BAL OFF
+- Slave sim: added `bal-rx-flag` for immediate status broadcast after receiving balance command, added multiple `process-can-messages` calls per loop
+- Slave main: same improvements (multiple CAN drains per loop, immediate broadcast on balance RX)
+- Added balance mask change tracking in master main loop with timestamps for debugging
+- Confirmed via timestamps: master sends to all slaves within 1-2ms, response within ~100ms (1 slave loop cycle)
+- Files modified: `hw_jfbms_slave.c`, `jfbms_master_main.lisp`, `jfbms_slave_main.lisp`, `jfbms_slave_sim.lisp`
+- Status: TESTED on simulator, working correctly

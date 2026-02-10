@@ -258,7 +258,8 @@
                 })
             })
 
-            ; Slave ICs
+            ; Slave ICs - Phase 1: compute all masks
+            (var slave-masks '())
             (loopforeach sd slave-data {
                 (var s-id (ix sd 0))
                 (var cells (ix sd 1))
@@ -281,11 +282,29 @@
                     0
                 ))
 
-                ; Send IC1 and IC2 masks separately to C code (avoids 28-bit overflow)
-                ; C code combines: mask = ic1_mask | (ic2_mask << 16)
-                (master-send-balance s-id ic1-mask ic2-mask 0)
+                (setq slave-masks (cons (list s-id ic1-mask ic2-mask ic1-volts ic2-volts ic1-cnt ic2-cnt) slave-masks))
+            })
 
-                ; Debug: print per-IC details
+            ; Phase 2: send all commands in tight loop (no printing = all slaves within ms)
+            (if bal-request {
+                (loopforeach sm slave-masks {
+                    (print (str-merge "BAL SEND: S" (str-from-n (ix sm 0) "%d")
+                        " IC1=0x" (str-from-n (ix sm 1) "%04X")
+                        " IC2=0x" (str-from-n (ix sm 2) "%04X")
+                        " t=" (str-from-n (systime) "%d")))
+                    (master-send-balance (ix sm 0) (ix sm 1) (ix sm 2) 0)
+                })
+            })
+
+            ; Phase 3: debug printing (after all sends)
+            (loopforeach sm slave-masks {
+                (var s-id (ix sm 0))
+                (var ic1-mask (ix sm 1))
+                (var ic2-mask (ix sm 2))
+                (var ic1-volts (ix sm 3))
+                (var ic2-volts (ix sm 4))
+                (var ic1-cnt (ix sm 5))
+                (var ic2-cnt (ix sm 6))
                 (var s-label (str-merge "S" (str-from-n s-id "%d")))
                 (if (> ic1-mask 0) {
                     (print (str-merge s-label "-BQ1 (" (str-from-n ic1-cnt "%d") " cells):"))
@@ -297,7 +316,6 @@
                     (setq total-bal-cells (+ total-bal-cells
                         (print-bal-ic (str-merge s-label "-BQ2") ic2-volts ic2-mask global-min)))
                 })
-
                 (print (str-merge s-label " IC1=0x" (str-from-n ic1-mask "%04X")
                     " IC2=0x" (str-from-n ic2-mask "%04X")))
             })
@@ -322,6 +340,9 @@
         })
     })
 
+    ; If stop was requested mid-cycle, send stop immediately instead of waiting
+    (if (not bal-request) (stop-all-balancing))
+
     ; --- Step 4: Wait before next cycle ---
     ; 1 second for responsive updates, well within slave's 10s balance watchdog
     (sleep 1.0)
@@ -332,15 +353,16 @@
 ; ============================================================================
 
 ; Register BMS command events used by VESC Tool
-; TODO: re-enable after main loop confirmed working
-;(event-register-handler (spawn event-handler))
-;(event-enable 'event-bms-force-bal)
-(print "Event handler disabled for debug")
+(event-register-handler (spawn event-handler))
+(event-enable 'event-bms-force-bal)
 
 ; Spawn balance thread
 (print "Spawning balance thread...")
 (spawn 200 balance-thd)
 (print "Balance thread spawned")
+
+; Track previous balance mask per slave for change detection (8 slaves)
+(def prev-bal-mask (list 0 0 0 0 0 0 0 0))
 
 ; Main loop - CAN drain at 100 Hz, everything else at 10 Hz
 (print "Entering main loop...")
@@ -348,6 +370,26 @@
 (loopwhile t {
     ; Drain CAN buffer every 10ms (100 Hz) - prevents overflow with multiple slaves
     (master-can-read-all)
+
+    ; Check for balance mask changes from slaves (runs every iteration for fast detection)
+    (var sid 1)
+    (loopwhile (<= sid 8) {
+        (if (master-slave-active? sid) {
+            (var status (master-get-slave-status sid))
+            (if status {
+                (var cur-mask (car status))
+                (var prev-mask (ix prev-bal-mask (- sid 1)))
+                (if (not-eq cur-mask prev-mask) {
+                    (print (str-merge "BAL MASK CHG: S" (str-from-n sid "%d")
+                        " 0x" (str-from-n prev-mask "%08X")
+                        "->0x" (str-from-n cur-mask "%08X")
+                        " t=" (str-from-n (systime) "%d")))
+                    (setix prev-bal-mask (- sid 1) cur-mask)
+                })
+            })
+        })
+        (setq sid (+ sid 1))
+    })
 
     ; Run 10 Hz tasks every 10th iteration (100ms)
     (if (= (mod loop-cnt 10) 0) {

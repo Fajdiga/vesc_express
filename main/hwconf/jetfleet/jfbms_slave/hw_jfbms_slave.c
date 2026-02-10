@@ -1469,7 +1469,7 @@ static lbm_value ext_buzzer_beep(lbm_value *args, lbm_uint argn) {
 // Direct CAN RX Buffer - bypasses broken event system
 // ============================================================================
 
-#define CAN_BUF_SIZE 16
+#define CAN_BUF_SIZE 64
 
 typedef struct {
 	uint32_t id;
@@ -1483,9 +1483,14 @@ static volatile int can_rx_read = 0;
 static volatile uint32_t can_rx_overflow = 0;
 
 // Hardware CAN hook - called from comm_can.c for every received message
-// All messages buffered for Lisp processing (including balance cmd byte 4 buzzer code)
+// Only buffer messages addressed to this slave (balance command ID = 0x500 | slave_id)
 void hw_can_rx_hook(uint32_t id, uint8_t *data, int len, bool is_ext) {
 	if (is_ext) return;  // Only handle standard 11-bit IDs
+
+	// Filter: only accept balance commands for this slave
+	main_config_t *cfg = (main_config_t *)&backup.config;
+	uint32_t my_bal_id = 0x500 | (uint32_t)cfg->slave_id;
+	if (id != my_bal_id) return;
 
 	int next_write = (can_rx_write + 1) % CAN_BUF_SIZE;
 	if (next_write == can_rx_read) {

@@ -40,11 +40,15 @@
     (ix rng-state 0)
 })
 
+; Flag: set to 1 when a balance command was received in process-can-messages
+(def bal-rx-flag (list 0))
+
 ; ============================================================================
 ; CAN RX Handler for Balance Commands from Master
 ; ============================================================================
 (defun process-can-messages () {
     (var expected-bal-id (+ 0x500 slave-id))
+    (setix bal-rx-flag 0 0)
     (loopwhile (> (slave-can-available) 0) {
         (var msg (slave-can-read))
         (if msg {
@@ -54,10 +58,15 @@
                 ; Extract IC1 and IC2 masks separately (16-bit each, avoids 28-bit overflow)
                 (var ic1-mask (+ (bufget-u8 data 0) (shl (bufget-u8 data 1) 8)))
                 (var ic2-mask (+ (bufget-u8 data 2) (shl (bufget-u8 data 3) 8)))
-                ; Apply balance mask so status message reports it back to master
+                ; Apply balance mask immediately
                 (bms-set-bal-bitmap-demo ic1-mask ic2-mask)
-                (print (str-merge "SIM BAL: IC1=0x" (str-from-n ic1-mask "%04X")
-                    " IC2=0x" (str-from-n ic2-mask "%04X")))
+                ; Read back actual mask to confirm
+                (var actual (bms-get-bal-bitmap))
+                (setix bal-rx-flag 0 1)
+                (print (str-merge "SIM BAL RX: IC1=0x" (str-from-n ic1-mask "%04X")
+                    " IC2=0x" (str-from-n ic2-mask "%04X")
+                    " actual=0x" (str-from-n actual "%08X")
+                    " t=" (str-from-n (systime) "%d")))
 
                 ; Extract buzzer beep code from byte 4 if present (DLC >= 5)
                 (if (>= (buflen data) 5) {
@@ -98,6 +107,9 @@
             (setq cells (append cells (list (/ v 1000.0))))
         })
 
+        ; Check CAN again after cell voltage generation (don't delay balance commands)
+        (process-can-messages)
+
         ; Build temperature list with random drift +/-0.5 deg C
         (var temps '())
         (looprange i 0 4 {
@@ -106,6 +118,14 @@
             (var drift (- (* (/ (to-float r) 32768.0) 0.5) 0.5))
             (setq temps (append temps (list (+ tb drift))))
         })
+
+        ; Check CAN again after temp generation
+        (process-can-messages)
+
+        ; If a balance command was received, broadcast status immediately
+        ; so master sees updated balance mask without waiting
+        (if (= (ix bal-rx-flag 0) 1)
+            (bms-broadcast-all slave-id cells temps true true))
 
         ; Debug print every 100 loops (10 seconds)
         (setq loop-count (+ loop-count 1))
