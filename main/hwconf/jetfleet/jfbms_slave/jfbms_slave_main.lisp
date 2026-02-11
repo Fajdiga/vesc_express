@@ -24,6 +24,24 @@
 ; Flag: set to 1 when a balance command was received in process-can-messages
 (def bal-rx-flag (list 0))
 
+; CAN queue visualization
+(def can-rx-queue-cap 20)
+(defun can-qbar (lvl cap) {
+    (var n lvl)
+    (if (< n 0) (setq n 0))
+    (if (> n cap) (setq n cap))
+    (var i 0)
+    (var s "")
+    (loopwhile (< i cap) {
+        (if (< i n)
+            (setq s (str-merge s "#"))
+            (setq s (str-merge s "."))
+        )
+        (setq i (+ i 1))
+    })
+    s
+})
+
 ; ============================================================================
 ; Buzzer Beep Code Handler
 ; ============================================================================
@@ -53,11 +71,13 @@
 
 (defun process-can-messages () {
     (var expected-bal-id (+ 0x500 slave-id))
+    (var rx-count 0)
     (setix bal-rx-flag 0 0)
     ; Process all available CAN messages
     (loopwhile (> (slave-can-available) 0) {
         (var msg (slave-can-read))
         (if msg {
+            (setq rx-count (+ rx-count 1))
             (var can-id (car msg))
             (var data (cdr msg))
             (if (and (= can-id expected-bal-id) (>= (buflen data) 4)) {
@@ -87,6 +107,7 @@
             })
         })
     })
+    rx-count
 })
 
 ; ============================================================================
@@ -119,10 +140,20 @@
     (var bq1-ok true)
     (var bq2-ok (if (> cells-ic2 0) true false))
     (var loop-count 0)
+    (var can-rx-msg-sec 0)
+    (var can-pend-max-sec 0)
+    (var can-prev-s-ovf 0)
+    (var can-prev-core-ring-ovf 0)
+    (var can-prev-q-missed 0)
+    (var can-prev-q-overrun 0)
+    (var can-prev-tx-fail 0)
+    (var can-prev-tx-timeout 0)
 
     (loopwhile t {
+        (var pend0 (slave-can-available))
+        (if (> pend0 can-pend-max-sec) (setq can-pend-max-sec pend0))
         ; Process incoming CAN messages (balance commands from master)
-        (process-can-messages)
+        (setq can-rx-msg-sec (+ can-rx-msg-sec (process-can-messages)))
 
         ; Read cell voltages from both BQ chips
         (var cells (bms-get-vcells))
@@ -131,16 +162,20 @@
             (setq cells '())
         } (setq bq1-ok true))
 
+        (var pend1 (slave-can-available))
+        (if (> pend1 can-pend-max-sec) (setq can-pend-max-sec pend1))
         ; Check CAN again after slow I2C reads so balance commands aren't delayed
-        (process-can-messages)
+        (setq can-rx-msg-sec (+ can-rx-msg-sec (process-can-messages)))
 
         ; Read temperatures (BQ1-Int, TS1, TS3, BQ2-Int)
         (var temps (bms-get-temps))
         (if (eq temps nil)
             (setq temps '(-273.0 -273.0 -273.0 -273.0)))
 
+        (var pend2 (slave-can-available))
+        (if (> pend2 can-pend-max-sec) (setq can-pend-max-sec pend2))
         ; Check CAN again after temperature I2C reads
-        (process-can-messages)
+        (setq can-rx-msg-sec (+ can-rx-msg-sec (process-can-messages)))
 
         ; Check BQ2 status from temperature (invalid if < -200)
         (if (> cells-ic2 0) {
@@ -159,6 +194,41 @@
         (if (= (mod loop-count 10) 0) {
             (print (str-merge "Loop " (str-from-n loop-count "%d") " Cells: " (str-from-n (length cells) "%d")
                               " BalMask: 0x" (str-from-n (bms-get-bal-bitmap) "%08X")))
+            (var s-ovf (slave-can-overflow))
+            (var core-ring-ovf (can-rx-ring-overflow))
+            (var q-level (can-rx-queue-level))
+            (var q-peak (can-rx-queue-peak))
+            (var q-missed (can-rx-queue-missed))
+            (var q-overrun (can-rx-queue-overrun))
+            (var tx-fail (can-tx-fail))
+            (var tx-timeout (can-tx-timeout))
+            (print (str-merge "CAN QRX: [" (can-qbar q-level can-rx-queue-cap) "] "
+                "lvl=" (str-from-n q-level "%d") "/" (str-from-n can-rx-queue-cap "%d")
+                " peak=" (str-from-n q-peak "%d")))
+            (print (str-merge "CAN STAT: rx_1s=" (str-from-n can-rx-msg-sec "%d")
+                " pend_now=" (str-from-n (slave-can-available) "%d")
+                " pend_max_1s=" (str-from-n can-pend-max-sec "%d")
+                " s_ovf+=" (str-from-n (- s-ovf can-prev-s-ovf) "%d")
+                " (" (str-from-n s-ovf "%d") ")"
+                " core_ovf+=" (str-from-n (- core-ring-ovf can-prev-core-ring-ovf) "%d")
+                " (" (str-from-n core-ring-ovf "%d") ")"
+                " q_missed+=" (str-from-n (- q-missed can-prev-q-missed) "%d")
+                " (" (str-from-n q-missed "%d") ")"
+                " q_overrun+=" (str-from-n (- q-overrun can-prev-q-overrun) "%d")
+                " (" (str-from-n q-overrun "%d") ")"
+                " tx_fail+=" (str-from-n (- tx-fail can-prev-tx-fail) "%d")
+                " (" (str-from-n tx-fail "%d") ")"
+                " tx_to+=" (str-from-n (- tx-timeout can-prev-tx-timeout) "%d")
+                " (" (str-from-n tx-timeout "%d") ")"))
+
+            (setq can-prev-s-ovf s-ovf)
+            (setq can-prev-core-ring-ovf core-ring-ovf)
+            (setq can-prev-q-missed q-missed)
+            (setq can-prev-q-overrun q-overrun)
+            (setq can-prev-tx-fail tx-fail)
+            (setq can-prev-tx-timeout tx-timeout)
+            (setq can-rx-msg-sec 0)
+            (setq can-pend-max-sec 0)
         })
 
         ; Broadcast all data via CAN (cell msgs + 1 temp + 1 status)

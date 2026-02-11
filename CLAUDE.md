@@ -186,6 +186,31 @@ For proper Master-Slave communication:
   - `main/hwconf/jetfleet/jfbms_master/hw_jfbms_master.c`
 - Note: Changes are implemented; hardware/runtime validation still pending.
 
+### 2026-02-11: Queue Monitoring, Counter Reset, and Master Log Cleanup
+- Added TWAI RX queue level and peak counters in `comm_can` and exposed them to Lisp:
+  - `(can-rx-queue-level)`
+  - `(can-rx-queue-peak)`
+  - `(can-reset-counters)`
+- Added 1-second CAN diagnostics in master, slave, and slave simulator scripts:
+  - Queue bar output (`CAN QRX` / `SIM CAN QRX`)
+  - Throughput + pending max snapshot (`pend_max_1s`)
+  - Loss and TX error deltas (`CAN STAT` / `SIM CAN STAT`)
+- Changed queue missed/overrun reporting to be baseline-relative after reset/start, so startup history does not pollute runtime monitoring.
+- Reduced master runtime log load by removing verbose balancing debug prints (per-cell and per-send logs) while keeping balancing behavior unchanged.
+- Switched default build target to master in both root and main CMake defaults.
+- Fixed TWAI filter initialization compatibility by avoiding assignment of `TWAI_FILTER_CONFIG_ACCEPT_ALL()` where toolchain requires explicit field assignment/initialization.
+- Files modified:
+  - `CMakeLists.txt`
+  - `main/CMakeLists.txt`
+  - `main/comm_can.h`
+  - `main/comm_can.c`
+  - `main/lispif_vesc_extensions.c`
+  - `main/hwconf/jetfleet/jfbms_master/jfbms_master_main.lisp`
+  - `main/hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.c`
+  - `main/hwconf/jetfleet/jfbms_slave/jfbms_slave_main.lisp`
+  - `main/hwconf/jetfleet/jfbms_slave/jfbms_slave_sim.lisp`
+- Status: Build tested by user (successful), runtime logs verified on master + simulator with zero ongoing loss counters.
+
 ### 2026-01-09: Slave ID Runtime Configuration
 - Slave ID now configurable via VESC Tool without restart
 

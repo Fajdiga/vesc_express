@@ -1298,6 +1298,18 @@ static lbm_value ext_can_rx_queue_overrun(lbm_value *args, lbm_uint argn) {
 	return lbm_enc_u32(comm_can_get_rx_queue_overrun_cnt());
 }
 
+static lbm_value ext_can_rx_queue_level(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	return lbm_enc_u32(comm_can_get_rx_queue_level());
+}
+
+static lbm_value ext_can_rx_queue_peak(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	return lbm_enc_u32(comm_can_get_rx_queue_peak());
+}
+
 static lbm_value ext_can_tx_fail(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
@@ -1308,6 +1320,13 @@ static lbm_value ext_can_tx_timeout(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 	return lbm_enc_u32(comm_can_get_tx_timeout_cnt());
+}
+
+static lbm_value ext_can_reset_counters(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	comm_can_reset_counters();
+	return ENC_SYM_TRUE;
 }
 
 static lbm_value ext_can_get_current(lbm_value *args, lbm_uint argn) {
@@ -6558,8 +6577,11 @@ void lispif_load_vesc_extensions(bool main_found) {
 		lbm_add_extension("can-rx-ring-overflow", ext_can_rx_ring_overflow);
 		lbm_add_extension("can-rx-queue-missed", ext_can_rx_queue_missed);
 		lbm_add_extension("can-rx-queue-overrun", ext_can_rx_queue_overrun);
+		lbm_add_extension("can-rx-queue-level", ext_can_rx_queue_level);
+		lbm_add_extension("can-rx-queue-peak", ext_can_rx_queue_peak);
 		lbm_add_extension("can-tx-fail", ext_can_tx_fail);
 		lbm_add_extension("can-tx-timeout", ext_can_tx_timeout);
+		lbm_add_extension("can-reset-counters", ext_can_reset_counters);
 		lbm_add_extension("canget-current", ext_can_get_current);
 		lbm_add_extension("canget-current-dir", ext_can_get_current_dir);
 		lbm_add_extension("canget-current-in", ext_can_get_current_in);

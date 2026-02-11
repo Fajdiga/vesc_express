@@ -20,6 +20,24 @@
 ; True when manual balance was requested from VESC Tool
 (def bal-request false)
 
+; CAN queue visualization
+(def can-rx-queue-cap 20)
+(defun can-qbar (lvl cap) {
+    (var n lvl)
+    (if (< n 0) (setq n 0))
+    (if (> n cap) (setq n cap))
+    (var i 0)
+    (var s "")
+    (loopwhile (< i cap) {
+        (if (< i n)
+            (setq s (str-merge s "#"))
+            (setq s (str-merge s "."))
+        )
+        (setq i (+ i 1))
+    })
+    s
+})
+
 ; ============================================================================
 ; Balance Helper: compute balance mask for one BQ76952 IC group
 ; ============================================================================
@@ -86,28 +104,6 @@
     })
 })
 
-; ============================================================================
-; Balance Debug: print which cells are selected on an IC
-; ============================================================================
-; label: string like "S1-BQ1" or "Local"
-; voltages: list of cell voltages for this IC
-; mask: bitmask of cells being balanced
-; c-min: global minimum voltage
-
-(defun print-bal-ic (label voltages mask c-min) {
-    (var n (length voltages))
-    (var cnt 0)
-    (looprange i 0 n {
-        (if (> (bitwise-and mask (shl 1 i)) 0) {
-            (print (str-merge "  " label " C" (str-from-n i "%d")
-                ": " (str-from-n (ix voltages i) "%.3fV")
-                " (+" (str-from-n (* (- (ix voltages i) c-min) 1000.0) "%.0fmV") ")"))
-            (setq cnt (+ cnt 1))
-        })
-    })
-    cnt
-})
-
 ; Stop local and slave balancing outputs
 (defun stop-all-balancing () {
     (var local-ic1 (bms-get-param 'cells_ic1))
@@ -172,7 +168,6 @@
     } {
         ; --- Step 1: Read all cell voltages and find global minimum ---
         (var global-min 9.0)
-        (var global-max 0.0)
         (var any-cells false)
 
         ; Read local BQ cells (if configured)
@@ -190,7 +185,6 @@
                         (setq any-cells true)
                         (loopforeach v local-cells {
                             (if (< v global-min) (setq global-min v))
-                            (if (> v global-max) (setq global-max v))
                         })
                     })
                 })
@@ -213,22 +207,11 @@
                     (setq slave-data (cons (list sid cells s-ic1 s-ic2) slave-data))
                     (loopforeach v cells {
                         (if (< v global-min) (setq global-min v))
-                        (if (> v global-max) (setq global-max v))
                     })
                 })
             })
             (setq sid (+ sid 1))
         })
-
-        ; --- Debug: print voltage summary ---
-        (print "--- BAL cycle ---")
-        (if any-cells {
-            (print (str-merge "Vmin=" (str-from-n global-min "%.3fV")
-                " Vmax=" (str-from-n global-max "%.3fV")
-                " spread=" (str-from-n (* (- global-max global-min) 1000.0) "%.0fmV")
-                " thr=" (str-from-n (* threshold 1000.0) "%.0fmV")
-                " max_ch=" (str-from-n max-ch "%d")))
-        } (print "No cells available"))
 
         ; --- Step 2: Check if balancing is allowed ---
         (var bal-allowed (and
@@ -236,14 +219,9 @@
                 (> global-min bal-min)
         ))
 
-        (if (and any-cells (not bal-allowed))
-            (print (str-merge "BAL blocked: Vmin " (str-from-n global-min "%.3fV")
-                " < bal_min " (str-from-n bal-min "%.3fV")))
-        )
-
         (if bal-allowed {
             ; --- Step 3: Balance each IC group ---
-            (var total-bal-cells 0)
+            (var any-bal false)
 
             ; Local BQ (single IC on master) - trap in case BQ not wired
             (if (and local-cells (> (length local-cells) 0)) {
@@ -251,14 +229,10 @@
                 (trap (looprange i 0 (length local-cells) {
                     (bms-set-bal i (if (> (bitwise-and local-mask (shl 1 i)) 0) 1 0))
                 }))
-                (if (> local-mask 0) {
-                    (print "Local BQ:")
-                    (setq total-bal-cells (+ total-bal-cells
-                        (print-bal-ic "Local" local-cells local-mask global-min)))
-                })
+                (if (> local-mask 0) (setq any-bal true))
             })
 
-            ; Slave ICs - Phase 1: compute all masks
+            ; Slave ICs: compute and send all masks in tight loop
             (var slave-masks '())
             (loopforeach sd slave-data {
                 (var s-id (ix sd 0))
@@ -282,48 +256,19 @@
                     0
                 ))
 
-                (setq slave-masks (cons (list s-id ic1-mask ic2-mask ic1-volts ic2-volts ic1-cnt ic2-cnt) slave-masks))
+                (if (or (> ic1-mask 0) (> ic2-mask 0)) (setq any-bal true))
+                (setq slave-masks (cons (list s-id ic1-mask ic2-mask) slave-masks))
             })
 
-            ; Phase 2: send all commands in tight loop (no printing = all slaves within ms)
             (if bal-request {
                 (loopforeach sm slave-masks {
-                    (print (str-merge "BAL SEND: S" (str-from-n (ix sm 0) "%d")
-                        " IC1=0x" (str-from-n (ix sm 1) "%04X")
-                        " IC2=0x" (str-from-n (ix sm 2) "%04X")
-                        " t=" (str-from-n (systime) "%d")))
                     (master-send-balance (ix sm 0) (ix sm 1) (ix sm 2) 0)
                 })
             })
 
-            ; Phase 3: debug printing (after all sends)
-            (loopforeach sm slave-masks {
-                (var s-id (ix sm 0))
-                (var ic1-mask (ix sm 1))
-                (var ic2-mask (ix sm 2))
-                (var ic1-volts (ix sm 3))
-                (var ic2-volts (ix sm 4))
-                (var ic1-cnt (ix sm 5))
-                (var ic2-cnt (ix sm 6))
-                (var s-label (str-merge "S" (str-from-n s-id "%d")))
-                (if (> ic1-mask 0) {
-                    (print (str-merge s-label "-BQ1 (" (str-from-n ic1-cnt "%d") " cells):"))
-                    (setq total-bal-cells (+ total-bal-cells
-                        (print-bal-ic (str-merge s-label "-BQ1") ic1-volts ic1-mask global-min)))
-                })
-                (if (> ic2-mask 0) {
-                    (print (str-merge s-label "-BQ2 (" (str-from-n ic2-cnt "%d") " cells):"))
-                    (setq total-bal-cells (+ total-bal-cells
-                        (print-bal-ic (str-merge s-label "-BQ2") ic2-volts ic2-mask global-min)))
-                })
-                (print (str-merge s-label " IC1=0x" (str-from-n ic1-mask "%04X")
-                    " IC2=0x" (str-from-n ic2-mask "%04X")))
-            })
-
             ; Update balancing state
-            (if (> total-bal-cells 0) {
+            (if any-bal {
                 (setix bal-state 0 1)
-                (print (str-merge "BAL TOTAL: " (str-from-n total-bal-cells "%d") " cells"))
             } {
                 (setix bal-state 0 0)
                 (setq bal-request false)
@@ -367,9 +312,21 @@
 ; Main loop - CAN drain at 100 Hz, everything else at 10 Hz
 (print "Entering main loop...")
 (def loop-cnt 0)
+(def can-rx-msg-sec 0)
+(def can-pend-max-sec 0)
+(def can-prev-m-ovf 0)
+(def can-prev-core-ring-ovf 0)
+(def can-prev-q-missed 0)
+(def can-prev-q-overrun 0)
+(def can-prev-tx-fail 0)
+(def can-prev-tx-timeout 0)
+(can-reset-counters)
 (loopwhile t {
+    (var pend-before (master-can-available))
+    (if (> pend-before can-pend-max-sec) (setq can-pend-max-sec pend-before))
     ; Drain CAN buffer every 10ms (100 Hz) - prevents overflow with multiple slaves
-    (master-can-read-all)
+    (var drained (master-can-read-all))
+    (setq can-rx-msg-sec (+ can-rx-msg-sec drained))
 
     ; Check for balance mask changes from slaves (runs every iteration for fast detection)
     (var sid 1)
@@ -379,13 +336,9 @@
             (if status {
                 (var cur-mask (car status))
                 (var prev-mask (ix prev-bal-mask (- sid 1)))
-                (if (not-eq cur-mask prev-mask) {
-                    (print (str-merge "BAL MASK CHG: S" (str-from-n sid "%d")
-                        " 0x" (str-from-n prev-mask "%08X")
-                        "->0x" (str-from-n cur-mask "%08X")
-                        " t=" (str-from-n (systime) "%d")))
+                (if (not-eq cur-mask prev-mask)
                     (setix prev-bal-mask (- sid 1) cur-mask)
-                })
+                )
             })
         })
         (setq sid (+ sid 1))
@@ -426,6 +379,46 @@
     })
 
     (setq loop-cnt (+ loop-cnt 1))
+
+    ; Print CAN diagnostics every 1 second
+    (if (and (> loop-cnt 0) (= (mod loop-cnt 100) 0)) {
+        (var m-ovf (master-can-overflow))
+        (var core-ring-ovf (can-rx-ring-overflow))
+        (var q-level (can-rx-queue-level))
+        (var q-peak (can-rx-queue-peak))
+        (var q-missed (can-rx-queue-missed))
+        (var q-overrun (can-rx-queue-overrun))
+        (var tx-fail (can-tx-fail))
+        (var tx-timeout (can-tx-timeout))
+        (print (str-merge "CAN QRX: [" (can-qbar q-level can-rx-queue-cap) "] "
+            "lvl=" (str-from-n q-level "%d") "/" (str-from-n can-rx-queue-cap "%d")
+            " peak=" (str-from-n q-peak "%d")))
+        (print (str-merge "CAN STAT: rx_1s=" (str-from-n can-rx-msg-sec "%d")
+            " pend_now=" (str-from-n (master-can-available) "%d")
+            " pend_max_1s=" (str-from-n can-pend-max-sec "%d")
+            " m_ovf+=" (str-from-n (- m-ovf can-prev-m-ovf) "%d")
+            " (" (str-from-n m-ovf "%d") ")"
+            " core_ovf+=" (str-from-n (- core-ring-ovf can-prev-core-ring-ovf) "%d")
+            " (" (str-from-n core-ring-ovf "%d") ")"
+            " q_missed+=" (str-from-n (- q-missed can-prev-q-missed) "%d")
+            " (" (str-from-n q-missed "%d") ")"
+            " q_overrun+=" (str-from-n (- q-overrun can-prev-q-overrun) "%d")
+            " (" (str-from-n q-overrun "%d") ")"
+            " tx_fail+=" (str-from-n (- tx-fail can-prev-tx-fail) "%d")
+            " (" (str-from-n tx-fail "%d") ")"
+            " tx_to+=" (str-from-n (- tx-timeout can-prev-tx-timeout) "%d")
+            " (" (str-from-n tx-timeout "%d") ")"))
+
+        (setq can-prev-m-ovf m-ovf)
+        (setq can-prev-core-ring-ovf core-ring-ovf)
+        (setq can-prev-q-missed q-missed)
+        (setq can-prev-q-overrun q-overrun)
+        (setq can-prev-tx-fail tx-fail)
+        (setq can-prev-tx-timeout tx-timeout)
+        (setq can-rx-msg-sec 0)
+        (setq can-pend-max-sec 0)
+    })
+
     ; 10ms loop (100 Hz CAN drain, 10 Hz everything else)
     (sleep 0.01)
 })

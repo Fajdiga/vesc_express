@@ -90,6 +90,10 @@ static volatile uint32_t rx_total_cnt = 0;  // Total received messages counter
 static volatile uint32_t rx_ring_overflow_cnt = 0;
 static volatile uint32_t rx_queue_missed_cnt = 0;
 static volatile uint32_t rx_queue_overrun_cnt = 0;
+static volatile uint32_t rx_queue_missed_base = 0;
+static volatile uint32_t rx_queue_overrun_base = 0;
+static volatile uint32_t rx_queue_level_cnt = 0;
+static volatile uint32_t rx_queue_peak_cnt = 0;
 static volatile uint32_t tx_fail_cnt = 0;
 static volatile uint32_t tx_timeout_cnt = 0;
 
@@ -98,7 +102,9 @@ static void update_baud(CAN_BAUD baudrate);
 static void update_filter(void);
 
 static void update_filter(void) {
-	f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+	f_config.acceptance_code = 0;
+	f_config.acceptance_mask = 0xFFFFFFFF;
+	f_config.single_filter = true;
 
 	// Hardware-specific CAN filter hook (weak symbol, can be overridden)
 	extern bool hw_can_get_filter_config(twai_filter_config_t *cfg) __attribute__((weak));
@@ -604,8 +610,22 @@ static void rx_task(void *arg) {
 
 		twai_status_info_t status;
 		twai_get_status_info(&status);
-		rx_queue_missed_cnt = status.rx_missed_count;
-		rx_queue_overrun_cnt = status.rx_overrun_count;
+		if (status.rx_missed_count >= rx_queue_missed_base) {
+			rx_queue_missed_cnt = status.rx_missed_count - rx_queue_missed_base;
+		} else {
+			rx_queue_missed_base = status.rx_missed_count;
+			rx_queue_missed_cnt = 0;
+		}
+		if (status.rx_overrun_count >= rx_queue_overrun_base) {
+			rx_queue_overrun_cnt = status.rx_overrun_count - rx_queue_overrun_base;
+		} else {
+			rx_queue_overrun_base = status.rx_overrun_count;
+			rx_queue_overrun_cnt = 0;
+		}
+		rx_queue_level_cnt = status.msgs_to_rx;
+		if (rx_queue_level_cnt > rx_queue_peak_cnt) {
+			rx_queue_peak_cnt = rx_queue_level_cnt;
+		}
 		if (status.state == TWAI_STATE_BUS_OFF || status.state == TWAI_STATE_RECOVERING) {
 			twai_initiate_recovery();
 
@@ -844,6 +864,10 @@ void comm_can_start(int pin_tx, int pin_rx) {
 	rx_ring_overflow_cnt = 0;
 	rx_queue_missed_cnt = 0;
 	rx_queue_overrun_cnt = 0;
+	rx_queue_missed_base = 0;
+	rx_queue_overrun_base = 0;
+	rx_queue_level_cnt = 0;
+	rx_queue_peak_cnt = 0;
 	tx_fail_cnt = 0;
 	tx_timeout_cnt = 0;
 
@@ -919,12 +943,45 @@ uint32_t comm_can_get_rx_queue_overrun_cnt(void) {
 	return rx_queue_overrun_cnt;
 }
 
+uint32_t comm_can_get_rx_queue_level(void) {
+	return rx_queue_level_cnt;
+}
+
+uint32_t comm_can_get_rx_queue_peak(void) {
+	return rx_queue_peak_cnt;
+}
+
 uint32_t comm_can_get_tx_fail_cnt(void) {
 	return tx_fail_cnt;
 }
 
 uint32_t comm_can_get_tx_timeout_cnt(void) {
 	return tx_timeout_cnt;
+}
+
+void comm_can_reset_counters(void) {
+	rx_recovery_cnt = 0;
+	rx_total_cnt = 0;
+	rx_ring_overflow_cnt = 0;
+	rx_queue_missed_cnt = 0;
+	rx_queue_overrun_cnt = 0;
+	rx_queue_peak_cnt = 0;
+	tx_fail_cnt = 0;
+	tx_timeout_cnt = 0;
+
+	if (init_done) {
+		twai_status_info_t status;
+		if (twai_get_status_info(&status) == ESP_OK) {
+			rx_queue_missed_base = status.rx_missed_count;
+			rx_queue_overrun_base = status.rx_overrun_count;
+			rx_queue_level_cnt = status.msgs_to_rx;
+			return;
+		}
+	}
+
+	rx_queue_missed_base = 0;
+	rx_queue_overrun_base = 0;
+	rx_queue_level_cnt = 0;
 }
 
 void comm_can_use_vesc_decoder(bool use_vesc_dec) {

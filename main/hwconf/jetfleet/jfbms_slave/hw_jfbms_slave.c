@@ -68,8 +68,6 @@ bool hw_can_get_filter_config(twai_filter_config_t *cfg) {
 	uint32_t slave_id = (uint32_t)conf->slave_id & 0x7FU;
 	uint32_t my_bal_id = 0x500U | slave_id;
 
-	*cfg = TWAI_FILTER_CONFIG_ACCEPT_ALL();
-
 	/*
 	 * Match one standard 11-bit ID in hardware.
 	 * TWAI acceptance layout for standard IDs uses bits [31:21].
@@ -1531,6 +1529,13 @@ static lbm_value ext_slave_can_available(lbm_value *args, lbm_uint argn) {
 	return lbm_enc_i(count);
 }
 
+// (slave-can-overflow) - Returns number of dropped messages due to full buffer
+static lbm_value ext_slave_can_overflow(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	return lbm_enc_u32(can_rx_overflow);
+}
+
 // (slave-can-read) - Read one message from buffer, returns (id . data) or nil
 static lbm_value ext_slave_can_read(lbm_value *args, lbm_uint argn) {
 	(void)args;
@@ -1697,6 +1702,7 @@ static void load_extensions(bool main_found) {
 
 	// Direct CAN buffer extensions (bypass broken event system)
 	lbm_add_extension("slave-can-available", ext_slave_can_available);
+	lbm_add_extension("slave-can-overflow", ext_slave_can_overflow);
 	lbm_add_extension("slave-can-read", ext_slave_can_read);
 
 	// VESC BMS integration (for VESC Tool display when connected to slave)
