@@ -1857,6 +1857,14 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 
 	commands_printf_lisp("CAN RX buf: head=%d tail=%d overflow=%lu",
 		can_rx_head, can_rx_tail, (unsigned long)can_rx_overflow);
+	commands_printf_lisp("CAN core: rx_total=%lu rx_recovery=%d ring_ovf=%lu q_missed=%lu q_overrun=%lu tx_fail=%lu tx_timeout=%lu",
+		(unsigned long)comm_can_get_rx_total_cnt(),
+		comm_can_get_rx_recovery_cnt(),
+		(unsigned long)comm_can_get_rx_ring_overflow_cnt(),
+		(unsigned long)comm_can_get_rx_queue_missed_cnt(),
+		(unsigned long)comm_can_get_rx_queue_overrun_cnt(),
+		(unsigned long)comm_can_get_tx_fail_cnt(),
+		(unsigned long)comm_can_get_tx_timeout_cnt());
 
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 	for (int i = 0; i < MAX_SLAVES; i++) {

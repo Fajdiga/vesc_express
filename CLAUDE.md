@@ -169,6 +169,23 @@ For proper Master-Slave communication:
   - `main/hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.c`
 - Note: Changes are implemented and committed; runtime verification on hardware is still required.
 
+### 2026-02-11: CAN RX/TX Loss Monitoring Counters
+- Added core CAN diagnostics counters for dropped RX ring frames, TWAI RX queue misses/overruns, and TX failures/timeouts.
+- RX ring write path now detects full condition and increments overflow counter instead of blindly overwriting unread entries.
+- Exposed new counters to Lisp via:
+  - `(can-rx-ring-overflow)`
+  - `(can-rx-queue-missed)`
+  - `(can-rx-queue-overrun)`
+  - `(can-tx-fail)`
+  - `(can-tx-timeout)`
+- Extended JFBMS master `can-debug` output with these core CAN metrics.
+- Files modified:
+  - `main/comm_can.h`
+  - `main/comm_can.c`
+  - `main/lispif_vesc_extensions.c`
+  - `main/hwconf/jetfleet/jfbms_master/hw_jfbms_master.c`
+- Note: Changes are implemented; hardware/runtime validation still pending.
+
 ### 2026-01-09: Slave ID Runtime Configuration
 - Slave ID now configurable via VESC Tool without restart
 

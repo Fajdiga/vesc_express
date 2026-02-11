@@ -1280,6 +1280,36 @@ static lbm_value ext_can_msg_age(lbm_value *args, lbm_uint argn) {
 	}
 }
 
+static lbm_value ext_can_rx_ring_overflow(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	return lbm_enc_u32(comm_can_get_rx_ring_overflow_cnt());
+}
+
+static lbm_value ext_can_rx_queue_missed(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	return lbm_enc_u32(comm_can_get_rx_queue_missed_cnt());
+}
+
+static lbm_value ext_can_rx_queue_overrun(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	return lbm_enc_u32(comm_can_get_rx_queue_overrun_cnt());
+}
+
+static lbm_value ext_can_tx_fail(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	return lbm_enc_u32(comm_can_get_tx_fail_cnt());
+}
+
+static lbm_value ext_can_tx_timeout(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	return lbm_enc_u32(comm_can_get_tx_timeout_cnt());
+}
+
 static lbm_value ext_can_get_current(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 	can_status_msg *stat0 = comm_can_get_status_msg_id(lbm_dec_as_i32(args[0]));
@@ -6525,6 +6555,11 @@ void lispif_load_vesc_extensions(bool main_found) {
 		lbm_add_extension("can-update-baud", ext_can_update_baud);
 
 		lbm_add_extension("can-msg-age", ext_can_msg_age);
+		lbm_add_extension("can-rx-ring-overflow", ext_can_rx_ring_overflow);
+		lbm_add_extension("can-rx-queue-missed", ext_can_rx_queue_missed);
+		lbm_add_extension("can-rx-queue-overrun", ext_can_rx_queue_overrun);
+		lbm_add_extension("can-tx-fail", ext_can_tx_fail);
+		lbm_add_extension("can-tx-timeout", ext_can_tx_timeout);
 		lbm_add_extension("canget-current", ext_can_get_current);
 		lbm_add_extension("canget-current-dir", ext_can_get_current_dir);
 		lbm_add_extension("canget-current-in", ext_can_get_current_in);

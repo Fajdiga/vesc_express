@@ -87,6 +87,11 @@ static volatile bool use_vesc_decoder = true;
 
 static volatile int rx_recovery_cnt = 0;
 static volatile uint32_t rx_total_cnt = 0;  // Total received messages counter
+static volatile uint32_t rx_ring_overflow_cnt = 0;
+static volatile uint32_t rx_queue_missed_cnt = 0;
+static volatile uint32_t rx_queue_overrun_cnt = 0;
+static volatile uint32_t tx_fail_cnt = 0;
+static volatile uint32_t tx_timeout_cnt = 0;
 
 // Private functions
 static void update_baud(CAN_BAUD baudrate);
@@ -581,10 +586,17 @@ static void rx_task(void *arg) {
 
 		if (res == ESP_OK) {
 			rx_total_cnt++;
-			rx_buf[rx_write] = rx_message;
-			rx_write++;
-			if (rx_write >= RXBUF_LEN) {
-				rx_write = 0;
+			int next_write = rx_write + 1;
+			if (next_write >= RXBUF_LEN) {
+				next_write = 0;
+			}
+
+			// Ring full: drop newest and keep existing queue order.
+			if (next_write == rx_read) {
+				rx_ring_overflow_cnt++;
+			} else {
+				rx_buf[rx_write] = rx_message;
+				rx_write = next_write;
 			}
 
 			xSemaphoreGive(proc_sem);
@@ -592,6 +604,8 @@ static void rx_task(void *arg) {
 
 		twai_status_info_t status;
 		twai_get_status_info(&status);
+		rx_queue_missed_cnt = status.rx_missed_count;
+		rx_queue_overrun_cnt = status.rx_overrun_count;
 		if (status.state == TWAI_STATE_BUS_OFF || status.state == TWAI_STATE_RECOVERING) {
 			twai_initiate_recovery();
 
@@ -823,6 +837,16 @@ void comm_can_start(int pin_tx, int pin_rx) {
 		psw_stat[i].id = -1;
 	}
 
+	rx_write = 0;
+	rx_read = 0;
+	rx_recovery_cnt = 0;
+	rx_total_cnt = 0;
+	rx_ring_overflow_cnt = 0;
+	rx_queue_missed_cnt = 0;
+	rx_queue_overrun_cnt = 0;
+	tx_fail_cnt = 0;
+	tx_timeout_cnt = 0;
+
 	if (!sem_init_done) {
 		ping_sem = xSemaphoreCreateBinary();
 		proc_sem = xSemaphoreCreateBinary();
@@ -881,6 +905,26 @@ int comm_can_get_rx_recovery_cnt(void) {
 
 uint32_t comm_can_get_rx_total_cnt(void) {
 	return rx_total_cnt;
+}
+
+uint32_t comm_can_get_rx_ring_overflow_cnt(void) {
+	return rx_ring_overflow_cnt;
+}
+
+uint32_t comm_can_get_rx_queue_missed_cnt(void) {
+	return rx_queue_missed_cnt;
+}
+
+uint32_t comm_can_get_rx_queue_overrun_cnt(void) {
+	return rx_queue_overrun_cnt;
+}
+
+uint32_t comm_can_get_tx_fail_cnt(void) {
+	return tx_fail_cnt;
+}
+
+uint32_t comm_can_get_tx_timeout_cnt(void) {
+	return tx_timeout_cnt;
 }
 
 void comm_can_use_vesc_decoder(bool use_vesc_dec) {
@@ -989,7 +1033,13 @@ void comm_can_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len) {
 		return;
 	}
 
-	twai_transmit(&tx_msg, 5);
+	esp_err_t res = twai_transmit(&tx_msg, 5);
+	if (res != ESP_OK) {
+		tx_fail_cnt++;
+		if (res == ESP_ERR_TIMEOUT) {
+			tx_timeout_cnt++;
+		}
+	}
 
 	xSemaphoreGive(send_mutex);
 }
@@ -1017,7 +1067,13 @@ void comm_can_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len) {
 		return;
 	}
 
-	twai_transmit(&tx_msg, 5);
+	esp_err_t res = twai_transmit(&tx_msg, 5);
+	if (res != ESP_OK) {
+		tx_fail_cnt++;
+		if (res == ESP_ERR_TIMEOUT) {
+			tx_timeout_cnt++;
+		}
+	}
 
 	xSemaphoreGive(send_mutex);
 }
