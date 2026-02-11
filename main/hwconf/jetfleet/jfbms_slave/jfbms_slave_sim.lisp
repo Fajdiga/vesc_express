@@ -1,27 +1,34 @@
 ; JFBMS Slave Simulator - Sends realistic fake cell/temp data via CAN
 ; No BQ76952 hardware required - for testing master CAN protocol
-; Hardcoded to 32 cells (16+16) to match dual BQ76952 configuration
 
 ; ============================================================================
-; Configuration
+; Configuration - Read from VESC Tool package settings
 ; ============================================================================
 (def slave-id (bms-get-slave-id))
-(def total-cells 32)
+(def cells-ic1 (bms-get-param 'cells_ic1))
+(def cells-ic2 (bms-get-param 'cells_ic2))
+(def total-cells (+ cells-ic1 cells-ic2))
 
-; Initialize BMS with 16+16 cells so C-level M_CELLS is set correctly
-; This makes can_send_all_cells send all 8 messages and status sends cell_count=32
-(bms-init 16 16)
+; Initialize BMS with configured cell counts so C-level M_CELLS is set correctly
+; This makes can_send_all_cells send the right number of messages and status sends correct cell_count
+(bms-init cells-ic1 cells-ic2)
 
 ; ============================================================================
 ; Simulated Cell Base Voltages (mV, slightly different per cell)
 ; ============================================================================
 ; Range: ~3650mV to ~3750mV to mimic real pack imbalance
-(def cell-bases (list
+; Pool of 32 base values; only the first total-cells are used
+(def cell-bases-pool (list
     3700.0 3749.0 3698.0 3747.0 3696.0 3745.0 3694.0 3743.0
     3692.0 3741.0 3690.0 3739.0 3688.0 3737.0 3686.0 3735.0
     3710.0 3659.0 3708.0 3657.0 3706.0 3655.0 3704.0 3653.0
     3702.0 3651.0 3720.0 3669.0 3718.0 3667.0 3716.0 3665.0
 ))
+; Trim to configured cell count
+(def cell-bases '())
+(looprange i 0 total-cells
+    (setq cell-bases (append cell-bases (list (ix cell-bases-pool i))))
+)
 
 ; ============================================================================
 ; Simulated Temperature Base Values (deg C)
@@ -225,6 +232,7 @@
 
 (print "=== JFBMS Slave SIMULATOR ===")
 (print (str-merge "Slave ID: " (str-from-n slave-id "%d")))
+(print (str-merge "Cells IC1: " (str-from-n cells-ic1 "%d") ", IC2: " (str-from-n cells-ic2 "%d")))
 (print (str-merge "Simulated cells: " (str-from-n total-cells "%d")))
 (print "Broadcasting fake data at 10 Hz (100ms)...")
 

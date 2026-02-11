@@ -159,6 +159,17 @@ For proper Master-Slave communication:
 
 ## Development History
 
+### 2026-02-11: Fix LBM Extension Slot Overflow & Dynamic Sim Cell Config
+- Slave `bms-get-param` and other late-registered extensions silently failed because LBM extension table (350 slots) was full — upstream `lispif_vesc_extensions.c` grew from 189 to 197 extensions, pushing total past limit.
+- Added `USER_EXTENSION_STORAGE_SIZE 50` to slave header (matching master), giving 400 total slots.
+- Updated `jfbms_slave_sim.lisp` to read `cells_ic1`/`cells_ic2` from VESC Tool package config instead of hardcoded 16+16.
+- Simulator now respects VESC Tool cell count settings (e.g. 5+5 = 10 cells).
+- Files modified:
+  - `main/hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.h`
+  - `main/hwconf/jetfleet/jfbms_slave/jfbms_slave_sim.lisp`
+  - `main/CMakeLists.txt` (default build target changed to slave)
+- Status: Tested and working on hardware.
+
 ### 2026-02-10: Slave TWAI Hardware Filter & CAN Filter Hook Refactor
 - Added a board-specific CAN filter hook path so `comm_can.c` can use hardware-defined TWAI filters when provided, while defaulting to `ACCEPT_ALL` for other hardware.
 - Implemented `hw_can_get_filter_config(...)` in JFBMS slave to accept only master balance command ID `0x500 | slave_id` in TWAI hardware.

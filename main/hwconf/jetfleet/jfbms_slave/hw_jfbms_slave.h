@@ -32,6 +32,7 @@
 #define HW_INIT_HOOK()				hw_init()
 #define HW_CAN_PING_SCAN_ENABLED	0  // Disable VESC CAN ping scan - slave uses 11-bit protocol
 #define HW_CAN_NO_ACK_MODE			0  // Normal ACK mode for reliable communication
+#define USER_EXTENSION_STORAGE_SIZE	50 // Extra slots for hw extensions (default 350 not enough)
 //#define HW_POST_LISPIF_HOOK()		vTaskDelay(200);
 
 // Configuration overrides
