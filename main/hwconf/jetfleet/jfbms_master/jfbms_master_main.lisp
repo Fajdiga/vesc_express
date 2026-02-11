@@ -19,6 +19,11 @@
 (def bal-state (list 0))
 ; True when manual balance was requested from VESC Tool
 (def bal-request false)
+; Cached slave masks, updated by balance thread and transmitted by main loop keepalive
+(def slave-bal-mask-ic1 (list 0 0 0 0 0 0 0 0))
+(def slave-bal-mask-ic2 (list 0 0 0 0 0 0 0 0))
+; One-shot request for immediate keepalive TX (removes 0-1s phase delay on start)
+(def bal-keepalive-kick (list 0))
 
 ; CAN queue visualization
 (def can-rx-queue-cap 20)
@@ -122,6 +127,12 @@
         (setq sid (+ sid 1))
     })
 
+    (looprange i 0 8 {
+        (setix slave-bal-mask-ic1 i 0)
+        (setix slave-bal-mask-ic2 i 0)
+    })
+
+    (setix bal-keepalive-kick 0 0)
     (setix bal-state 0 0)
 })
 
@@ -131,10 +142,12 @@
         (recv
             ((event-bms-force-bal (? v)) {
                     (setq bal-request (= v 1))
-                    (if bal-request
+                    (if bal-request {
+                        (setix bal-keepalive-kick 0 1)
                         (print "BAL CMD: start")
+                    } {
                         (print "BAL CMD: stop")
-                    )
+                    })
             })
             (_ nil)
 )))
@@ -142,10 +155,11 @@
 ; ============================================================================
 ; Balance Thread
 ; ============================================================================
-; Every second: read cached slave voltages, compute balance masks, send.
+; Compute balance masks once per cycle from cached voltages.
+; Main loop sends cached slave balance masks at 1 Hz while balancing is active.
 ; No pause needed for slave cells (they send voltages continuously via CAN).
 ; Only local BQ needs pause for clean I2C readings (when wired).
-; 1s cycle keeps us within the slave's 10s balance watchdog.
+; 1 Hz command keepalive minimizes CAN load and stays within 10 s watchdog.
 
 (defun balance-thd () (loopwhile t {
     ; Read package config each iteration so threshold changes take effect
@@ -232,8 +246,9 @@
                 (if (> local-mask 0) (setq any-bal true))
             })
 
-            ; Slave ICs: compute and send all masks in tight loop
-            (var slave-masks '())
+            ; Slave ICs: compute masks and cache them for 1 Hz keepalive TX in main loop.
+            ; Do not clear global cached masks before compute: main loop can transmit in
+            ; parallel, and a transient all-zero cache would make balancing blink off.
             (loopforeach sd slave-data {
                 (var s-id (ix sd 0))
                 (var cells (ix sd 1))
@@ -257,13 +272,8 @@
                 ))
 
                 (if (or (> ic1-mask 0) (> ic2-mask 0)) (setq any-bal true))
-                (setq slave-masks (cons (list s-id ic1-mask ic2-mask) slave-masks))
-            })
-
-            (if bal-request {
-                (loopforeach sm slave-masks {
-                    (master-send-balance (ix sm 0) (ix sm 1) (ix sm 2) 0)
-                })
+                (setix slave-bal-mask-ic1 (- s-id 1) ic1-mask)
+                (setix slave-bal-mask-ic2 (- s-id 1) ic2-mask)
             })
 
             ; Update balancing state
@@ -288,9 +298,8 @@
     ; If stop was requested mid-cycle, send stop immediately instead of waiting
     (if (not bal-request) (stop-all-balancing))
 
-    ; --- Step 4: Wait before next cycle ---
-    ; 1 second for responsive updates, well within slave's 10s balance watchdog
-    (sleep 1.0)
+    ; Balance compute cadence (actual slave TX keepalive runs in main loop at 1 Hz)
+    (sleep 0.2)
 }))
 
 ; ============================================================================
@@ -309,7 +318,7 @@
 ; Track previous balance mask per slave for change detection (8 slaves)
 (def prev-bal-mask (list 0 0 0 0 0 0 0 0))
 
-; Main loop - CAN drain at 100 Hz, everything else at 10 Hz
+; Main loop - fixed 20 Hz; heavy tasks gated to 10 Hz
 (print "Entering main loop...")
 (def loop-cnt 0)
 (def can-rx-msg-sec 0)
@@ -324,7 +333,7 @@
 (loopwhile t {
     (var pend-before (master-can-available))
     (if (> pend-before can-pend-max-sec) (setq can-pend-max-sec pend-before))
-    ; Drain CAN buffer every 10ms (100 Hz) - prevents overflow with multiple slaves
+    ; Drain CAN buffer every 50ms (20 Hz)
     (var drained (master-can-read-all))
     (setq can-rx-msg-sec (+ can-rx-msg-sec drained))
 
@@ -344,8 +353,27 @@
         (setq sid (+ sid 1))
     })
 
-    ; Run 10 Hz tasks every 10th iteration (100ms)
-    (if (= (mod loop-cnt 10) 0) {
+    ; Run 10 Hz tasks every 2nd iteration (100ms)
+    (if (= (mod loop-cnt 2) 0) {
+        ; Balance keepalive to slaves at 1 Hz while balancing is active.
+        ; This resets slave 10s watchdog with lower CAN bus load.
+        (if (and bal-request
+                 (= (ix bal-state 0) 1)
+                 (or (= (mod loop-cnt 20) 0) (= (ix bal-keepalive-kick 0) 1))) {
+            (var tx-sid 1)
+            (loopwhile (<= tx-sid 8) {
+                (if (master-slave-active? tx-sid) {
+                    (master-send-balance
+                        tx-sid
+                        (ix slave-bal-mask-ic1 (- tx-sid 1))
+                        (ix slave-bal-mask-ic2 (- tx-sid 1))
+                        0)
+                })
+                (setq tx-sid (+ tx-sid 1))
+            })
+            (setix bal-keepalive-kick 0 0)
+        })
+
         ; Update VESC BMS display with slave cell voltages
         (master-update-vesc-bms)
 
@@ -381,7 +409,7 @@
     (setq loop-cnt (+ loop-cnt 1))
 
     ; Print CAN diagnostics every 1 second
-    (if (and (> loop-cnt 0) (= (mod loop-cnt 100) 0)) {
+    (if (and (> loop-cnt 0) (= (mod loop-cnt 20) 0)) {
         (var m-ovf (master-can-overflow))
         (var core-ring-ovf (can-rx-ring-overflow))
         (var q-level (can-rx-queue-level))
@@ -419,6 +447,6 @@
         (setq can-pend-max-sec 0)
     })
 
-    ; 10ms loop (100 Hz CAN drain, 10 Hz everything else)
-    (sleep 0.01)
+    ; 50ms loop (20 Hz CAN drain, 10 Hz heavy tasks)
+    (sleep 0.05)
 })

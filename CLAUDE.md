@@ -211,6 +211,26 @@ For proper Master-Slave communication:
   - `main/hwconf/jetfleet/jfbms_slave/jfbms_slave_sim.lisp`
 - Status: Build tested by user (successful), runtime logs verified on master + simulator with zero ongoing loss counters.
 
+### 2026-02-11: Master Loop Retune, 1 Hz Balance Keepalive, and Blink Fix
+- Retuned master main-loop timing to match observed traffic profile:
+  - CAN RX drain now runs at fixed 20 Hz (`sleep 0.05`)
+  - VESC update/timeout/connectivity tasks remain gated at 10 Hz
+  - 1-second diagnostics now use 20-loop gating (instead of 100-loop gating)
+- Reworked balance command flow to decouple mask computation from command keepalive:
+  - Balance thread computes masks from latest cached local+slave voltages
+  - Main loop transmits cached masks as keepalive while balancing is active
+- Set slave balance keepalive cadence to 1 Hz to reduce CAN load while still satisfying slave 10s watchdog.
+- Added immediate first keepalive transmission on `BAL CMD: start` to avoid random 0-1 second phase delay before first command.
+- Fixed balancing "blink" in VESC Tool by removing transient global mask clearing during recompute:
+  - Previously, keepalive could catch an all-zero intermediate cache and momentarily command balance off
+  - Now cached masks are updated in place, preventing spurious off pulses
+- Confirmed protocol handling remains correct:
+  - Master sends one target mask command per slave (no extra zero pre-send from master)
+  - Slave C implementation performs required BQ toggle internally (`0 -> new_mask`) when applying bitmap
+- Files modified:
+  - `main/hwconf/jetfleet/jfbms_master/jfbms_master_main.lisp`
+- Status: User runtime logs show clean CAN counters (`m_ovf/core_ovf/q_missed/q_overrun/tx_fail/tx_to = 0`) and stable balancing behavior after blink fix.
+
 ### 2026-01-09: Slave ID Runtime Configuration
 - Slave ID now configurable via VESC Tool without restart
 
