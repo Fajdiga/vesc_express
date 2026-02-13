@@ -1589,13 +1589,16 @@ static lbm_value ext_slave_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 
 	// Extract cell voltages from list (pass all values through, no filtering)
 	uint32_t bal_bitmap = get_bal_bitmap();
+	int ic1_cnt = m_cells_ic1;
 	lbm_value curr = args[0];
 	while (lbm_is_cons(curr) && num_cells < BMS_MAX_CELLS) {
 		lbm_value cell = lbm_car(curr);
 		if (lbm_is_number(cell)) {
 			float v = lbm_dec_as_float(cell);
 			bms->v_cell[num_cells] = v;
-			bms->bal_state[num_cells] = (bal_bitmap >> num_cells) & 1;
+			// Balance mask is ic1[0:15] | ic2[16:31], map cell index to correct bit
+			int bit = (num_cells < ic1_cnt) ? num_cells : (16 + num_cells - ic1_cnt);
+			bms->bal_state[num_cells] = (bal_bitmap >> bit) & 1;
 			v_tot += v;
 			if (v < v_min) v_min = v;
 			if (v > v_max) v_max = v;

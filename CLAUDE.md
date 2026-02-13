@@ -159,6 +159,27 @@ For proper Master-Slave communication:
 
 ## Development History
 
+### 2026-02-13: Fix IC2 Balance State Display & Add Balance Debug Logging
+
+**Problem:** VESC Tool BMS data tab only showed IC1 cells as orange (balancing). IC2 cells never showed balance state even when actively balancing.
+
+**Root cause:** Balance mask is packed as `ic1[bits 0-15] | ic2[bits 16-31]`, but `bal_state[]` was extracted by shifting by flat cell index `c`. For IC2 cells (e.g. c=5 in a 5+5 config), it read bit 5 instead of bit 16 — always 0.
+
+**Fix:** Map cell index to correct bit position: `bit = (c < ic1_cnt) ? c : (16 + c - ic1_cnt)`. Applied to both master (`ext_master_update_vesc_bms`) and slave (`ext_slave_update_vesc_bms`).
+
+**Also added:** Binary balance mask logging in master balance thread. Prints per-cell balance state as `BAL S1 IC1:0101 IC2:1000 min=3.284` every compute cycle when balancing is active.
+
+**Also cleaned up:** Removed CAN queue diagnostics from master main loop (queue bar, throughput counters, loss delta prints) to reduce log noise.
+
+**Files modified:**
+- `main/hwconf/jetfleet/jfbms_master/hw_jfbms_master.c` — IC2 bal_state bit mapping fix
+- `main/hwconf/jetfleet/jfbms_master/jfbms_master_main.lisp` — mask-to-bin helper, balance debug prints, removed CAN diag clutter
+- `main/hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.c` — IC2 bal_state bit mapping fix
+
+**Status:** Tested and working — both IC1 and IC2 cells show orange in VESC Tool when balancing.
+
+---
+
 ### 2026-02-13: Dual BQ76952 I2C Address Change (Remove Chip Selection)
 
 **Problem:** Both BQ76952 chips shared the same default I2C address (0x08). The slave had to use enable pins (`PIN_BQ1_EN`, `PIN_BQ2_EN`) to toggle which chip was active before every I2C operation. Only one chip could communicate at a time, adding latency and complexity.

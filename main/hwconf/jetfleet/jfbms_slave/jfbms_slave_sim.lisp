@@ -50,24 +50,6 @@
 ; Flag: set to 1 when a balance command was received in process-can-messages
 (def bal-rx-flag (list 0))
 
-; CAN queue visualization
-(def can-rx-queue-cap 20)
-(defun can-qbar (lvl cap) {
-    (var n lvl)
-    (if (< n 0) (setq n 0))
-    (if (> n cap) (setq n cap))
-    (var i 0)
-    (var s "")
-    (loopwhile (< i cap) {
-        (if (< i n)
-            (setq s (str-merge s "#"))
-            (setq s (str-merge s "."))
-        )
-        (setq i (+ i 1))
-    })
-    s
-})
-
 ; ============================================================================
 ; CAN RX Handler for Balance Commands from Master
 ; ============================================================================
@@ -115,20 +97,10 @@
 
 (defun main-thd () {
     (var loop-count 0)
-    (var can-rx-msg-sec 0)
-    (var can-pend-max-sec 0)
-    (var can-prev-s-ovf 0)
-    (var can-prev-core-ring-ovf 0)
-    (var can-prev-q-missed 0)
-    (var can-prev-q-overrun 0)
-    (var can-prev-tx-fail 0)
-    (var can-prev-tx-timeout 0)
 
     (loopwhile t {
-        (var pend0 (slave-can-available))
-        (if (> pend0 can-pend-max-sec) (setq can-pend-max-sec pend0))
         ; Process incoming CAN messages (balance + buzzer commands from master)
-        (setq can-rx-msg-sec (+ can-rx-msg-sec (process-can-messages)))
+        (process-can-messages)
 
         ; Build cell voltage list with random drift
         (var cells '())
@@ -145,10 +117,8 @@
             (setq cells (append cells (list (/ v 1000.0))))
         })
 
-        (var pend1 (slave-can-available))
-        (if (> pend1 can-pend-max-sec) (setq can-pend-max-sec pend1))
         ; Check CAN again after cell voltage generation (don't delay balance commands)
-        (setq can-rx-msg-sec (+ can-rx-msg-sec (process-can-messages)))
+        (process-can-messages)
 
         ; Build temperature list with random drift +/-0.5 deg C
         (var temps '())
@@ -159,10 +129,8 @@
             (setq temps (append temps (list (+ tb drift))))
         })
 
-        (var pend2 (slave-can-available))
-        (if (> pend2 can-pend-max-sec) (setq can-pend-max-sec pend2))
         ; Check CAN again after temp generation
-        (setq can-rx-msg-sec (+ can-rx-msg-sec (process-can-messages)))
+        (process-can-messages)
 
         ; If a balance command was received, broadcast status immediately
         ; so master sees updated balance mask without waiting
@@ -171,43 +139,6 @@
 
         ; Debug print every 100 loops (10 seconds)
         (setq loop-count (+ loop-count 1))
-        (if (= (mod loop-count 10) 0) {
-            (var s-ovf (slave-can-overflow))
-            (var core-ring-ovf (can-rx-ring-overflow))
-            (var q-level (can-rx-queue-level))
-            (var q-peak (can-rx-queue-peak))
-            (var q-missed (can-rx-queue-missed))
-            (var q-overrun (can-rx-queue-overrun))
-            (var tx-fail (can-tx-fail))
-            (var tx-timeout (can-tx-timeout))
-            (print (str-merge "SIM CAN QRX: [" (can-qbar q-level can-rx-queue-cap) "] "
-                "lvl=" (str-from-n q-level "%d") "/" (str-from-n can-rx-queue-cap "%d")
-                " peak=" (str-from-n q-peak "%d")))
-            (print (str-merge "SIM CAN STAT: rx_1s=" (str-from-n can-rx-msg-sec "%d")
-                " pend_now=" (str-from-n (slave-can-available) "%d")
-                " pend_max_1s=" (str-from-n can-pend-max-sec "%d")
-                " s_ovf+=" (str-from-n (- s-ovf can-prev-s-ovf) "%d")
-                " (" (str-from-n s-ovf "%d") ")"
-                " core_ovf+=" (str-from-n (- core-ring-ovf can-prev-core-ring-ovf) "%d")
-                " (" (str-from-n core-ring-ovf "%d") ")"
-                " q_missed+=" (str-from-n (- q-missed can-prev-q-missed) "%d")
-                " (" (str-from-n q-missed "%d") ")"
-                " q_overrun+=" (str-from-n (- q-overrun can-prev-q-overrun) "%d")
-                " (" (str-from-n q-overrun "%d") ")"
-                " tx_fail+=" (str-from-n (- tx-fail can-prev-tx-fail) "%d")
-                " (" (str-from-n tx-fail "%d") ")"
-                " tx_to+=" (str-from-n (- tx-timeout can-prev-tx-timeout) "%d")
-                " (" (str-from-n tx-timeout "%d") ")"))
-
-            (setq can-prev-s-ovf s-ovf)
-            (setq can-prev-core-ring-ovf core-ring-ovf)
-            (setq can-prev-q-missed q-missed)
-            (setq can-prev-q-overrun q-overrun)
-            (setq can-prev-tx-fail tx-fail)
-            (setq can-prev-tx-timeout tx-timeout)
-            (setq can-rx-msg-sec 0)
-            (setq can-pend-max-sec 0)
-        })
         (if (= (mod loop-count 100) 0) {
             (print (str-merge "SIM loop " (str-from-n loop-count "%d")
                               " cells:" (str-from-n total-cells "%d")

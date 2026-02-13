@@ -1789,12 +1789,15 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 		if (num_cells == 0) continue;
 		if (num_cells > CELLS_PER_SLAVE) num_cells = CELLS_PER_SLAVE;
 
+		int ic1_cnt = m_bms_data.cells_ic1[s];
 		for (int c = 0; c < num_cells && total_cells < BMS_MAX_CELLS; c++) {
 			uint16_t mv = m_bms_data.cell_voltages[s][c];
 			if (mv != 0 && mv != 0xFFFF) {
 				float v = (float)mv / 1000.0f;
 				bms->v_cell[total_cells] = v;
-				bms->bal_state[total_cells] = (m_bms_data.balance_mask[s] >> c) & 1;
+				// Balance mask is ic1[0:15] | ic2[16:31], map cell index to correct bit
+				int bit = (c < ic1_cnt) ? c : (16 + c - ic1_cnt);
+				bms->bal_state[total_cells] = (m_bms_data.balance_mask[s] >> bit) & 1;
 				v_tot += v;
 				if (v < v_min) v_min = v;
 				if (v > v_max) v_max = v;
