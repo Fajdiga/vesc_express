@@ -159,6 +159,35 @@ For proper Master-Slave communication:
 
 ## Development History
 
+### 2026-02-13: Dual BQ76952 I2C Address Change (Remove Chip Selection)
+
+**Problem:** Both BQ76952 chips shared the same default I2C address (0x08). The slave had to use enable pins (`PIN_BQ1_EN`, `PIN_BQ2_EN`) to toggle which chip was active before every I2C operation. Only one chip could communicate at a time, adding latency and complexity.
+
+**Solution:** Adopted the bms32/master approach — change BQ1's I2C address during init so both chips can be on the bus simultaneously:
+
+1. During `bms-init`: disable BQ2, reset BQ1 to default address (0x08)
+2. Initialize BQ1 at 0x08, then change its I2C address to 0x10 (via `I2CAddress = 0x20` register)
+3. Enable both BQ chips — BQ1 at 0x10, BQ2 at 0x08 (different addresses, no conflicts)
+4. Initialize BQ2 at 0x08 if `cells_ic2 > 0`
+
+**Changes:**
+- `BQ_ADDR_1` changed from `0x08` to `0x10` (address after init change)
+- `BQ_ADDR_2` stays at `0x08` (default)
+- Removed `select_bq_chip()` function entirely
+- Removed all `select_bq_chip()` calls from: `ext_get_vcells`, `ext_get_temps`, `ext_set_bal`, `ext_hw_sleep`, `apply_bal_bitmap`
+- Updated `ext_direct_cmd`, `ext_subcmd_cmdonly`, `ext_read_reg`, `ext_write_reg` to select BQ via first arg (1=BQ1@0x10, 2=BQ2@0x08) matching bms32 API
+- Updated pin comments in header
+
+**Files modified:**
+- `main/hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.c`
+- `main/hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.h`
+
+**Lisp scripts:** No changes needed — `bms-init` handles everything in C, transparent to Lisp.
+
+**Status:** Tested and working — both BQ chips communicate correctly with unique I2C addresses.
+
+---
+
 ### 2026-02-11: Fix LBM Extension Slot Overflow & Dynamic Sim Cell Config
 - Slave `bms-get-param` and other late-registered extensions silently failed because LBM extension table (350 slots) was full — upstream `lispif_vesc_extensions.c` grew from 189 to 197 extensions, pushing total past limit.
 - Added `USER_EXTENSION_STORAGE_SIZE 50` to slave header (matching master), giving 400 total slots.

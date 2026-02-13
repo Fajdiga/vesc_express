@@ -40,8 +40,8 @@
 #include <stdint.h>
 
 // Settings
-#define BQ_ADDR_1 0x08
-#define BQ_ADDR_2 0x08  // Same address, selected via enable pins
+#define BQ_ADDR_1 0x10  // BQ1 address after I2C address change during init
+#define BQ_ADDR_2 0x08  // BQ2 stays at default address
 #define I2C_SPEED 100000
 
 // Macros
@@ -105,7 +105,6 @@ bool hw_can_get_filter_config(twai_filter_config_t *cfg) {
 #define CAN_ID_BAL_CMD(slave_id)      (0x500 | (slave_id))
 
 // Forward declarations (functions defined later in file)
-static void select_bq_chip(uint8_t chip_num);
 static bool subcommands_write16(uint8_t dev_addr, uint16_t command, uint16_t data);
 
 // ============================================================================
@@ -192,7 +191,6 @@ static bool apply_bal_bitmap(uint32_t bitmap) {
 	bool res = true;
 
 	// BQ1: Toggle - write 0 first, then actual value to reset internal timer
-	select_bq_chip(1);
 	subcommands_write16(BQ_ADDR_1, CB_ACTIVE_CELLS, 0);  // Clear first
 	if (subcommands_write16(BQ_ADDR_1, CB_ACTIVE_CELLS, new_bal_ic1)) {
 		m_bal_state_ic1 = new_bal_ic1;
@@ -202,7 +200,6 @@ static bool apply_bal_bitmap(uint32_t bitmap) {
 
 	// BQ2: Toggle if present
 	if (m_cells_ic2 > 0) {
-		select_bq_chip(2);
 		subcommands_write16(BQ_ADDR_2, CB_ACTIVE_CELLS, 0);  // Clear first
 		if (subcommands_write16(BQ_ADDR_2, CB_ACTIVE_CELLS, new_bal_ic2)) {
 			m_bal_state_ic2 = new_bal_ic2;
@@ -267,26 +264,6 @@ static uint8_t crc8(uint8_t *ptr, uint8_t len) {
 	}
 
 	return (crc);
-}
-
-/**
- * select_bq_chip - Select active BQ chip via enable pins
- * @chip_num: 1 for BQ1, 2 for BQ2
- *
- * Ensures only one chip is active on shared I2C bus by controlling
- * PIN_BQ1_EN and PIN_BQ2_EN (active LOW logic).
- */
-static void select_bq_chip(uint8_t chip_num) {
-	// chip_num: 1 or 2
-	// Active LOW logic: 0 = enabled, 1 = disabled
-	if (chip_num == 1) {
-		gpio_set_level(PIN_BQ1_EN, 0);  // Enable BQ1
-		gpio_set_level(PIN_BQ2_EN, 1);  // Disable BQ2
-	} else if (chip_num == 2) {
-		gpio_set_level(PIN_BQ2_EN, 0);  // Enable BQ2
-		gpio_set_level(PIN_BQ1_EN, 1);  // Disable BQ1
-	}
-	vTaskDelay(1);  // Small delay for chip selection to settle
 }
 
 static bool bq_read_block(
@@ -706,9 +683,13 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 
 	xSemaphoreTake(bq_mutex, portMAX_DELAY);
 
+	// Disable BQ2 so only BQ1 is on the I2C bus during address change
+	gpio_set_level(PIN_BQ1_EN, 0);  // Enable BQ1
+	gpio_set_level(PIN_BQ2_EN, 1);  // Disable BQ2
+
 	// Restart i2c
-	xSemaphoreTake(i2c_mutex, portMAX_DELAY);
 	i2c_driver_delete(0);
+
 	i2c_config_t conf = {
 		.mode             = I2C_MODE_MASTER,
 		.sda_io_num       = PIN_SDA,
@@ -724,30 +705,44 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 	i2c_reset_tx_fifo(0);
 	i2c_reset_rx_fifo(0);
 
-	vTaskDelay(10);
-	xSemaphoreGive(i2c_mutex);
+	vTaskDelay(50);
 
-	// Initialize BQ1
-	select_bq_chip(1);
-	bq_init(BQ_ADDR_1);
+	// Reset BQ1's address back to default (0x08) in case it was previously
+	// changed to 0x10. If BQ1 is already at 0x08, this command has no target.
+	command_subcommands(BQ_ADDR_1, BQ769x2_RESET);
+	vTaskDelay(60);
+	command_subcommands(BQ_ADDR_1, SWAP_COMM_MODE);
 
-	// Initialize BQ2 if present
+	// Initialize BQ1 at its default address (0x08)
+	bq_init(BQ_ADDR_2);
+
+	// Change BQ1's I2C address from 0x08 to 0x10
+	// I2CAddress register takes the 8-bit address (7-bit addr << 1), so 0x10 << 1 = 0x20
+	command_subcommands(BQ_ADDR_2, SET_CFGUPDATE);
+	if (!bq_set_reg(BQ_ADDR_2, I2CAddress, 0x20, 1)) {
+		commands_printf_lisp("Could not update BQ1 I2C address");
+	}
+	command_subcommands(BQ_ADDR_2, EXIT_CFGUPDATE);
+	command_subcommands(BQ_ADDR_2, SWAP_COMM_MODE);
+
+	// Enable both BQs now that BQ1 has a unique address (0x10)
+	gpio_set_level(PIN_BQ1_EN, 0);  // Enable BQ1 (at 0x10)
+	gpio_set_level(PIN_BQ2_EN, 0);  // Enable BQ2 (at 0x08)
+	vTaskDelay(50);
+
+	// Initialize BQ2 at default address (0x08) if present
 	if (cells_ic2 > 0) {
-		select_bq_chip(2);
 		bq_init(BQ_ADDR_2);
 	}
 
 	m_cells_ic1 = cells_ic1;
 	m_cells_ic2 = cells_ic2;
 
-	// Test communication with both chips
+	// Test communication - BQ1 at 0x10, BQ2 at 0x08
 	bool res = false;
-	select_bq_chip(1);
 	command_read(BQ_ADDR_1, Cell2Voltage, &res);
-
-	if (cells_ic2 > 0) {
+	if (m_cells_ic2 > 0) {
 		bool res2 = false;
-		select_bq_chip(2);
 		command_read(BQ_ADDR_2, Cell2Voltage, &res2);
 		res = res && res2;
 	}
@@ -767,20 +762,17 @@ static lbm_value ext_hw_sleep(lbm_value *args, lbm_uint argn) {
 	m_bal_state_ic1 = 0;
 	m_bal_state_ic2 = 0;
 
-	select_bq_chip(1);
 	if (!subcommands_write16(BQ_ADDR_1, CB_ACTIVE_CELLS, m_bal_state_ic1)) {
 		goto exit_error1;
 	}
 
 	if (m_cells_ic2 > 0) {
-		select_bq_chip(2);
 		if (!subcommands_write16(BQ_ADDR_2, CB_ACTIVE_CELLS, m_bal_state_ic2)) {
 			goto exit_error2;
 		}
 	}
 
 	// Configure BQ1 for sleep (disable temp pull-ups, keep regulator on)
-	select_bq_chip(1);
 	if (!command_subcommands(BQ_ADDR_1, SET_CFGUPDATE)
 		|| !bq_set_reg(BQ_ADDR_1, PowerConfig, 0b0010011010000000, 2)
 		|| !bq_set_reg(BQ_ADDR_1, TS1Config, 0x00, 1)
@@ -791,7 +783,6 @@ static lbm_value ext_hw_sleep(lbm_value *args, lbm_uint argn) {
 
 	// Configure BQ2 for sleep if present
 	if (m_cells_ic2 > 0) {
-		select_bq_chip(2);
 		if (!command_subcommands(BQ_ADDR_2, SET_CFGUPDATE)
 			|| !bq_set_reg(BQ_ADDR_2, PowerConfig, 0b0010011010000000, 2)
 			|| !bq_set_reg(BQ_ADDR_2, TS1Config, 0x00, 1)
@@ -802,13 +793,11 @@ static lbm_value ext_hw_sleep(lbm_value *args, lbm_uint argn) {
 	}
 
 	// Send DEEPSLEEP command to BQ1
-	select_bq_chip(1);
 	command_subcommands(BQ_ADDR_1, DEEPSLEEP);
 	command_subcommands(BQ_ADDR_1, DEEPSLEEP);
 
 	// Send DEEPSLEEP command to BQ2 if present
 	if (m_cells_ic2 > 0) {
-		select_bq_chip(2);
 		command_subcommands(BQ_ADDR_2, DEEPSLEEP);
 		command_subcommands(BQ_ADDR_2, DEEPSLEEP);
 	}
@@ -833,8 +822,7 @@ static lbm_value ext_get_vcells(lbm_value *args, lbm_uint argn) {
 
 	lbm_value vc_list = ENC_SYM_NIL;
 
-	// Read BQ1 cells
-	select_bq_chip(1);
+	// Read BQ1 cells (at address 0x10)
 	for (int i = 0; i < m_cells_ic1; i++) {
 		bool ok = false;
 		int res = command_read(BQ_ADDR_1, Cell1Voltage + i * 2, &ok);
@@ -846,9 +834,8 @@ static lbm_value ext_get_vcells(lbm_value *args, lbm_uint argn) {
 		}
 	}
 
-	// Read BQ2 cells if present
+	// Read BQ2 cells if present (at address 0x08)
 	if (m_cells_ic2 > 0) {
-		select_bq_chip(2);
 		for (int i = 0; i < m_cells_ic2; i++) {
 			bool ok = false;
 			int res = command_read(BQ_ADDR_2, Cell1Voltage + i * 2, &ok);
@@ -878,8 +865,7 @@ static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
 	lbm_value ts_list = ENC_SYM_NIL;
 	bool ok           = false;
 
-	// Read BQ1 internal temperature
-	select_bq_chip(1);
+	// Read BQ1 internal temperature (at address 0x10)
 	ts_list = lbm_cons(
 		lbm_enc_float(
 			(float)command_read(BQ_ADDR_1, IntTemperature, &ok) * 0.1 - 273.15
@@ -915,9 +901,8 @@ static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
 		lbm_enc_float(NAN_TO_INVALID(NTC_TEMP(NTC_RES(v3), ntc_beta))), ts_list
 	);
 
-	// Read BQ2 internal temperature if present
+	// Read BQ2 internal temperature if present (at address 0x08)
 	if (m_cells_ic2 > 0) {
-		select_bq_chip(2);
 		ts_list = lbm_cons(
 			lbm_enc_float(
 				(float)command_read(BQ_ADDR_2, IntTemperature, &ok) * 0.1 - 273.15
@@ -979,20 +964,19 @@ static lbm_value ext_set_bal(lbm_value *args, lbm_uint argn) {
 	bool res        = false;
 
 	if (ch < m_cells_ic1) {
-		// Control BQ1
+		// Control BQ1 (at address 0x10)
 		if (state) {
 			m_bal_state_ic1 |= (1 << ch);
 		} else {
 			m_bal_state_ic1 &= ~(1 << ch);
 		}
 
-		select_bq_chip(1);
 		res = subcommands_write16(BQ_ADDR_1, CB_ACTIVE_CELLS, m_bal_state_ic1);
 		if (!res) {
 			lbm_set_error_reason(error_comm_bq1);
 		}
 	} else if ((ch - m_cells_ic1) < m_cells_ic2) {
-		// Control BQ2
+		// Control BQ2 (at address 0x08)
 		unsigned int local_ch = ch - m_cells_ic1;
 		if (state) {
 			m_bal_state_ic2 |= (1 << local_ch);
@@ -1000,7 +984,6 @@ static lbm_value ext_set_bal(lbm_value *args, lbm_uint argn) {
 			m_bal_state_ic2 &= ~(1 << local_ch);
 		}
 
-		select_bq_chip(2);
 		res = subcommands_write16(BQ_ADDR_2, CB_ACTIVE_CELLS, m_bal_state_ic2);
 		if (!res) {
 			lbm_set_error_reason(error_comm_bq2);
@@ -1029,13 +1012,18 @@ static lbm_value ext_direct_cmd(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(2);
 
 	uint8_t addr = BQ_ADDR_1;
+	if (lbm_dec_as_i32(args[0]) == 2) {
+		addr = BQ_ADDR_2;
+	}
 
 	bool ok = false;
 	int res = command_read(addr, lbm_dec_as_u32(args[1]), &ok);
 	if (ok) {
 		return lbm_enc_i(res);
 	} else {
-		lbm_set_error_reason(error_comm_bq1);
+		lbm_set_error_reason(
+			addr == BQ_ADDR_1 ? error_comm_bq1 : error_comm_bq2
+		);
 		return ENC_SYM_EERROR;
 	}
 }
@@ -1044,6 +1032,10 @@ static lbm_value ext_subcmd_cmdonly(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(2);
 
 	uint8_t addr = BQ_ADDR_1;
+	if (lbm_dec_as_i32(args[0]) == 2) {
+		addr = BQ_ADDR_2;
+	}
+
 	return lbm_enc_i(command_subcommands(addr, lbm_dec_as_u32(args[1])));
 }
 
@@ -1051,8 +1043,12 @@ static lbm_value ext_read_reg(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(3);
 
 	uint8_t addr = BQ_ADDR_1;
-	int reg      = lbm_dec_as_i32(args[1]);
-	int len      = lbm_dec_as_i32(args[2]);
+	if (lbm_dec_as_i32(args[0]) == 2) {
+		addr = BQ_ADDR_2;
+	}
+
+	int reg = lbm_dec_as_i32(args[1]);
+	int len = lbm_dec_as_i32(args[2]);
 
 	uint32_t reg_data = 0;
 	bool ok           = bq_read_reg(addr, reg, &reg_data, len);
@@ -1060,7 +1056,9 @@ static lbm_value ext_read_reg(lbm_value *args, lbm_uint argn) {
 	if (ok) {
 		return lbm_enc_u32(reg_data);
 	} else {
-		lbm_set_error_reason(error_comm_bq1);
+		lbm_set_error_reason(
+			addr == BQ_ADDR_1 ? error_comm_bq1 : error_comm_bq2
+		);
 		return ENC_SYM_EERROR;
 	}
 }
@@ -1069,6 +1067,9 @@ static lbm_value ext_write_reg(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(4);
 
 	uint8_t addr = BQ_ADDR_1;
+	if (lbm_dec_as_i32(args[0]) == 2) {
+		addr = BQ_ADDR_2;
+	}
 
 	int reg       = lbm_dec_as_i32(args[1]);
 	uint32_t data = lbm_dec_as_u32(args[2]);
@@ -1079,7 +1080,9 @@ static lbm_value ext_write_reg(lbm_value *args, lbm_uint argn) {
 	if (ok) {
 		return ENC_SYM_TRUE;
 	} else {
-		lbm_set_error_reason(error_comm_bq1);
+		lbm_set_error_reason(
+			addr == BQ_ADDR_1 ? error_comm_bq1 : error_comm_bq2
+		);
 		return ENC_SYM_EERROR;
 	}
 }
@@ -1736,10 +1739,10 @@ void hw_init(void) {
 
 	gpio_config_t gpconf = {0};
 
-	// Configure BQ communication enable pins (active LOW, only one can be LOW at a time)
-	// Enable BQ1 by default, disable BQ2
+	// Configure BQ communication enable pins (active LOW)
+	// Start with only BQ1 enabled - BQ2 disabled until bms-init changes BQ1's I2C address
 	gpio_set_level(PIN_BQ1_EN, 0);  // LOW = enabled
-	gpio_set_level(PIN_BQ2_EN, 1);  // HIGH = disabled
+	gpio_set_level(PIN_BQ2_EN, 1);  // HIGH = disabled until address change
 
 	gpconf.pin_bit_mask = BIT(PIN_BQ1_EN) | BIT(PIN_BQ2_EN);
 	gpconf.intr_type    = GPIO_FLOATING;
@@ -1750,7 +1753,7 @@ void hw_init(void) {
 
 	// Set levels again after config to ensure they're applied
 	gpio_set_level(PIN_BQ1_EN, 0);  // LOW = enabled
-	gpio_set_level(PIN_BQ2_EN, 1);  // HIGH = disabled
+	gpio_set_level(PIN_BQ2_EN, 1);  // HIGH = disabled until address change
 
 	// Configure buzzer pin
 	gpio_set_level(PIN_BUZZER, 0);

@@ -85,7 +85,9 @@ typedef struct {
 #define PIN_SDA						21
 #define PIN_SCL						20
 
-// BQ communication enable pins (active LOW, cannot both be LOW at same time)
+// BQ communication enable pins (active LOW)
+// During init: only BQ1 enabled while changing its I2C address from 0x08 to 0x10
+// After init: both enabled (BQ1 at 0x10, BQ2 at 0x08 - different addresses)
 #define PIN_BQ1_EN					0	// Pull LOW to enable BQ1 communication
 #define PIN_BQ2_EN					1	// Pull LOW to enable BQ2 communication
 
