@@ -190,7 +190,7 @@ typedef struct {
 #define HW_DEFAULT_ID				3
 
 // Board variant: set to 1 for CAN on GPIO 0/1, set to 0 for CAN on GPIO 6/7
-#define JFBMS_USE_CAN_IO_0_1		1
+#define JFBMS_USE_CAN_IO_0_1		0
 
 // CAN
 #if JFBMS_USE_CAN_IO_0_1
@@ -204,12 +204,13 @@ typedef struct {
 // Other pins
 #define PIN_SDA						21
 #define PIN_SCL						20
-#define PIN_ENABLE					2
-#define PIN_OUT_EN					4
-#define PIN_CHG_EN					5
-#define PIN_PCHG_EN					8
-#define PIN_COM_EN					9
-#define PIN_PSW_EN					10
+#define PIN_ENABLE					2	// Input: detect ESC alive
+#define PIN_BQ1_EN					3	// BQ1 enable
+#define PIN_OUT_EN					4	// Discharge FET
+#define PIN_CHG_EN					5	// Charge FET
+#define PIN_SHUTDOWN				8	// Shutdown (kill main power)
+#define PIN_COM_EN					9	// COM enable
+#define PIN_PCHG_EN					10	// Precharge FET
 
 // ADC - only available when CAN is on GPIO 6/7 (GPIO 0/1 free for ADC)
 #if !JFBMS_USE_CAN_IO_0_1

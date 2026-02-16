@@ -159,6 +159,29 @@ For proper Master-Slave communication:
 
 ## Development History
 
+### 2026-02-16: Master GPIO Pin Remap & Hardware Init Cleanup
+
+**Changes:**
+- Corrected master pin definitions to match actual JFBMS PCB layout:
+  - `PIN_BQ1_EN` = GPIO 3 (new), `PIN_SHUTDOWN` = GPIO 8 (was `PIN_PCHG_EN`), `PIN_PCHG_EN` = GPIO 10 (was `PIN_PSW_EN`)
+- Removed `PIN_PSW_EN` entirely — gate driver master enable no longer used on this board
+- Removed all `gpio_set_level(PIN_PSW_EN, ...)` from C code (was set before every FET enable)
+- Configured `PIN_SHUTDOWN` and `PIN_BQ1_EN` as open-drain outputs (default hi-Z/off)
+- Removed GPIO 10 from C init — now owned by LEDC PWM for precharge buzzer
+- Set `PIN_COM_EN` default to low (active) in C init
+- Added `(pwm-start 4000 0.5 0 10 8)` in Lisp for 4kHz precharge buzzer on GPIO 10
+- Added `(gpio-write 9 0)` in Lisp to hold COM_EN active
+- Changed CAN pins from GPIO 0/1 to GPIO 6/7 (`JFBMS_USE_CAN_IO_0_1` = 0)
+- Changed default build target from slave to master
+
+**Files modified:**
+- `main/hwconf/jetfleet/jfbms_master/hw_jfbms_master.h` — pin definitions, CAN IO select
+- `main/hwconf/jetfleet/jfbms_master/hw_jfbms_master.c` — GPIO init, removed PSW_EN references
+- `main/hwconf/jetfleet/jfbms_master/jfbms_master_main.lisp` — PWM buzzer, COM_EN
+- `main/CMakeLists.txt` — default build target
+
+---
+
 ### 2026-02-13: Fix IC2 Balance State Display & Add Balance Debug Logging
 
 **Problem:** VESC Tool BMS data tab only showed IC1 cells as orange (balancing). IC2 cells never showed balance state even when actively balancing.

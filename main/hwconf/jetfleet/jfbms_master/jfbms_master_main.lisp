@@ -4,6 +4,12 @@
 
 (print "=== JFBMS Master ===")
 
+; Precharge buzzer: 4 kHz 50% duty on IO10
+(pwm-start 4000 0.5 0 10 8)
+
+; COM enable low (active)
+(gpio-write 9 0)
+
 ; Config
 (def slave-timeout 500)
 
