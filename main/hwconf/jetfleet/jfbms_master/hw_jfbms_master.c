@@ -41,25 +41,21 @@
 // ============================================================================
 
 // Settings
-#define BQ_ADDR_1 0x10
-#define BQ_ADDR_2 0x08
+#define BQ_ADDR_1 0x08
 #define I2C_SPEED 100000
 
 // Macros
-#define M_CELLS (m_cells_ic1 + m_cells_ic2)
+#define M_CELLS (m_cells_ic1)
 
 // Variables
 static SemaphoreHandle_t i2c_mutex;
 static SemaphoreHandle_t bq_mutex;
 static unsigned int m_cells_ic1 = 16;
-static unsigned int m_cells_ic2 = 16;
 static uint16_t m_bal_state_ic1 = 0;
-static uint16_t m_bal_state_ic2 = 0;
 static bool m_bq_init_done = false;
 
 // Error messages
 static char *error_comm_bq1 = "BQ1 communication error";
-static char *error_comm_bq2 = "BQ2 communication error";
 
 // ============================================================================
 // Section B: Master CAN Protocol
@@ -449,7 +445,7 @@ static void bq_init(uint8_t dev_addr) {
 	bq_set_reg(dev_addr, TS3Config, 0b00111011, 1);
 	bq_set_reg(dev_addr, ALERTPinConfig, 0b00111011, 1);
 	bq_set_reg(dev_addr, DCHGPinConfig, 0b00111011, 1);
-	bq_set_reg(dev_addr, HDQPinConfig, 0b00111011, 1);
+	bq_set_reg(dev_addr, HDQPinConfig, 0x01, 1);  // Thermistor mode (HDQ pin has different bit layout)
 
 	// Disabled
 	bq_set_reg(dev_addr, DDSGPinConfig, 0x00, 1);
@@ -602,38 +598,28 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_NUMBER_ALL();
 
 	m_bal_state_ic1 = 0;
-	m_bal_state_ic2 = 0;
 
 	unsigned int cells_ic1 = 16;
 	if (argn >= 1) {
 		cells_ic1 = lbm_dec_as_u32(args[0]);
 	}
 
-	unsigned int cells_ic2 = 16;
-	if (argn >= 2) {
-		cells_ic2 = lbm_dec_as_u32(args[1]);
-	}
-
-	if (cells_ic1 < 3 || cells_ic1 > 16 || cells_ic2 > 16 || cells_ic2 == 1
-		|| cells_ic2 == 2) {
-		lbm_set_error_reason("Invalid cell combination");
+	if (cells_ic1 < 3 || cells_ic1 > 16) {
+		lbm_set_error_reason("Invalid cell count");
 		return ENC_SYM_TERROR;
 	}
 
 	xSemaphoreTake(bq_mutex, portMAX_DELAY);
 
-	// Disable COMM until the i2c-address of the first BQ is changed.
-	gpio_set_level(PIN_COM_EN, 1);
-
-	// Restart i2c
+	// Restart I2C
 	i2c_driver_delete(0);
 
 	i2c_config_t conf = {
 		.mode             = I2C_MODE_MASTER,
 		.sda_io_num       = PIN_SDA,
 		.scl_io_num       = PIN_SCL,
-		.sda_pullup_en    = GPIO_PULLUP_ENABLE,
-		.scl_pullup_en    = GPIO_PULLUP_ENABLE,
+		.sda_pullup_en    = GPIO_PULLUP_DISABLE,
+		.scl_pullup_en    = GPIO_PULLUP_DISABLE,
 		.master.clk_speed = I2C_SPEED,
 	};
 
@@ -645,37 +631,12 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 
 	vTaskDelay(50);
 
-	// Reset the address of the first BQ just in case
-	command_subcommands(BQ_ADDR_1, BQ769x2_RESET);
-	vTaskDelay(60);
-	command_subcommands(BQ_ADDR_1, SWAP_COMM_MODE);
-
-	bq_init(BQ_ADDR_2);
-	command_subcommands(BQ_ADDR_2, SET_CFGUPDATE);
-	if (!bq_set_reg(BQ_ADDR_2, I2CAddress, 0x20, 1)) {
-		commands_printf_lisp("Could not update I2C address");
-	}
-	command_subcommands(BQ_ADDR_2, EXIT_CFGUPDATE);
-	command_subcommands(BQ_ADDR_2, SWAP_COMM_MODE);
-
-	// Enable the other i2c now that the first address is updated
-	gpio_set_level(PIN_COM_EN, 0);
-	vTaskDelay(50);
-
-	if (cells_ic2 != 0) {
-		bq_init(BQ_ADDR_2);
-	}
+	bq_init(BQ_ADDR_1);
 
 	m_cells_ic1 = cells_ic1;
-	m_cells_ic2 = cells_ic2;
 
 	bool res = false;
 	command_read(BQ_ADDR_1, Cell2Voltage, &res);
-	if (m_cells_ic2 > 0) {
-		bool res2 = false;
-		command_read(BQ_ADDR_2, Cell2Voltage, &res2);
-		res = res && res2;
-	}
 
 	m_bq_init_done = res;
 
@@ -697,16 +658,9 @@ static lbm_value ext_hw_sleep(lbm_value *args, lbm_uint argn) {
 
 	// Stop balancing
 	m_bal_state_ic1 = 0;
-	m_bal_state_ic2 = 0;
 
 	if (!subcommands_write16(BQ_ADDR_1, CB_ACTIVE_CELLS, m_bal_state_ic1)) {
 		goto exit_error1;
-	}
-
-	if (m_cells_ic2 != 0) {
-		if (!subcommands_write16(BQ_ADDR_2, CB_ACTIVE_CELLS, m_bal_state_ic2)) {
-			goto exit_error2;
-		}
 	}
 
 	// Disable temperature measurement pull-ups and ensure that regulator is kept on in DEEP SLEEP
@@ -718,23 +672,8 @@ static lbm_value ext_hw_sleep(lbm_value *args, lbm_uint argn) {
 		goto exit_error1;
 	}
 
-	if (m_cells_ic2 != 0) {
-		if (!command_subcommands(BQ_ADDR_2, SET_CFGUPDATE) ||
-			!bq_set_reg(BQ_ADDR_2, PowerConfig, 0b0010011010000000, 2) ||
-			!bq_set_reg(BQ_ADDR_2, TS1Config, 0x00, 1) ||
-			!bq_set_reg(BQ_ADDR_2, TS3Config, 0x00, 1) ||
-			!command_subcommands(BQ_ADDR_2, EXIT_CFGUPDATE)) {
-				goto exit_error2;
-			}
-	}
-
 	command_subcommands(BQ_ADDR_1, DEEPSLEEP);
 	command_subcommands(BQ_ADDR_1, DEEPSLEEP);
-
-	if (m_cells_ic2 != 0) {
-		command_subcommands(BQ_ADDR_2, DEEPSLEEP);
-		command_subcommands(BQ_ADDR_2, DEEPSLEEP);
-	}
 
 	// Disable CAN-bus and other COMM
 	gpio_set_level(PIN_COM_EN, 1);
@@ -745,11 +684,6 @@ static lbm_value ext_hw_sleep(lbm_value *args, lbm_uint argn) {
 exit_error1:
 	xSemaphoreGive(bq_mutex);
 	lbm_set_error_reason(error_comm_bq1);
-	return ENC_SYM_EERROR;
-
-exit_error2:
-	xSemaphoreGive(bq_mutex);
-	lbm_set_error_reason(error_comm_bq2);
 	return ENC_SYM_EERROR;
 }
 
@@ -766,17 +700,6 @@ static lbm_value ext_get_vcells(lbm_value *args, lbm_uint argn) {
 			vc_list = lbm_cons(lbm_enc_float((float)res / 1000.0), vc_list);
 		} else {
 			lbm_set_error_reason(error_comm_bq1);
-			return ENC_SYM_EERROR;
-		}
-	}
-
-	for (int i = 0; i < m_cells_ic2; i++) {
-		bool ok = false;
-		int res = command_read(BQ_ADDR_2, Cell1Voltage + i * 2, &ok);
-		if (ok) {
-			vc_list = lbm_cons(lbm_enc_float((float)res / 1000.0), vc_list);
-		} else {
-			lbm_set_error_reason(error_comm_bq2);
 			return ENC_SYM_EERROR;
 		}
 	}
@@ -853,29 +776,13 @@ static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
 		lbm_enc_float(NAN_TO_M1(NTC_TEMP(NTC_RES(v5), ntc_beta))), ts_list
 	);
 
-	if (m_cells_ic2 != 0) {
-		ts_list = lbm_cons(
-			lbm_enc_float(
-				(float)command_read(BQ_ADDR_2, IntTemperature, &ok) * 0.1
-				- 273.15
-			),
-			ts_list
-		);
-		if (!ok) {
-			goto exit_error2;
-		}
-	} else {
-		ts_list = lbm_cons(lbm_enc_float(-1.0), ts_list);
-	}
+	// No BQ2 on master — placeholder slot
+	ts_list = lbm_cons(lbm_enc_float(-1.0), ts_list);
 
 	return lbm_list_destructive_reverse(ts_list);
 
 exit_error1:
 	lbm_set_error_reason(error_comm_bq1);
-	return ENC_SYM_EERROR;
-
-exit_error2:
-	lbm_set_error_reason(error_comm_bq2);
 	return ENC_SYM_EERROR;
 }
 
@@ -976,17 +883,6 @@ static lbm_value ext_set_bal(lbm_value *args, lbm_uint argn) {
 		if (!res) {
 			lbm_set_error_reason(error_comm_bq1);
 		}
-	} else if ((ch - m_cells_ic1) < m_cells_ic2) {
-		if (state) {
-			m_bal_state_ic2 |= (1 << (ch - m_cells_ic1));
-		} else {
-			m_bal_state_ic2 &= ~(1 << (ch - m_cells_ic1));
-		}
-
-		res = subcommands_write16(BQ_ADDR_2, CB_ACTIVE_CELLS, m_bal_state_ic2);
-		if (!res) {
-			lbm_set_error_reason(error_comm_bq1);
-		}
 	}
 
 	return res ? ENC_SYM_TRUE : ENC_SYM_EERROR;
@@ -1002,8 +898,6 @@ static lbm_value ext_get_bal(lbm_value *args, lbm_uint argn) {
 
 	if (ch < m_cells_ic1) {
 		res = (m_bal_state_ic1 >> ch) & 0x01;
-	} else if ((ch - m_cells_ic1) < m_cells_ic2) {
-		res = (m_bal_state_ic2 >> (ch - m_cells_ic1)) & 0x01;
 	}
 
 	return lbm_enc_i(res);
@@ -1012,19 +906,12 @@ static lbm_value ext_get_bal(lbm_value *args, lbm_uint argn) {
 static lbm_value ext_direct_cmd(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(2);
 
-	uint8_t addr = BQ_ADDR_1;
-	if (lbm_dec_as_i32(args[0]) == 2) {
-		addr = BQ_ADDR_2;
-	}
-
 	bool ok = false;
-	int res = command_read(addr, lbm_dec_as_u32(args[1]), &ok);
+	int res = command_read(BQ_ADDR_1, lbm_dec_as_u32(args[1]), &ok);
 	if (ok) {
 		return lbm_enc_i(res);
 	} else {
-		lbm_set_error_reason(
-			addr == BQ_ADDR_1 ? error_comm_bq1 : error_comm_bq2
-		);
+		lbm_set_error_reason(error_comm_bq1);
 		return ENC_SYM_EERROR;
 	}
 }
@@ -1032,34 +919,22 @@ static lbm_value ext_direct_cmd(lbm_value *args, lbm_uint argn) {
 static lbm_value ext_subcmd_cmdonly(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(2);
 
-	uint8_t addr = BQ_ADDR_1;
-	if (lbm_dec_as_i32(args[0]) == 2) {
-		addr = BQ_ADDR_2;
-	}
-
-	return lbm_enc_i(command_subcommands(addr, lbm_dec_as_u32(args[1])));
+	return lbm_enc_i(command_subcommands(BQ_ADDR_1, lbm_dec_as_u32(args[1])));
 }
 
 static lbm_value ext_read_reg(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(3);
 
-	uint8_t addr = BQ_ADDR_1;
-	if (lbm_dec_as_i32(args[0]) == 2) {
-		addr = BQ_ADDR_2;
-	}
-
 	int reg = lbm_dec_as_i32(args[1]);
 	int len = lbm_dec_as_i32(args[2]);
 
 	uint32_t reg_data = 0;
-	bool ok           = bq_read_reg(addr, reg, &reg_data, len);
+	bool ok           = bq_read_reg(BQ_ADDR_1, reg, &reg_data, len);
 
 	if (ok) {
 		return lbm_enc_u32(reg_data);
 	} else {
-		lbm_set_error_reason(
-			addr == BQ_ADDR_1 ? error_comm_bq1 : error_comm_bq2
-		);
+		lbm_set_error_reason(error_comm_bq1);
 		return ENC_SYM_EERROR;
 	}
 }
@@ -1067,23 +942,16 @@ static lbm_value ext_read_reg(lbm_value *args, lbm_uint argn) {
 static lbm_value ext_write_reg(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(4);
 
-	uint8_t addr = BQ_ADDR_1;
-	if (lbm_dec_as_i32(args[0]) == 2) {
-		addr = BQ_ADDR_2;
-	}
-
 	int reg       = lbm_dec_as_i32(args[1]);
 	uint32_t data = lbm_dec_as_u32(args[2]);
 	int len       = lbm_dec_as_i32(args[3]);
 
-	bool ok = bq_set_reg(addr, reg, data, len);
+	bool ok = bq_set_reg(BQ_ADDR_1, reg, data, len);
 
 	if (ok) {
 		return ENC_SYM_TRUE;
 	} else {
-		lbm_set_error_reason(
-			addr == BQ_ADDR_1 ? error_comm_bq1 : error_comm_bq2
-		);
+		lbm_set_error_reason(error_comm_bq1);
 		return ENC_SYM_EERROR;
 	}
 }
@@ -1760,17 +1628,31 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 			}
 		}
 
-		for (unsigned int i = 0; i < m_cells_ic2 && total_cells < BMS_MAX_CELLS; i++) {
-			bool ok = false;
-			int mv = command_read(BQ_ADDR_2, Cell1Voltage + i * 2, &ok);
-			if (ok && mv > 0) {
-				float v = (float)mv / 1000.0f;
-				bms->v_cell[total_cells] = v;
-				bms->bal_state[total_cells] = (m_bal_state_ic2 >> i) & 1;
-				v_tot += v;
-				if (v < v_min) v_min = v;
-				if (v > v_max) v_max = v;
-				total_cells++;
+		// Add local BQ76952 temperatures
+		bool tok = false;
+		const float counts_to_volts = 0.358e-6 * 256.0;
+		float ntc_beta = 3380.0;
+
+		// BQ1 internal temperature
+		float bq1_int = (float)command_read(BQ_ADDR_1, IntTemperature, &tok) * 0.1 - 273.15;
+		if (tok && total_temps < BMS_MAX_TEMPS) {
+			bms->temps_adc[total_temps] = bq1_int;
+			if (bq1_int > t_max) t_max = bq1_int;
+			total_temps++;
+		}
+
+		// NTC sensors on TS1, TS3, ALERT, DCHG, HDQ pins
+		uint16_t ntc_regs[] = { TS1Temperature, TS3Temperature, ALERTTemperature, DCHGTemperature, HDQTemperature };
+		for (int n = 0; n < 5 && total_temps < BMS_MAX_TEMPS; n++) {
+			tok = false;
+			float vn = (float)command_read(BQ_ADDR_1, ntc_regs[n], &tok) * counts_to_volts;
+			if (tok) {
+				float temp_c = NTC_TEMP(NTC_RES(vn), ntc_beta);
+				if (!UTILS_IS_NAN(temp_c) && temp_c > -40.0f && temp_c < 150.0f) {
+					bms->temps_adc[total_temps] = temp_c;
+					if (temp_c > t_max) t_max = temp_c;
+					total_temps++;
+				}
 			}
 		}
 	}
@@ -1996,8 +1878,9 @@ void hw_init(void) {
 	gpio_set_level(PIN_OUT_EN, 0);
 	gpio_set_level(PIN_CHG_EN, 0);
 	gpio_set_level(PIN_COM_EN, 0);
+	gpio_set_level(PIN_BQ1_EN, 1);  // BQ1 enable: active high, drive HIGH to enable
 
-	gpconf.pin_bit_mask = BIT(PIN_OUT_EN) | BIT(PIN_CHG_EN) | BIT(PIN_COM_EN);
+	gpconf.pin_bit_mask = BIT(PIN_OUT_EN) | BIT(PIN_CHG_EN) | BIT(PIN_COM_EN) | BIT(PIN_BQ1_EN);
 	gpconf.intr_type    = GPIO_FLOATING;
 	gpconf.mode         = GPIO_MODE_INPUT_OUTPUT;
 	gpconf.pull_down_en = GPIO_PULLDOWN_DISABLE;
@@ -2007,12 +1890,12 @@ void hw_init(void) {
 	gpio_set_level(PIN_OUT_EN, 0);
 	gpio_set_level(PIN_CHG_EN, 0);
 	gpio_set_level(PIN_COM_EN, 0);
+	gpio_set_level(PIN_BQ1_EN, 1);
 
 	// Open-drain outputs (active low, default off = hi-Z)
 	gpio_set_level(PIN_SHUTDOWN, 1);
-	gpio_set_level(PIN_BQ1_EN, 1);
 
-	gpconf.pin_bit_mask = BIT(PIN_SHUTDOWN) | BIT(PIN_BQ1_EN);
+	gpconf.pin_bit_mask = BIT(PIN_SHUTDOWN);
 	gpconf.intr_type    = GPIO_FLOATING;
 	gpconf.mode         = GPIO_MODE_OUTPUT_OD;
 	gpconf.pull_down_en = GPIO_PULLDOWN_DISABLE;
@@ -2020,7 +1903,6 @@ void hw_init(void) {
 	gpio_config(&gpconf);
 
 	gpio_set_level(PIN_SHUTDOWN, 1);
-	gpio_set_level(PIN_BQ1_EN, 1);
 
 	gpconf.pin_bit_mask = BIT(PIN_ENABLE);
 	gpconf.intr_type    = GPIO_FLOATING;
@@ -2034,8 +1916,8 @@ void hw_init(void) {
 		.mode             = I2C_MODE_MASTER,
 		.sda_io_num       = PIN_SDA,
 		.scl_io_num       = PIN_SCL,
-		.sda_pullup_en    = GPIO_PULLUP_ENABLE,
-		.scl_pullup_en    = GPIO_PULLUP_ENABLE,
+		.sda_pullup_en    = GPIO_PULLUP_DISABLE,
+		.scl_pullup_en    = GPIO_PULLUP_DISABLE,
 		.master.clk_speed = 100000,
 	};
 

@@ -182,7 +182,6 @@
         (var any-cells false)
 
         ; Read local BQ cells (if configured)
-        ; Uses trap to handle BQ not wired/initialized - errors won't crash thread
         (var local-cells nil)
         (if (> local-total 0) {
             (match (trap {
@@ -199,7 +198,7 @@
                         })
                     })
                 })
-                (_ nil) ; BQ not wired or comm error - skip local cells
+                (_ (print "BAL: local BQ comm failed"))
             )
         })
 
@@ -303,7 +302,7 @@
     })
 
     ; If stop was requested mid-cycle, send stop immediately instead of waiting
-    (if (not bal-request) (stop-all-balancing))
+    (if (and (not bal-request) (= (ix bal-state 0) 1)) (stop-all-balancing))
 
     ; Balance compute cadence (actual slave TX keepalive runs in main loop at 1 Hz)
     (sleep 0.2)
@@ -312,6 +311,14 @@
 ; ============================================================================
 ; Main Loop
 ; ============================================================================
+
+; Initialize local BQ76952 (single chip on master) - retry until ready
+(def bq-ic1 (bms-get-param 'cells_ic1))
+(if (> bq-ic1 0) {
+    (print "BQ init: waiting for BQ76952...")
+    (loopwhile (not (bms-init bq-ic1)) (sleep 1.0))
+    (print (str-merge "BQ init OK: " (str-from-n bq-ic1 "%d") " cells"))
+})
 
 ; Register BMS command events used by VESC Tool
 (event-register-handler (spawn event-handler))
