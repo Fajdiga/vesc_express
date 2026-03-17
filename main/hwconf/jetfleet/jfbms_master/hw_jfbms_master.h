@@ -219,15 +219,15 @@ typedef struct {
 #endif
 
 // Parameters
-#define HW_R_SHUNT					0.0002
+#define HW_R_SHUNT					0.001
 
 // Macros
 #if JFBMS_USE_CAN_IO_0_1
 #define HW_GET_VOUT()				(0.0)
 #define HW_GET_VCHG()				(0.0)
 #else
-#define HW_GET_VOUT()				((adc_get_voltage(ADC1_CHANNEL_1) * (220.0e3 + 4.7e3)) / 4.7e3)
-#define HW_GET_VCHG()				((adc_get_voltage(ADC1_CHANNEL_0) * (220.0e3 + 4.7e3)) / 4.7e3)
+#define HW_GET_VOUT()				((adc_get_voltage(ADC1_CHANNEL_1) * (300.0e3 + 4.7e3)) / 4.7e3)
+#define HW_GET_VCHG()				((adc_get_voltage(ADC1_CHANNEL_0) * (300.0e3 + 4.7e3)) / 4.7e3)
 #endif
 
 // Master slave data storage

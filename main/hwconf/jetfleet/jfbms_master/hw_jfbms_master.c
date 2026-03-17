@@ -1641,9 +1641,9 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 			total_temps++;
 		}
 
-		// NTC sensors on TS1, TS3, ALERT, DCHG, HDQ pins
-		uint16_t ntc_regs[] = { TS1Temperature, TS3Temperature, ALERTTemperature, DCHGTemperature, HDQTemperature };
-		for (int n = 0; n < 5 && total_temps < BMS_MAX_TEMPS; n++) {
+		// NTC sensors: TS1 (external NTC) and HDQ (MOSFET temp)
+		uint16_t ntc_regs[] = { TS1Temperature, HDQTemperature };
+		for (int n = 0; n < 2 && total_temps < BMS_MAX_TEMPS; n++) {
 			tok = false;
 			float vn = (float)command_read(BQ_ADDR_1, ntc_regs[n], &tok) * counts_to_volts;
 			if (tok) {
@@ -1708,6 +1708,10 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 	// Update BMS values
 	bms->cell_num = total_cells;
 	bms->v_tot = v_tot;
+	bms->v_charge = HW_GET_VCHG();
+	bool i_ok = false;
+	bms->i_in = (float)command_read(BQ_ADDR_1, CC2Current, &i_ok) / 100.0f;
+	bms->i_in_ic = bms->i_in;
 	bms->v_cell_min = (total_cells > 0) ? v_min : 0.0f;
 	bms->v_cell_max = (total_cells > 0) ? v_max : 0.0f;
 	bms->temp_adc_num = total_temps;
