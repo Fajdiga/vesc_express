@@ -38,7 +38,7 @@ The BMS system consists of:
 | ID Formula | Message Type | DLC | Content |
 |------------|--------------|-----|---------|
 | `(0-7 << 7) \| slave_id` | Cell Voltages | 8 | 4 cells per msg, 8 msgs total (32 cells) |
-| `0x400 \| slave_id` | Temperatures | 8 | 4 temps (BQ1-int, Ext1/TS1, Ext2/TS3, BQ2-int) |
+| `0x400 \| slave_id` | Temperatures | 8 | 4 temps (BQ1-IC, BQ1-TS1/cell, BQ2-TS1/cell, BQ2-IC) |
 | `0x480 \| slave_id` | Status | 7 | Balance mask (4B) + faults (1B) + cells_ic1 (1B) + cells_ic2 (1B) |
 | `0x500 \| slave_id` | Balance Cmd | 5 | Master -> Slave balance command + buzzer beep code |
 
@@ -407,10 +407,10 @@ Or build from terminal instead: `idf.py build`
 
 | Index | VESC Tool | Actual Sensor | Description |
 |-------|-----------|---------------|-------------|
-| 0 | T1 | BQ1 | BQ76952 #1 internal die temperature |
-| 1 | T2 | Ext1 | External NTC on TS1 pin |
-| 2 | T3 | Ext2 | External NTC on TS3 pin |
-| 3 | T4 | BQ2 | BQ76952 #2 internal die temperature |
+| 0 | T1 | BQ1 IC | BQ76952 #1 internal die temperature |
+| 1 | T2 | BQ1 TS1 | External NTC on BQ1 TS1 pin (cell temp) |
+| 2 | T3 | BQ2 TS1 | External NTC on BQ2 TS1 pin (cell temp) |
+| 3 | T4 | BQ2 IC | BQ76952 #2 internal die temperature |
 
 **Invalid temperature marker:** `0x7FFF` (3276.7°C) - filtered out, not displayed
 

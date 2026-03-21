@@ -145,7 +145,7 @@ static void can_send_all_cells(uint8_t slave_id, uint16_t *cells_mv) {
 static void can_send_temps(uint8_t slave_id, int16_t *temps) {
 	uint8_t buf[8];
 
-	// Pack 4 temps, little-endian (T_BQ1, T_TS1, T_TS3, T_BQ2)
+	// Pack 4 temps, little-endian (T_BQ1_IC, T_BQ1_TS1, T_BQ2_TS1, T_BQ2_IC)
 	for (uint8_t i = 0; i < 4; i++) {
 		buf[i * 2]     = temps[i] & 0xFF;         // Low byte
 		buf[i * 2 + 1] = (temps[i] >> 8) & 0xFF;  // High byte
@@ -879,27 +879,30 @@ static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
 	// Multiply by 256 as only 16 of the 24 bits are used
 	const float counts_to_volts = 0.358e-6 * 256.0;
 
-	// Read TS1 (NTC sensor 1)
+	// TODO: Use config
+	float ntc_beta = 3380.0;
+
+	// Read BQ1 TS1 (cell NTC on BQ1)
 	float v1 = (float)command_read(BQ_ADDR_1, TS1Temperature, &ok) * counts_to_volts;
 	if (!ok) {
 		goto exit_error1;
 	}
-
-	// Read TS3 (NTC sensor 2)
-	float v3 = (float)command_read(BQ_ADDR_1, TS3Temperature, &ok) * counts_to_volts;
-	if (!ok) {
-		goto exit_error1;
-	}
-
-	// TODO: Use config
-	float ntc_beta = 3380.0;
-
 	ts_list = lbm_cons(
 		lbm_enc_float(NAN_TO_INVALID(NTC_TEMP(NTC_RES(v1), ntc_beta))), ts_list
 	);
-	ts_list = lbm_cons(
-		lbm_enc_float(NAN_TO_INVALID(NTC_TEMP(NTC_RES(v3), ntc_beta))), ts_list
-	);
+
+	// Read BQ2 TS1 (cell NTC on BQ2) if present
+	if (m_cells_ic2 > 0) {
+		float v2 = (float)command_read(BQ_ADDR_2, TS1Temperature, &ok) * counts_to_volts;
+		if (!ok) {
+			goto exit_error2;
+		}
+		ts_list = lbm_cons(
+			lbm_enc_float(NAN_TO_INVALID(NTC_TEMP(NTC_RES(v2), ntc_beta))), ts_list
+		);
+	} else {
+		ts_list = lbm_cons(lbm_enc_float(NTC_INVALID_MARKER), ts_list);
+	}
 
 	// Read BQ2 internal temperature if present (at address 0x08)
 	if (m_cells_ic2 > 0) {
@@ -1607,9 +1610,13 @@ static lbm_value ext_slave_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 		curr = lbm_cdr(curr);
 	}
 
-	// Extract temperatures from list (only skip 999.0 invalid marker)
+	// Extract temperatures from list
+	// Temp order: [0]=BQ1 IC, [1]=BQ1 TS1 (cell), [2]=BQ2 TS1 (cell), [3]=BQ2 IC
+	// Track cell temps (indices 1,2) and IC temps (indices 0,3) separately
 	int num_temps = 0;
-	float t_max = -273.0f;
+	int temp_idx = 0;
+	float t_max_cell = -273.0f;
+	float t_max_ic = -273.0f;
 	curr = args[1];
 	while (lbm_is_cons(curr) && num_temps < BMS_MAX_TEMPS) {
 		lbm_value temp = lbm_car(curr);
@@ -1618,10 +1625,16 @@ static lbm_value ext_slave_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 			// Only skip 999.0 invalid marker (means sensor not connected)
 			if (t < 900.0f) {
 				bms->temps_adc[num_temps] = t;
-				if (t > t_max) t_max = t;
+				// Indices 0,3 = IC die temps; indices 1,2 = cell NTC temps
+				if (temp_idx == 0 || temp_idx == 3) {
+					if (t > t_max_ic) t_max_ic = t;
+				} else {
+					if (t > t_max_cell) t_max_cell = t;
+				}
 				num_temps++;
 			}
 		}
+		temp_idx++;
 		curr = lbm_cdr(curr);
 	}
 
@@ -1639,8 +1652,8 @@ static lbm_value ext_slave_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 
 	// Update temperature data
 	bms->temp_adc_num = num_temps;
-	bms->temp_max_cell = (num_temps > 0) ? t_max : 0.0f;
-	bms->temp_ic = (num_temps > 0) ? bms->temps_adc[0] : 0.0f;  // BQ1 internal temp
+	bms->temp_max_cell = (t_max_cell > -273.0f) ? t_max_cell : 0.0f;
+	bms->temp_ic = (t_max_ic > -273.0f) ? t_max_ic : 0.0f;
 
 	// Balancing state
 	bms->is_balancing = (get_bal_bitmap() != 0) ? 1 : 0;

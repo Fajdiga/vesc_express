@@ -1610,7 +1610,8 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 	float v_tot = 0.0f;
 	float v_min = 9999.0f;
 	float v_max = 0.0f;
-	float t_max = -273.0f;
+	float t_max_cell = -273.0f;
+	float t_max_ic = -273.0f;
 
 	// First: Add local BQ76952 cells (only if initialized via bms-init)
 	if (m_bq_init_done) {
@@ -1633,15 +1634,15 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 		const float counts_to_volts = 0.358e-6 * 256.0;
 		float ntc_beta = 3380.0;
 
-		// BQ1 internal temperature
+		// BQ1 internal temperature (IC die temp)
 		float bq1_int = (float)command_read(BQ_ADDR_1, IntTemperature, &tok) * 0.1 - 273.15;
 		if (tok && total_temps < BMS_MAX_TEMPS) {
 			bms->temps_adc[total_temps] = bq1_int;
-			if (bq1_int > t_max) t_max = bq1_int;
+			if (bq1_int > t_max_ic) t_max_ic = bq1_int;
 			total_temps++;
 		}
 
-		// NTC sensors: TS1 (external NTC) and HDQ (MOSFET temp)
+		// NTC sensors: TS1 (cell NTC) and HDQ (MOSFET temp)
 		uint16_t ntc_regs[] = { TS1Temperature, HDQTemperature };
 		for (int n = 0; n < 2 && total_temps < BMS_MAX_TEMPS; n++) {
 			tok = false;
@@ -1650,7 +1651,7 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 				float temp_c = NTC_TEMP(NTC_RES(vn), ntc_beta);
 				if (!UTILS_IS_NAN(temp_c) && temp_c > -40.0f && temp_c < 150.0f) {
 					bms->temps_adc[total_temps] = temp_c;
-					if (temp_c > t_max) t_max = temp_c;
+					if (temp_c > t_max_cell) t_max_cell = temp_c;
 					total_temps++;
 				}
 			}
@@ -1684,13 +1685,19 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 		}
 
 		// Add slave temperatures
+		// Temp order per slave: [0]=BQ1 IC, [1]=BQ1 TS1 (cell), [2]=BQ2 TS1 (cell), [3]=BQ2 IC
 		for (int t = 0; t < TEMPS_PER_SLAVE && total_temps < BMS_MAX_TEMPS; t++) {
 			int16_t raw = m_bms_data.temperatures[s][t];
 			if (raw != 0x7FFF) {
 				float temp_c = (float)raw / 10.0f;
 				if (temp_c < 900.0f) {
 					bms->temps_adc[total_temps] = temp_c;
-					if (temp_c > t_max) t_max = temp_c;
+					// Indices 0,3 = IC die temps; indices 1,2 = cell NTC temps
+					if (t == 0 || t == 3) {
+						if (temp_c > t_max_ic) t_max_ic = temp_c;
+					} else {
+						if (temp_c > t_max_cell) t_max_cell = temp_c;
+					}
 					total_temps++;
 				}
 			}
@@ -1715,8 +1722,8 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 	bms->v_cell_min = (total_cells > 0) ? v_min : 0.0f;
 	bms->v_cell_max = (total_cells > 0) ? v_max : 0.0f;
 	bms->temp_adc_num = total_temps;
-	bms->temp_max_cell = (total_temps > 0) ? t_max : 0.0f;
-	bms->temp_ic = (total_temps > 0) ? bms->temps_adc[0] : 0.0f;
+	bms->temp_max_cell = (t_max_cell > -273.0f) ? t_max_cell : 0.0f;
+	bms->temp_ic = (t_max_ic > -273.0f) ? t_max_ic : 0.0f;
 
 	// SOC estimate based on average cell voltage
 	float avg_v = (total_cells > 0) ? (v_tot / total_cells) : 3.7f;
