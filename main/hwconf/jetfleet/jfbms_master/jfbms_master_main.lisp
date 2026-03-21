@@ -4,9 +4,6 @@
 
 (print "=== JFBMS Master ===")
 
-; Precharge buzzer: 4 kHz 50% duty on IO10
-(pwm-start 4000 0.5 0 10 8)
-
 ; COM enable low (active)
 (gpio-write 9 0)
 
@@ -357,6 +354,9 @@
     (if (= (mod loop-cnt 2) 0) {
         ; Update VESC BMS display with local BQ + slave cell voltages
         (master-update-vesc-bms)
+
+        ; Broadcast BMS data to ESC via VESC CAN protocol (for phone app)
+        (send-bms-can)
 
         ; Check for timed-out slaves
         (master-check-timeouts slave-timeout)
