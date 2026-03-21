@@ -23,6 +23,7 @@ set(COMPONENT_SRCS
 "comm_uart.c"
 "comm_usb.c"
 "comm_can.c"
+"comm_wifi_stubs.c"
 "packet.c"
 "crc.c"
 "commands.c"
@@ -79,7 +80,7 @@ set(COMPONENT_SRCS
 )
 
 # Conditionally add WiFi and BLE for non-slave/master builds
-if(NOT IS_SLAVE_BUILD AND NOT IS_MASTER_BUILD)
+if(NOT IS_SLAVE_BUILD)
     list(APPEND COMPONENT_SRCS
         "comm_wifi.c"
         "comm_ble.c"

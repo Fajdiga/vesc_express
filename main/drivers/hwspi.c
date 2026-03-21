@@ -21,9 +21,11 @@
 #include "hwspi.h"
 #include <string.h>
 
+#include "freertos/FreeRTOS.h"
 #include "soc/gpio_struct.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
+#include "esp_heap_caps.h"
 #include "conf_general.h"
 
 #define SET_CS() 		(GPIO.out_w1ts.val = 1 << m_pin_cs)

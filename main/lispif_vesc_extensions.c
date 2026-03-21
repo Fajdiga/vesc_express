@@ -2360,7 +2360,7 @@ static lbm_value ext_esp_now_add_peer(lbm_value *args, lbm_uint argn) {
 	esp_now_peer_info_t peer;
 	memset(&peer, 0, sizeof(peer));
 	peer.channel = 0; // Must be the same as the wifi-channel when using wifi. 0 means current channel.
-	peer.ifidx = ESP_IF_WIFI_AP;
+	peer.ifidx = WIFI_IF_AP;
 	peer.encrypt = false;
 	memcpy(peer.peer_addr, addr, ESP_NOW_ETH_ALEN);
 
@@ -2491,9 +2491,9 @@ static lbm_value ext_wifi_set_bw(lbm_value *args, lbm_uint argn) {
 		return ENC_SYM_TERROR;
 	}
 
-	wifi_bandwidth_t bwt = WIFI_BW_HT20;
+	wifi_bandwidth_t bwt = WIFI_BW20;
 	if (bw == 40) {
-		bwt = WIFI_BW_HT40;
+		bwt = WIFI_BW40;
 	}
 
 	esp_err_t res = esp_wifi_set_bandwidth(WIFI_IF_AP, bwt);
@@ -2509,7 +2509,7 @@ static lbm_value ext_wifi_set_bw(lbm_value *args, lbm_uint argn) {
 static lbm_value ext_wifi_get_bw(lbm_value *args, lbm_uint argn) {
 	(void)args; (void)argn;
 
-	wifi_bandwidth_t bwt = WIFI_BW_HT20;
+	wifi_bandwidth_t bwt = WIFI_BW20;
 	esp_err_t res = esp_wifi_get_bandwidth(WIFI_IF_AP, &bwt);
 
 	if (res == ESP_ERR_WIFI_NOT_INIT) {
@@ -2517,7 +2517,7 @@ static lbm_value ext_wifi_get_bw(lbm_value *args, lbm_uint argn) {
 		return ENC_SYM_EERROR;
 	}
 
-	return lbm_enc_i(bwt == WIFI_BW_HT20 ? 20 : 40);
+	return lbm_enc_i(bwt == WIFI_BW20 ? 20 : 40);
 }
 
 static lbm_value ext_wifi_start(lbm_value *args, lbm_uint argn) {
@@ -3535,7 +3535,7 @@ static lbm_value ext_sleep_config_wakeup_pin(lbm_value *args, lbm_uint argn) {
 	}
 
 	gpio_set_direction(pin, GPIO_MODE_INPUT);
-	esp_deep_sleep_enable_gpio_wakeup(1 << pin,
+	esp_sleep_enable_gpio_wakeup_on_hp_periph_powerdown(1 << pin,
 			mode ? ESP_GPIO_WAKEUP_GPIO_HIGH : ESP_GPIO_WAKEUP_GPIO_LOW);
 
 	return ENC_SYM_TRUE;
