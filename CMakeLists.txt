@@ -46,6 +46,7 @@ if(DEFINED ENV{USER_GIT_BRANCH_NAME})
 endif()
 
 idf_build_set_property(COMPILE_OPTIONS "-fdiagnostics-color=always" APPEND)
+idf_build_set_property(COMPILE_OPTIONS "-Wno-error=calloc-transposed-args" APPEND)
 
 
 add_custom_target(rename_bin ALL
