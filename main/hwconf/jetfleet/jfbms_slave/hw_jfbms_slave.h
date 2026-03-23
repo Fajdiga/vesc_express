@@ -25,6 +25,7 @@
 #include "datatypes.h"
 
 #define HW_NAME						"JFBMS_SLAVE"
+#define HW_TARGET					"esp32c3"
 
 #define HW_EARLY_LBM_INIT
 #define HW_NO_UART

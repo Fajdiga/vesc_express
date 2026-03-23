@@ -1,27 +1,120 @@
-# The following lines of boilerplate have to be in your project's
-# CMakeLists in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.16)
 
-set(PROJECT_VER "6.0") 
+# You can set a HW here when e.g. building with the eclipse plugin
+# set(HW_NAME "Wcore")
 
+# Default build target Logic
+if(NOT DEFINED HW_NAME)
+    if(DEFINED IDF_TARGET)
+        if(IDF_TARGET STREQUAL "esp32s3")
+            set(HW_NAME "Devkit S3")
+        else()
+            set(HW_NAME "JFBMS_MASTER")
+        endif()
+    else()
+        set(HW_NAME "JFBMS_MASTER")
+    endif()
+endif()
+
+# Look for hardware header files based on HW_NAME
+file(GLOB_RECURSE HW_HEADER_PATHS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}
+    main/hwconf/hw_*.h
+)
+
+foreach(HW_HEADER_PATH ${HW_HEADER_PATHS})
+    file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/${HW_HEADER_PATH}" FILE_CONTENTS)
+    set(IS_HW_MATCH false)
+
+    foreach(LINE IN LISTS FILE_CONTENTS)
+        string(REGEX MATCH "^#define[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+(.*)$" MATCHES "${LINE}")
+        if(MATCHES)
+            set(DEF_KEY ${CMAKE_MATCH_1})
+            set(DEF_VAL ${CMAKE_MATCH_2})
+
+            # Remove surrounding quotes
+            if(DEF_VAL MATCHES "^\".*\"$")
+                string(REGEX REPLACE "^\"(.*)\"$" "\\1" DEF_VAL ${DEF_VAL})
+            endif()
+
+            if (DEF_KEY STREQUAL "HW_NAME" AND DEF_VAL STREQUAL HW_NAME)
+                set(IS_HW_MATCH true)
+            endif()
+
+            # We've found the hardware target (must be below HW_NAME) - exit early
+            if (IS_HW_MATCH AND DEF_KEY STREQUAL "HW_TARGET")
+                set(HW_TARGET ${DEF_VAL})
+                set(HW_FILE_NAME ${HW_HEADER_PATH})
+                break()
+            endif()
+        endif()
+    endforeach()
+endforeach()
+
+if(DEFINED HW_NAME AND DEFINED HW_TARGET AND DEFINED HW_FILE_NAME)
+    # Get file name without extension
+    string(REGEX MATCH "([^/]+)$" HW_FILE ${HW_FILE_NAME})
+    string(REPLACE ".h" "" HW_FILE ${HW_FILE})
+
+    # IMPORTANT: Set IDF_TARGET before including project.cmake
+    if(NOT DEFINED IDF_TARGET)
+        SET(IDF_TARGET ${HW_TARGET})
+    elseif(NOT IDF_TARGET STREQUAL HW_TARGET)
+        message(WARNING "IDF_TARGET (${IDF_TARGET}) does not match HW_TARGET (${HW_TARGET}) from ${HW_NAME}. This may cause build issues.")
+    endif()
+
+    # Pass through hw file paths
+    add_compile_definitions(HW_HEADER="${HW_FILE}.h" HW_SOURCE="${HW_FILE}.c")
+
+    # Auto-generate QML files if any *.qml files exist alongside the HW config
+    get_filename_component(HW_DIR ${HW_FILE_NAME} DIRECTORY)
+    file(GLOB QMLUI_QML_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/${HW_DIR}/*.qml")
+
+    if(QMLUI_QML_SRCS)
+        find_package(Python3 REQUIRED COMPONENTS Interpreter)
+        set(QMLUI_OUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${HW_DIR}")
+        set(QMLUI_GENERATOR "${CMAKE_CURRENT_SOURCE_DIR}/tools/create_qmlui_hw.py")
+
+        foreach(QMLUI_QML_SRC IN LISTS QMLUI_QML_SRCS)
+            # Tell CMake to re-run configuration if the QML file or generator changes
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${QMLUI_QML_SRC} ${QMLUI_GENERATOR})
+
+            message(STATUS "Generating QMLUI HW from ${QMLUI_QML_SRC}")
+            execute_process(
+                COMMAND ${Python3_EXECUTABLE}
+                    "${QMLUI_GENERATOR}"
+                    "${QMLUI_QML_SRC}" "${QMLUI_OUT_DIR}"
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                RESULT_VARIABLE QMLUI_RESULT
+                OUTPUT_VARIABLE QMLUI_OUTPUT
+                ERROR_VARIABLE QMLUI_ERROR
+            )
+            if(NOT QMLUI_RESULT EQUAL 0)
+                message(FATAL_ERROR "Failed to generate QMLUI HW files:\n${QMLUI_ERROR}")
+            endif()
+            message(STATUS "${QMLUI_OUTPUT}")
+        endforeach()
+    endif()
+else ()
+    message(FATAL_ERROR "Build target info missing.\nHW_NAME: ${HW_NAME}\nHW_TARGET: ${HW_TARGET}\nHW_FILE: ${HW_FILE_NAME}")
+endif()
+
+message("Processing target ${HW_NAME} on ${HW_TARGET} for file ${HW_FILE_NAME}")
+
+# The following lines of boilerplate have to be in your project's
+# CMakeLists in this exact order for cmake to work correctly
+set(PROJECT_VER "6.0")
+
+# Include ESP-IDF project cmake
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
-# Derive project name from HW_HEADER if set, otherwise use default hardware name
-if(DEFINED ENV{HW_HEADER})
-    # Extract hardware name from path (e.g., "hw_jfbms_slave.h" -> "jfbms_slave")
-    get_filename_component(HW_FILENAME "$ENV{HW_HEADER}" NAME_WE)
-    string(REGEX REPLACE "^hw_" "" ProjectId ${HW_FILENAME})
-else()
-    # Default hardware is jfbms_slave (see main/CMakeLists.txt)
-    set(ProjectId "jfbms_slave")
-endif()
+# ESP-IDF remainder boilerplate
+get_filename_component(ProjectId ${CMAKE_CURRENT_LIST_DIR} NAME)
 string(REPLACE " " "_" ProjectId ${ProjectId})
 project(${ProjectId})
 
 include(cmake/git_rev_parse.cmake)
 
 git_describe(GIT_COMMIT_HASH ".")
-# get_git_head_revision(GIT_COMMIT_REF GIT_COMMIT_HASH ".")
 
 if(DEFINED ENV{GIT_COMMIT_HASH})
     set(GIT_COMMIT_HASH $ENV{GIT_COMMIT_HASH})
@@ -47,7 +140,6 @@ endif()
 
 idf_build_set_property(COMPILE_OPTIONS "-fdiagnostics-color=always" APPEND)
 idf_build_set_property(COMPILE_OPTIONS "-Wno-error=calloc-transposed-args" APPEND)
-
 
 add_custom_target(rename_bin ALL
     COMMAND ${CMAKE_COMMAND} -E echo "Running post_build script..."

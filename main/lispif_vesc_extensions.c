@@ -37,6 +37,7 @@
 #include "extensions/lbm_dyn_lib.h"
 #include "extensions/ttf_extensions.h"
 #include "lispif_disp_extensions.h"
+#include "lispif_touch_extensions.h"
 #include "lispif_wifi_extensions.h"
 #include "lispif_ble_extensions.h"
 #include "lispif_rgbled_extensions.h"
@@ -80,6 +81,7 @@
 #include "nvs_flash.h"
 #include "esp_sleep.h"
 #include "soc/rtc.h"
+#include "esp_private/esp_clk.h"
 #include "esp_bt.h"
 #include "esp_bt_main.h"
 #include "esp_partition.h"
@@ -95,6 +97,14 @@
 #include <ctype.h>
 #include <stdarg.h>
 #include <string.h>
+
+#if CONFIG_IDF_TARGET_ESP32S3
+	#define LBM_EVENTS_TASK_STACK_SIZE 1280
+#elif CONFIG_IDF_TARGET_ESP32C3
+	#define LBM_EVENTS_TASK_STACK_SIZE 640
+#else
+	#error "Unsupported target"
+#endif
 
 typedef struct {
 	// BMS
@@ -146,6 +156,7 @@ typedef struct {
 	lbm_uint part_running;
 	lbm_uint git_branch;
 	lbm_uint git_hash;
+	lbm_uint cpu_freq;
 
 	// FW Info
 	lbm_uint version;
@@ -284,6 +295,8 @@ static bool compare_symbol(lbm_uint sym, lbm_uint *comp) {
 			lbm_add_symbol_const("git-branch", comp);
 		} else if (comp == &syms_vesc.git_hash) {
 			lbm_add_symbol_const("git-hash", comp);
+		} else if (comp == &syms_vesc.cpu_freq) {
+			lbm_add_symbol_const("cpu-freq", comp);
 		}
 
 		else if (comp == &syms_vesc.version) {
@@ -1171,6 +1184,8 @@ static lbm_value ext_sysinfo(lbm_value *args, lbm_uint argn) {
 		} else {
 			res = ENC_SYM_MERROR;
 		}
+	} else if (compare_symbol(name, &syms_vesc.cpu_freq)) {
+		res = lbm_enc_i(esp_clk_cpu_freq() / 1000000);
 	}
 
 	return res;
@@ -1979,6 +1994,8 @@ static lbm_value ext_enable_event(lbm_value *args, lbm_uint argn) {
 		event_wifi_disconnect_en = en;
 	} else if (name == sym_event_cmds_data_tx) {
 		event_cmds_data_tx_en = en;
+	} else if (name == sym_event_touch_int) {
+		event_touch_int_en = en;
 	} else if (name == sym_bms_chg_allow) {
 		event_bms_chg_allow_en = en;
 	} else if (name == sym_bms_bal_ovr) {
@@ -3535,9 +3552,14 @@ static lbm_value ext_sleep_config_wakeup_pin(lbm_value *args, lbm_uint argn) {
 	}
 
 	gpio_set_direction(pin, GPIO_MODE_INPUT);
-	esp_sleep_enable_gpio_wakeup_on_hp_periph_powerdown(1 << pin,
-			mode ? ESP_GPIO_WAKEUP_GPIO_HIGH : ESP_GPIO_WAKEUP_GPIO_LOW);
-
+#if CONFIG_IDF_TARGET_ESP32S3
+	esp_sleep_enable_ext0_wakeup(pin, mode ? 1 : 0);
+	esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+#elif CONFIG_IDF_TARGET_ESP32C3
+	esp_deep_sleep_enable_gpio_wakeup(1 << pin,mode ? ESP_GPIO_WAKEUP_GPIO_HIGH : ESP_GPIO_WAKEUP_GPIO_LOW);
+#else
+	#error "Unsupported target"
+#endif
 	return ENC_SYM_TRUE;
 }
 
@@ -3990,8 +4012,12 @@ static lbm_value ext_f_rm(lbm_value *args, lbm_uint argn) {
 
 // (f-ls path) -> ((path is-dir) (path is-dir) ...)
 // (f-ls path 'size) -> ((path is-dir size) (path is-dir size) ...)
+// (f-ls path count) -> ((path is-dir ) (path is-dir ) ...)
+// (f-ls path count offset) -> ((path is-dir ) (path is-dir ) ...)
+// (f-ls path count offset 'size) -> ((path is-dir ) (path is-dir ) ...)
+// (f-ls path count 'size) -> ((path is-dir ) (path is-dir ) ...)
 static lbm_value ext_f_ls(lbm_value *args, lbm_uint argn) {
-	LBM_CHECK_ARGN_RANGE(1, 2);
+	LBM_CHECK_ARGN_RANGE(1, 4);
 
 	char *path = dec_str_check(args[0]);
 	if (!path) {
@@ -4000,9 +4026,22 @@ static lbm_value ext_f_ls(lbm_value *args, lbm_uint argn) {
 	}
 
 	bool report_size = false;
-	if (argn  == 2) {
-		if (lbm_is_symbol(args[1]) && lbm_dec_sym(args[1]) == sym_size) {
+	unsigned int count = INT_MAX;
+	unsigned int offset = 0;
+	
+	// Count comes before offset, 'size can appear anywhere after path
+	for (uint i = 1;i < argn;i++) {
+		if (lbm_is_symbol(args[i]) && lbm_dec_sym(args[i]) == sym_size) {
 			report_size = true;
+		} else if (lbm_is_number(args[i])) {
+			if (count == INT_MAX) {
+				count = lbm_dec_as_u32(args[i]);
+			} else {
+				offset = lbm_dec_as_u32(args[i]);
+			}
+		} else {
+			lbm_set_error_reason((char*)lbm_error_str_incorrect_arg);
+			return ENC_SYM_TERROR;
 		}
 	}
 
@@ -4014,9 +4053,19 @@ static lbm_value ext_f_ls(lbm_value *args, lbm_uint argn) {
 
 	bool merror = false;
 	struct dirent *dir;
+	unsigned int cur_offset = 0;
+	unsigned int cur_count = 0;
 	DIR *d = opendir(path_full);
 	if (d) {
 		while ((dir = readdir(d)) != NULL) {
+			if (cur_offset < offset) {
+				cur_offset++;
+				continue;
+			}
+			if (cur_count >= count) {
+				break;
+			}
+			cur_count++;
 			lbm_value current = ENC_SYM_NIL;
 
 			int len_f = strlen(dir->d_name);
@@ -5297,7 +5346,11 @@ static lbm_value ext_uart_read(lbm_value *args, lbm_uint argn) {
 	} else {
 		a.unblock = true;
 		lbm_block_ctx_from_extension();
-		xTaskCreatePinnedToCore(uart_rx_task, "Uart Rx", 2048, &a, 7, NULL, tskNO_AFFINITY);
+		if (xTaskCreatePinnedToCore(uart_rx_task, "Uart Rx", 2048,
+		 &a, 7, NULL, tskNO_AFFINITY) != pdPASS) {
+			lbm_undo_block_ctx_from_extension();
+			return lbm_enc_u(0);
+		}
 		return ENC_SYM_TRUE;
 	}
 }
@@ -6509,7 +6562,7 @@ void lispif_load_vesc_extensions(bool main_found) {
 		}
 		xSemaphoreGive(rmsg_mutex);
 
-		xTaskCreatePinnedToCore(event_task, "LBM Events", 640, NULL, 7, NULL, tskNO_AFFINITY);
+		xTaskCreatePinnedToCore(event_task, "LBM Events", LBM_EVENTS_TASK_STACK_SIZE, NULL, 7, NULL, tskNO_AFFINITY);
 		event_task_running = true;
 	}
 
@@ -6682,6 +6735,7 @@ void lispif_load_vesc_extensions(bool main_found) {
 		lispif_load_rgbled_extensions();
 
 		lispif_load_disp_extensions();
+		lispif_load_touch_extensions();
 		lispif_load_wifi_extensions();
 
 		if (backup.config.ble_mode == BLE_MODE_SCRIPTING) {
@@ -6820,6 +6874,7 @@ void lispif_disable_all_events(void) {
 	event_ble_rx_en = false;
 	event_wifi_disconnect_en = false;
 	event_cmds_data_tx_en = false;
+	event_touch_int_en = false;
 
 	event_bms_chg_allow_en = false;
 	event_bms_bal_ovr_en = false;

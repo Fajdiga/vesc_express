@@ -28,6 +28,7 @@
 #include "datatypes.h"
 
 #define HW_NAME						"JFBMS_MASTER"
+#define HW_TARGET					"esp32c3"
 
 #define PCB_VERSION					2
 

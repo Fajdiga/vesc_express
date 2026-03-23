@@ -24,6 +24,7 @@
 #include "adc.h"
 
 #define HW_NAME						"Duet Expr"
+#define HW_TARGET					"esp32c3"
 
 #define HW_INIT_HOOK()				hw_init()
 

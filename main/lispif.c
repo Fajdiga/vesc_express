@@ -34,11 +34,12 @@
 #include "lbm_image.h"
 #include "esp_partition.h"
 #include "esp_ota_ops.h"
+#include "esp_system.h"
 
 #define GC_STACK_SIZE			160
 #define PRINT_STACK_SIZE		128
 #ifndef EXTENSION_STORAGE_SIZE
-#define EXTENSION_STORAGE_SIZE	350
+#define EXTENSION_STORAGE_SIZE	358
 #endif
 #ifndef USER_EXTENSION_STORAGE_SIZE
 #define USER_EXTENSION_STORAGE_SIZE 0
@@ -55,14 +56,9 @@ static uint32_t *memory_array;
 static uint32_t *bitmap_array;
 static lbm_extension_t extension_storage[EXTENSION_STORAGE_SIZE + USER_EXTENSION_STORAGE_SIZE];
 
+static bool string_tok_valid = false;
 static volatile lbm_uint *image_ptr = 0;
 static int image_max_ind = 0;
-
-static lbm_string_channel_state_t string_tok_state;
-static lbm_char_channel_t string_tok;
-static lbm_buffered_channel_state_t buffered_tok_state;
-static lbm_char_channel_t buffered_string_tok;
-static bool string_tok_valid = false;
 
 static TaskHandle_t eval_task = 0;
 static volatile bool lisp_thd_running = false;
@@ -103,9 +99,17 @@ extern lbm_const_heap_t *lbm_const_heap_state;
 #define LBM_BITMAP_SIZE_KB(kb) LBM_MEMORY_BITMAP_SIZE((kb * 16))
 
 void lispif_init(void) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+	heap_size = (4096 + 512);
+	mem_size = LBM_MEMORY_SIZE_KB(48);
+	bitmap_size = LBM_BITMAP_SIZE_KB(48);
+#elif CONFIG_IDF_TARGET_ESP32C3
 	heap_size = (2048 + 512);
 	mem_size = LBM_MEMORY_SIZE_KB(32);
 	bitmap_size = LBM_BITMAP_SIZE_KB(32);
+#else 
+	#error "Unsupported target"
+#endif
 
 	if (backup.config.wifi_mode == WIFI_MODE_DISABLED &&
 			backup.config.ble_mode == BLE_MODE_DISABLED) {
@@ -123,7 +127,12 @@ void lispif_init(void) {
 	memory_array = heap_caps_malloc(mem_size * sizeof(uint32_t), MALLOC_CAP_DMA);
 	bitmap_array = heap_caps_malloc(bitmap_size * sizeof(uint32_t), MALLOC_CAP_DMA);
 
-	memset(&buffered_tok_state, 0, sizeof(buffered_tok_state));
+	if (!heap || !memory_array || !bitmap_array) {
+		commands_printf_lisp("LispBM malloc failed: heap=%p mem=%p bmp=%p (free heap: %u)",
+				heap, memory_array, bitmap_array,
+				(unsigned)esp_get_free_heap_size());
+	}
+
 	lbm_mutex = xSemaphoreCreateMutex();
 	lispif_restart(false, true, true);
 
@@ -526,6 +535,9 @@ void lispif_process_cmd(unsigned char *data, unsigned int len,
 				if (pause_eval(30, 1000)) {
 					repl_buffer = lbm_malloc_reserve(len);
 					if (repl_buffer) {
+						static lbm_string_channel_state_t string_tok_state;
+						static lbm_char_channel_t string_tok;
+
 						memcpy(repl_buffer, data, len);
 						lbm_create_string_char_channel(&string_tok_state, &string_tok, repl_buffer);
 						repl_cid = lbm_load_and_eval_expression(&string_tok);
@@ -552,6 +564,9 @@ void lispif_process_cmd(unsigned char *data, unsigned int len,
 	} break;
 
 	case COMM_LISP_STREAM_CODE: {
+		static lbm_buffered_channel_state_t buffered_tok_state = {0};
+		static lbm_char_channel_t buffered_string_tok = {0};
+
 		int32_t ind = 0;
 		int32_t offset = buffer_get_int32(data, &ind);
 		int32_t tot_len = buffer_get_int32(data, &ind);
@@ -800,11 +815,18 @@ bool lispif_restart(bool print, bool load_code, bool load_imports) {
 			image_len /= sizeof(lbm_uint);
 			image_len &= 0xFFFFFFF0;
 
-			lbm_init(heap, heap_size, memory_array, mem_size, bitmap_array,
+			bool lbm_ok = lbm_init(heap, heap_size, memory_array, mem_size, bitmap_array,
 					bitmap_size,
 					GC_STACK_SIZE,
 					PRINT_STACK_SIZE, extension_storage,
 					EXTENSION_STORAGE_SIZE + USER_EXTENSION_STORAGE_SIZE);
+
+			if (!lbm_ok) {
+				commands_printf_lisp("lbm_init failed (heap=%p mem=%p bmp=%p free=%u)",
+						heap, memory_array, bitmap_array,
+						(unsigned)esp_get_free_heap_size());
+				return false;
+			}
 
 			lbm_set_usleep_callback(sleep_callback);
 			lbm_set_printf_callback(commands_printf_lisp);
@@ -897,6 +919,9 @@ bool lispif_restart(bool print, bool load_code, bool load_imports) {
 		}
 
 		if (load_code) {
+			static lbm_string_channel_state_t string_tok_state;
+			static lbm_char_channel_t string_tok;
+
 			if (print) {
 				if (main_found) {
 					commands_printf_lisp("Running main-function");

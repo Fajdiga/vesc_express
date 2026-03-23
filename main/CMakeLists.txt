@@ -4,13 +4,13 @@ set(COMPONENT_PRIV_REQUIRES )
 # Detect if building for slave or master hardware (no WiFi/BLE needed)
 set(IS_SLAVE_BUILD FALSE)
 set(IS_MASTER_BUILD FALSE)
-if(DEFINED ENV{HW_HEADER})
-    string(FIND "$ENV{HW_HEADER}" "jfbms_slave" SLAVE_POS)
+if(DEFINED HW_FILE_NAME)
+    string(FIND "${HW_FILE_NAME}" "jfbms_slave" SLAVE_POS)
     if(NOT SLAVE_POS EQUAL -1)
         set(IS_SLAVE_BUILD TRUE)
         message(STATUS "Detected slave build - excluding WiFi/BLE modules")
     endif()
-    string(FIND "$ENV{HW_HEADER}" "jfbms_master" MASTER_POS)
+    string(FIND "${HW_FILE_NAME}" "jfbms_master" MASTER_POS)
     if(NOT MASTER_POS EQUAL -1)
         set(IS_MASTER_BUILD TRUE)
         message(STATUS "Detected master build - excluding WiFi/BLE modules")
@@ -77,6 +77,7 @@ set(COMPONENT_SRCS
 "lispBM/src/extensions/lbm_dyn_lib.c"
 "lispBM/src/extensions/ttf_extensions.c"
 "lispBM/src/extensions/schrift.c"
+"lispBM/src/extensions/ttf_backend.c"
 )
 
 # Conditionally add WiFi and BLE for non-slave/master builds
@@ -93,6 +94,8 @@ endif()
 
 list(APPEND COMPONENT_SRCS
 
+"touch/lispif_touch_extensions.c"
+
 "display/lispif_disp_extensions.c"
 "display/disp_sh8501b.c"
 "display/disp_ili9341.c"
@@ -102,6 +105,7 @@ list(APPEND COMPONENT_SRCS
 "display/disp_st7735.c"
 "display/disp_ssd1351.c"
 "display/disp_icna3306.c"
+"display/disp_sh8601.c"
 
 "drivers/bme280/bme280.c"
 "drivers/bme280/bme280_if.c"
@@ -133,6 +137,12 @@ set(COMPONENT_ADD_INCLUDEDIRS
 "hwconf/vesc/link"
 "hwconf/vesc/vdisp_900"
 "hwconf/vesc/nanolog"
+"hwconf/vesc/vbms16"
+"hwconf/vesc/rmcore"
+"hwconf/vesc/dash16"
+"hwconf/vesc/wcore"
+"hwconf/rescue"
+"hwconf/avaspark"
 
 "lispBM"
 "lispBM/include"
@@ -141,6 +151,7 @@ set(COMPONENT_ADD_INCLUDEDIRS
 "wifi"
 "ble"
 "rgbled"
+"touch"
 "drivers"
 "drivers/bme280"
 "drivers/imu"
@@ -158,25 +169,3 @@ add_compile_definitions(
     LBM_USE_ERROR_LINENO
     LBM_USE_MACRO_REST_ARGS
 )
-
-if((DEFINED ENV{HW_SRC}) OR (DEFINED ENV{HW_HEADER}))
-    if(NOT DEFINED ENV{HW_SRC})
-        message(FATAL_ERROR "HW_SRC not defined while HW_HEADER is set. You must either set both or none.")
-    endif()
-    if(NOT DEFINED ENV{HW_HEADER})
-        message(FATAL_ERROR "HW_HEADER not defined while HW_SRC is set. You must either set both or none.")
-    endif()
-
-    message(STATUS "Setting HW_SOURCE=\"$ENV{HW_SRC}\" and HW_HEADER=\"$ENV{HW_HEADER}\" definitions")
-
-    add_compile_definitions(
-        HW_SOURCE=\"$ENV{HW_SRC}\"
-        HW_HEADER=\"$ENV{HW_HEADER}\"
-    )
-else()
-    message(STATUS "Using default hardware: jfbms_master")
-      add_compile_definitions(
-                    HW_SOURCE=\"hwconf/jetfleet/jfbms_master/hw_jfbms_master.c\"
-                    HW_HEADER=\"hwconf/jetfleet/jfbms_master/hw_jfbms_master.h\"
-      )
-endif()

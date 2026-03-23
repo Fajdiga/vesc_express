@@ -25,11 +25,18 @@
 #include "soc/gpio_struct.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
-#include "esp_heap_caps.h"
+#include "soc/gpio_reg.h"
 #include "conf_general.h"
 
-#define SET_CS() 		(GPIO.out_w1ts.val = 1 << m_pin_cs)
-#define CLEAR_CS()		(GPIO.out_w1tc.val = 1 << m_pin_cs)
+#if CONFIG_IDF_TARGET_ESP32S3
+	#define SET_CS() 		(GPIO.out_w1ts = 1 << m_pin_cs)
+	#define CLEAR_CS()		(GPIO.out_w1tc = 1 << m_pin_cs)
+#elif CONFIG_IDF_TARGET_ESP32C3
+	#define SET_CS() 		(GPIO.out_w1ts.val = 1 << m_pin_cs)
+	#define CLEAR_CS()		(GPIO.out_w1tc.val = 1 << m_pin_cs)
+#else
+	#error "Unsupported target"
+#endif
 
 // Stream buffer for triple buffering
 typedef struct data_stream_buffer_s {
