@@ -409,8 +409,8 @@ Or build from terminal instead: `idf.py build`
 |-------|-----------|---------------|-------------|
 | 0 | T1 | BQ1 IC | BQ76952 #1 internal die temperature |
 | 1 | T2 | BQ1 TS1 | External NTC on BQ1 TS1 pin (cell temp) |
-| 2 | T3 | BQ2 TS1 | External NTC on BQ2 TS1 pin (cell temp) |
-| 3 | T4 | BQ2 IC | BQ76952 #2 internal die temperature |
+| 2 | T3 | BQ2 IC | BQ76952 #2 internal die temperature |
+| 3 | T4 | BQ2 TS1 | External NTC on BQ2 TS1 pin (cell temp) |
 
 **Invalid temperature marker:** `0x7FFF` (3276.7°C) - filtered out, not displayed
 

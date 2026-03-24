@@ -145,7 +145,7 @@ static void can_send_all_cells(uint8_t slave_id, uint16_t *cells_mv) {
 static void can_send_temps(uint8_t slave_id, int16_t *temps) {
 	uint8_t buf[8];
 
-	// Pack 4 temps, little-endian (T_BQ1_IC, T_BQ1_TS1, T_BQ2_TS1, T_BQ2_IC)
+	// Pack 4 temps, little-endian (T_BQ1_IC, T_BQ1_TS1, T_BQ2_IC, T_BQ2_TS1)
 	for (uint8_t i = 0; i < 4; i++) {
 		buf[i * 2]     = temps[i] & 0xFF;         // Low byte
 		buf[i * 2 + 1] = (temps[i] >> 8) & 0xFF;  // High byte
@@ -891,19 +891,6 @@ static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
 		lbm_enc_float(NAN_TO_INVALID(NTC_TEMP(NTC_RES(v1), ntc_beta))), ts_list
 	);
 
-	// Read BQ2 TS1 (cell NTC on BQ2) if present
-	if (m_cells_ic2 > 0) {
-		float v2 = (float)command_read(BQ_ADDR_2, TS1Temperature, &ok) * counts_to_volts;
-		if (!ok) {
-			goto exit_error2;
-		}
-		ts_list = lbm_cons(
-			lbm_enc_float(NAN_TO_INVALID(NTC_TEMP(NTC_RES(v2), ntc_beta))), ts_list
-		);
-	} else {
-		ts_list = lbm_cons(lbm_enc_float(NTC_INVALID_MARKER), ts_list);
-	}
-
 	// Read BQ2 internal temperature if present (at address 0x08)
 	if (m_cells_ic2 > 0) {
 		ts_list = lbm_cons(
@@ -917,6 +904,19 @@ static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
 		}
 	} else {
 		// BQ2 not present - mark as invalid
+		ts_list = lbm_cons(lbm_enc_float(NTC_INVALID_MARKER), ts_list);
+	}
+
+	// Read BQ2 TS1 (cell NTC on BQ2) if present
+	if (m_cells_ic2 > 0) {
+		float v2 = (float)command_read(BQ_ADDR_2, TS1Temperature, &ok) * counts_to_volts;
+		if (!ok) {
+			goto exit_error2;
+		}
+		ts_list = lbm_cons(
+			lbm_enc_float(NAN_TO_INVALID(NTC_TEMP(NTC_RES(v2), ntc_beta))), ts_list
+		);
+	} else {
 		ts_list = lbm_cons(lbm_enc_float(NTC_INVALID_MARKER), ts_list);
 	}
 
@@ -1611,8 +1611,8 @@ static lbm_value ext_slave_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 	}
 
 	// Extract temperatures from list
-	// Temp order: [0]=BQ1 IC, [1]=BQ1 TS1 (cell), [2]=BQ2 TS1 (cell), [3]=BQ2 IC
-	// Track cell temps (indices 1,2) and IC temps (indices 0,3) separately
+	// Temp order: [0]=BQ1 IC, [1]=BQ1 TS1 (cell), [2]=BQ2 IC, [3]=BQ2 TS1 (cell)
+	// Track cell temps (indices 1,3) and IC temps (indices 0,2) separately
 	int num_temps = 0;
 	int temp_idx = 0;
 	float t_max_cell = -273.0f;
@@ -1622,11 +1622,11 @@ static lbm_value ext_slave_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 		lbm_value temp = lbm_car(curr);
 		if (lbm_is_number(temp)) {
 			float t = lbm_dec_as_float(temp);
-			// Only skip 999.0 invalid marker (means sensor not connected)
-			if (t < 900.0f) {
+			// Filter: -40..120°C valid range; 999.0 = NTC_INVALID_MARKER (no sensor / NaN)
+			if (t >= -40.0f && t < 900.0f) {
 				bms->temps_adc[num_temps] = t;
-				// Indices 0,3 = IC die temps; indices 1,2 = cell NTC temps
-				if (temp_idx == 0 || temp_idx == 3) {
+				// Indices 0,2 = IC die temps; indices 1,3 = cell NTC temps
+				if (temp_idx == 0 || temp_idx == 2) {
 					if (t > t_max_ic) t_max_ic = t;
 				} else {
 					if (t > t_max_cell) t_max_cell = t;

@@ -1,19 +1,13 @@
 set(COMPONENT_REQUIRES )
 set(COMPONENT_PRIV_REQUIRES )
 
-# Detect if building for slave or master hardware (no WiFi/BLE needed)
+# Detect if building for slave hardware (no WiFi/BLE needed)
 set(IS_SLAVE_BUILD FALSE)
-set(IS_MASTER_BUILD FALSE)
 if(DEFINED HW_FILE_NAME)
     string(FIND "${HW_FILE_NAME}" "jfbms_slave" SLAVE_POS)
     if(NOT SLAVE_POS EQUAL -1)
         set(IS_SLAVE_BUILD TRUE)
         message(STATUS "Detected slave build - excluding WiFi/BLE modules")
-    endif()
-    string(FIND "${HW_FILE_NAME}" "jfbms_master" MASTER_POS)
-    if(NOT MASTER_POS EQUAL -1)
-        set(IS_MASTER_BUILD TRUE)
-        message(STATUS "Detected master build - excluding WiFi/BLE modules")
     endif()
 endif()
 
@@ -79,8 +73,10 @@ set(COMPONENT_SRCS
 "lispBM/src/extensions/ttf_backend.c"
 )
 
-# Conditionally add WiFi and BLE for non-slave/master builds
-if(NOT IS_SLAVE_BUILD AND NOT IS_MASTER_BUILD)
+# Slave has no WiFi/BLE hardware - use stubs. All other builds (master, etc.) get real modules.
+if(IS_SLAVE_BUILD)
+    list(APPEND COMPONENT_SRCS "comm_wifi_ble_stub.c")
+else()
     list(APPEND COMPONENT_SRCS
         "comm_wifi.c"
         "comm_ble.c"

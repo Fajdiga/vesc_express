@@ -142,7 +142,7 @@ float voltage_v = voltage_mv / 1000.0f;          // = 3.500 V
 ```
 Byte:   0      1      2      3      4      5      6      7
      ┌──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┐
-     │    T_BQ1    │    T_TS1    │    T_TS3    │    T_BQ2    │
+     │    T_BQ1    │   T_BQ1_TS1 │    T_BQ2    │   T_BQ2_TS1 │
      │    int16    │    int16    │    int16    │    int16    │
      └──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┘
 ```
@@ -153,9 +153,9 @@ Byte:   0      1      2      3      4      5      6      7
 | Bytes | Field | Description |
 |-------|-------|-------------|
 | 0-1 | T_BQ1 | BQ1 internal die temperature |
-| 2-3 | T_TS1 | External NTC on BQ1 TS1 pin |
-| 4-5 | T_TS3 | External NTC on BQ1 TS3 pin |
-| 6-7 | T_BQ2 | BQ2 internal die temperature (0x7FFF if single-chip) |
+| 2-3 | T_BQ1_TS1 | External NTC on BQ1 TS1 pin |
+| 4-5 | T_BQ2 | BQ2 internal die temperature (0x7FFF if single-chip) |
+| 6-7 | T_BQ2_TS1 | External NTC on BQ2 TS1 pin (0x7FFF if single-chip) |
 
 **Encoding:**
 - int16, little-endian, 0.1°C resolution

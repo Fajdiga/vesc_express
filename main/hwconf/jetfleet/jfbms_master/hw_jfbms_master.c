@@ -1685,15 +1685,15 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 		}
 
 		// Add slave temperatures
-		// Temp order per slave: [0]=BQ1 IC, [1]=BQ1 TS1 (cell), [2]=BQ2 TS1 (cell), [3]=BQ2 IC
+		// Temp order per slave: [0]=BQ1 IC, [1]=BQ1 TS1 (cell), [2]=BQ2 IC, [3]=BQ2 TS1 (cell)
 		for (int t = 0; t < TEMPS_PER_SLAVE && total_temps < BMS_MAX_TEMPS; t++) {
 			int16_t raw = m_bms_data.temperatures[s][t];
 			if (raw != 0x7FFF) {
 				float temp_c = (float)raw / 10.0f;
 				if (temp_c < 900.0f) {
 					bms->temps_adc[total_temps] = temp_c;
-					// Indices 0,3 = IC die temps; indices 1,2 = cell NTC temps
-					if (t == 0 || t == 3) {
+					// Indices 0,2 = IC die temps; indices 1,3 = cell NTC temps
+					if (t == 0 || t == 2) {
 						if (temp_c > t_max_ic) t_max_ic = temp_c;
 					} else {
 						if (temp_c > t_max_cell) t_max_cell = temp_c;
