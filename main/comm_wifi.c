@@ -86,8 +86,14 @@ static const char *wifi_reason_to_str(wifi_err_reason_t reason) {
 			return "AUTH_EXPIRE";
 		case WIFI_REASON_AUTH_LEAVE:
 			return "AUTH_LEAVE";
+		case WIFI_REASON_ASSOC_EXPIRE:
+			return "ASSOC_EXPIRE";
 		case WIFI_REASON_ASSOC_TOOMANY:
 			return "ASSOC_TOOMANY";
+		case WIFI_REASON_NOT_AUTHED:
+			return "NOT_AUTHED";
+		case WIFI_REASON_NOT_ASSOCED:
+			return "NOT_ASSOCED";
 		case WIFI_REASON_ASSOC_LEAVE:
 			return "ASSOC_LEAVE";
 		case WIFI_REASON_ASSOC_NOT_AUTHED:
@@ -731,7 +737,7 @@ void comm_wifi_set_event_listener(comm_wifi_event_cb_t handler) {
 struct sockaddr_in create_sockaddr_in(ip_addr_t addr, uint16_t port) {
 	struct sockaddr_in result = {0};
 	// *Pretty* sure this works
-	result.sin_addr.s_addr = ip_2_ip4(&addr)->addr;
+	memcpy(&result.sin_addr, &addr, sizeof(ip_addr_t));
 	result.sin_family = AF_INET;
 	result.sin_port   = htons(port);
 	// TODO: Is this necessary and correct if so?
