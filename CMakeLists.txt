@@ -140,7 +140,6 @@ endif()
 
 idf_build_set_property(COMPILE_OPTIONS "-fdiagnostics-color=always" APPEND)
 idf_build_set_property(COMPILE_OPTIONS "-Wno-error=calloc-transposed-args" APPEND)
-idf_build_set_property(COMPILE_OPTIONS "-Wno-error=unused-label" APPEND)
 
 add_custom_target(rename_bin ALL
     COMMAND ${CMAKE_COMMAND} -E echo "Running post_build script..."
