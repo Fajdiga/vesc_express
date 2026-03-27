@@ -191,7 +191,7 @@ typedef struct {
 #define HW_DEFAULT_ID				3
 
 // Board variant: set to 1 for CAN on GPIO 0/1, set to 0 for CAN on GPIO 6/7
-#define JFBMS_USE_CAN_IO_0_1		0
+#define JFBMS_USE_CAN_IO_0_1		1
 
 // CAN
 #if JFBMS_USE_CAN_IO_0_1
