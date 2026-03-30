@@ -623,11 +623,27 @@ static void bq_init(uint8_t dev_addr) {
 	bq_set_reg(dev_addr, CFETOFFPinConfig, 0x00, 1);
 	bq_set_reg(dev_addr, DFETOFFPinConfig, 0x00, 1);
 
-	// ADC inputs with 18k pull-up
-	bq_set_reg(dev_addr, TS1Config, 0b00111011, 1);
-	bq_set_reg(dev_addr, TS3Config, 0b00111011, 1);
-	bq_set_reg(dev_addr, ALERTPinConfig, 0b00111011, 1);
-	bq_set_reg(dev_addr, DCHGPinConfig, 0b00111011, 1);
+	// TS pin pull-up configuration:
+	// 0b00111011 = 18k pull-up  | thermistor mode | ADC input (for NTC <= 50k)
+	// 0b01111011 = 180k pull-up | thermistor mode | ADC input (for NTC >= 100k)
+	main_config_t *cfg_bq = (main_config_t *)&backup.config;
+	uint8_t ntcPinConfig;
+	switch (cfg_bq->temp_res) {
+		case NTC_RES_4_7K:  ntcPinConfig = 0b00111011; break;
+		case NTC_RES_5K:    ntcPinConfig = 0b00111011; break;
+		case NTC_RES_10K:   ntcPinConfig = 0b00111011; break;
+		case NTC_RES_20K:   ntcPinConfig = 0b00111011; break;
+		case NTC_RES_22K:   ntcPinConfig = 0b00111011; break;
+		case NTC_RES_47K:   ntcPinConfig = 0b00111011; break;
+		case NTC_RES_50K:   ntcPinConfig = 0b00111011; break;
+		case NTC_RES_100K:  ntcPinConfig = 0b01111011; break;
+		case NTC_RES_200K:  ntcPinConfig = 0b01111011; break;
+		default:            ntcPinConfig = 0b00111011; break;
+	}
+	bq_set_reg(dev_addr, TS1Config, ntcPinConfig, 1);
+	bq_set_reg(dev_addr, TS3Config, ntcPinConfig, 1);
+	bq_set_reg(dev_addr, ALERTPinConfig, ntcPinConfig, 1);
+	bq_set_reg(dev_addr, DCHGPinConfig, ntcPinConfig, 1);
 	bq_set_reg(dev_addr, HDQPinConfig, 0b00111011, 1);
 
 	// Disabled
@@ -851,8 +867,8 @@ static lbm_value ext_get_vcells(lbm_value *args, lbm_uint argn) {
 	return lbm_list_destructive_reverse(vc_list);
 }
 
-#define NTC_TEMP(res, beta)                                                    \
-	(1.0 / ((logf((res) / 10000.0) / beta) + (1.0 / 298.15)) - 273.15)
+#define NTC_TEMP(res, ntc_res, beta)                                           \
+	(1.0 / ((logf((res) / (ntc_res)) / (beta)) + (1.0 / 298.15)) - 273.15)
 #define NTC_RES(volts) (18.0e3 / (1.8 / volts - 1.0) - 500.0)
 // Return 999.0 for invalid NTC (will be converted to 0x7FFF in broadcast)
 #define NTC_INVALID_MARKER 999.0f
@@ -879,8 +895,21 @@ static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
 	// Multiply by 256 as only 16 of the 24 bits are used
 	const float counts_to_volts = 0.358e-6 * 256.0;
 
-	// TODO: Use config
-	float ntc_beta = 3380.0;
+	main_config_t *cfg = (main_config_t *)&backup.config;
+	float ntc_beta = (float)cfg->temp_beta;
+	float ntc_res = 0.0;
+	switch (cfg->temp_res) {
+		case NTC_RES_4_7K:  ntc_res = 4700.0;   break;
+		case NTC_RES_5K:    ntc_res = 5000.0;   break;
+		case NTC_RES_10K:   ntc_res = 10000.0;  break;
+		case NTC_RES_20K:   ntc_res = 20000.0;  break;
+		case NTC_RES_22K:   ntc_res = 22000.0;  break;
+		case NTC_RES_47K:   ntc_res = 47000.0;  break;
+		case NTC_RES_50K:   ntc_res = 50000.0;  break;
+		case NTC_RES_100K:  ntc_res = 100000.0; break;
+		case NTC_RES_200K:  ntc_res = 200000.0; break;
+		default:            ntc_res = 10000.0;  break;
+	}
 
 	// Read BQ1 TS1 (cell NTC on BQ1)
 	float v1 = (float)command_read(BQ_ADDR_1, TS1Temperature, &ok) * counts_to_volts;
@@ -888,7 +917,7 @@ static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
 		goto exit_error1;
 	}
 	ts_list = lbm_cons(
-		lbm_enc_float(NAN_TO_INVALID(NTC_TEMP(NTC_RES(v1), ntc_beta))), ts_list
+		lbm_enc_float(NAN_TO_INVALID(NTC_TEMP(NTC_RES(v1), ntc_res, ntc_beta))), ts_list
 	);
 
 	// Read BQ2 internal temperature if present (at address 0x08)
@@ -914,7 +943,7 @@ static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
 			goto exit_error2;
 		}
 		ts_list = lbm_cons(
-			lbm_enc_float(NAN_TO_INVALID(NTC_TEMP(NTC_RES(v2), ntc_beta))), ts_list
+			lbm_enc_float(NAN_TO_INVALID(NTC_TEMP(NTC_RES(v2), ntc_res, ntc_beta))), ts_list
 		);
 	} else {
 		ts_list = lbm_cons(lbm_enc_float(NTC_INVALID_MARKER), ts_list);

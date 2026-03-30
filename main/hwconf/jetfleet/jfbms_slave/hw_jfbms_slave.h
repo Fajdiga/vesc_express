@@ -48,11 +48,25 @@
 #define OVR_CONF_MAIN_CONFIG
 #define VAR_INIT_CODE				259763459
 
+typedef enum {
+	NTC_RES_4_7K = 0,
+	NTC_RES_5K,
+	NTC_RES_10K,
+	NTC_RES_20K,
+	NTC_RES_22K,
+	NTC_RES_47K,
+	NTC_RES_50K,
+	NTC_RES_100K,
+	NTC_RES_200K
+} NTC_RES;
+
 typedef struct {
 	int slave_id;           // Slave ID on BMS CAN bus (1-8)
 	CAN_BAUD can_baud_rate; // CAN baud rate (should be 500K per protocol)
 	int cells_ic1;          // Cells on BQ76952 IC1 (3-16)
 	int cells_ic2;          // Cells on BQ76952 IC2 (0-16, 0=single chip)
+	NTC_RES temp_res;       // NTC resistance value at 25C
+	uint16_t temp_beta;     // NTC B-constant (B25-85 recommended)
 
 	// Compatibility fields (not used by slave, but needed for compilation)
 	int controller_id;      // Not used - slave uses slave_id instead

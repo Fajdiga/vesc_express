@@ -14,6 +14,8 @@ int32_t jfbms_slave_confparser_serialize_main_config_t(uint8_t *buffer, const ma
 	buffer[ind++] = conf->can_baud_rate;
 	buffer[ind++] = (uint8_t)conf->cells_ic1;
 	buffer[ind++] = (uint8_t)conf->cells_ic2;
+	buffer[ind++] = conf->temp_res;
+	buffer_append_uint16(buffer, conf->temp_beta, &ind);
 
 	return ind;
 }
@@ -30,6 +32,8 @@ bool jfbms_slave_confparser_deserialize_main_config_t(const uint8_t *buffer, mai
 	conf->can_baud_rate = buffer[ind++];
 	conf->cells_ic1 = buffer[ind++];
 	conf->cells_ic2 = buffer[ind++];
+	conf->temp_res = buffer[ind++];
+	conf->temp_beta = buffer_get_uint16(buffer, &ind);
 
 	return true;
 }
@@ -39,5 +43,7 @@ void jfbms_slave_confparser_set_defaults_main_config_t(main_config_t *conf) {
 	conf->can_baud_rate = CONF_CAN_BAUD_RATE;
 	conf->cells_ic1 = CONF_CELLS_IC1;
 	conf->cells_ic2 = CONF_CELLS_IC2;
+	conf->temp_res = CONF_TEMP_RES;
+	conf->temp_beta = CONF_TEMP_BETA;
 }
 
