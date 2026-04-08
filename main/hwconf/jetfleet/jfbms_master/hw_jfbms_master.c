@@ -1647,7 +1647,6 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 				total_cells++;
 			}
 		}
-
 	}
 
 	// Then: Add slave cells
@@ -1717,7 +1716,22 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 	bms->temps_adc[2] = (t_cell_max > -299.0f) ? t_cell_max : -300.0f;  // Cell Max
 	bms->temps_adc[3] = -300.0f;                                         // Mosfet N/A
 	bms->temps_adc[4] = -300.0f;                                         // Ambient N/A
-	bms->temp_adc_num = 5;
+	int temps_count = 5;
+	for (int s = 0; s < MAX_SLAVES; s++) {
+		for (int t = 0; t < TEMPS_PER_SLAVE; t++) {
+			int16_t raw = m_bms_data.temperatures[s][t];
+			if (raw == 0x7FFF) continue;
+			float temp_c = (float)raw / 10.0f;
+			if (temp_c > 900.0f) continue;
+			if (t == 1 || t == 3) {
+				bms->temps_adc[temps_count] = temp_c;
+				temps_count++;
+			}
+		}
+	}
+
+	bms->temp_adc_num = temps_count;
+
 	bms->temp_max_cell = (t_cell_max > -299.0f) ? t_cell_max : 0.0f;
 	bms->data_version = 1;
 
