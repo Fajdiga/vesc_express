@@ -1704,9 +1704,11 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 	bms->cell_num = total_cells;
 	bms->v_tot = v_tot;
 	bms->v_charge = HW_GET_VCHG();
-	bool i_ok = false;
-	bms->i_in = (float)command_read(BQ_ADDR_1, CC2Current, &i_ok) / 100.0f;
-	bms->i_in_ic = bms->i_in;
+	if (m_bq_init_done) {
+		bool i_ok = false;
+		bms->i_in = (float)command_read(BQ_ADDR_1, CC2Current, &i_ok) / 100.0f;
+		bms->i_in_ic = bms->i_in;
+	}
 	bms->v_cell_min = (total_cells > 0) ? v_min : 0.0f;
 	bms->v_cell_max = (total_cells > 0) ? v_max : 0.0f;
 	// VESC 6.06 temperature sensor convention (indices 0-4)
