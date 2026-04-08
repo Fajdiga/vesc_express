@@ -321,8 +321,10 @@
 (event-register-handler (spawn event-handler))
 (event-enable 'event-bms-force-bal)
 
-; Balance thread disabled for now — focus on reading local BQ data first
-; (spawn 200 balance-thd)
+; Spawn balance thread
+(print "Spawning balance thread...")
+(spawn 200 balance-thd)
+(print "Balance thread spawned")
 
 ; Track previous balance mask per slave for change detection (8 slaves)
 (def prev-bal-mask (list 0 0 0 0 0 0 0 0))
@@ -352,6 +354,25 @@
 
     ; Run 10 Hz tasks every 2nd iteration (100ms)
     (if (= (mod loop-cnt 2) 0) {
+        ; Balance keepalive to slaves at 1 Hz while balancing is active.
+        ; This resets slave 10s watchdog with lower CAN bus load.
+        (if (and bal-request
+                 (= (ix bal-state 0) 1)
+                 (or (= (mod loop-cnt 20) 0) (= (ix bal-keepalive-kick 0) 1))) {
+            (var tx-sid 1)
+            (loopwhile (<= tx-sid 8) {
+                (if (master-slave-active? tx-sid) {
+                    (master-send-balance
+                        tx-sid
+                        (ix slave-bal-mask-ic1 (- tx-sid 1))
+                        (ix slave-bal-mask-ic2 (- tx-sid 1))
+                        0)
+                })
+                (setq tx-sid (+ tx-sid 1))
+            })
+            (setix bal-keepalive-kick 0 0)
+        })
+
         ; Update VESC BMS display with local BQ + slave cell voltages
         (master-update-vesc-bms)
 
