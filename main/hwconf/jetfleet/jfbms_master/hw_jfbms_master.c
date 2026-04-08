@@ -563,6 +563,7 @@ static void parse_slave_message(uint32_t id, uint8_t *data, int len) {
 				((uint32_t)data[2] << 16) |
 				((uint32_t)data[3] << 24);
 			m_bms_data.fault_flags[idx] = data[4];
+			m_bms_data.settled[idx] = (data[4] & 0x04) != 0;
 			if (len >= 7) {
 				// New format: cells_ic1 + cells_ic2 as separate bytes
 				m_bms_data.cells_ic1[idx] = data[5];
@@ -1452,6 +1453,24 @@ static lbm_value ext_master_slave_active(lbm_value *args, lbm_uint argn) {
 	return active ? ENC_SYM_TRUE : ENC_SYM_NIL;
 }
 
+// (master-get-slave-settled? slave-id) - Check if slave voltages are settled (balance off >= 2s)
+static lbm_value ext_master_get_slave_settled(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(1);
+
+	int slave_id = lbm_dec_as_i32(args[0]);
+	if (slave_id < 1 || slave_id > MAX_SLAVES) {
+		return ENC_SYM_NIL;
+	}
+
+	int idx = slave_id - 1;
+
+	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
+	bool settled = m_bms_data.settled[idx];
+	xSemaphoreGive(m_data_mutex);
+
+	return settled ? ENC_SYM_TRUE : ENC_SYM_NIL;
+}
+
 // (master-get-active-slaves) - Get list of active slave IDs
 static lbm_value ext_master_get_active_slaves(lbm_value *args, lbm_uint argn) {
 	(void)args;
@@ -1827,6 +1846,7 @@ static void load_extensions(bool main_found) {
 	lbm_add_extension("master-get-slave-temps", ext_master_get_slave_temps);
 	lbm_add_extension("master-get-slave-status", ext_master_get_slave_status);
 	lbm_add_extension("master-slave-active?", ext_master_slave_active);
+	lbm_add_extension("master-get-slave-settled?", ext_master_get_slave_settled);
 	lbm_add_extension("master-get-active-slaves", ext_master_get_active_slaves);
 	lbm_add_extension("master-get-cell-count", ext_master_get_cell_count);
 	lbm_add_extension("master-get-cells-ic1", ext_master_get_cells_ic1);

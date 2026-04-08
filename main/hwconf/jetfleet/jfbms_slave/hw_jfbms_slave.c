@@ -1298,12 +1298,23 @@ static lbm_value ext_set_buzzer(lbm_value *args, lbm_uint argn) {
 
 // Track fault state for status messages
 static volatile uint8_t m_fault_flags = 0;
+// Voltage-settled flag: 1 = balance FETs off long enough for accurate readings
+static volatile uint8_t m_settled_flag = 1;  // Start settled (no balancing at boot)
 
 // (bms-set-fault-flags flags)
 // Set fault flags (bit0 = BQ1 init failed, bit1 = BQ2 init failed)
 static lbm_value ext_set_fault_flags(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 	m_fault_flags = lbm_dec_as_u32(args[0]) & 0xFF;
+	return ENC_SYM_TRUE;
+}
+
+// (bms-set-settled-flag flag)
+// Set voltage-settled flag (1 = settled, 0 = not settled)
+// Included as bit 2 in the faults byte of status CAN message
+static lbm_value ext_set_settled_flag(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(1);
+	m_settled_flag = lbm_dec_as_i32(args[0]) != 0 ? 1 : 0;
 	return ENC_SYM_TRUE;
 }
 
@@ -1369,6 +1380,9 @@ static lbm_value ext_broadcast_all(lbm_value *args, lbm_uint argn) {
 		if (!bq1_ok) faults |= 0x01;
 		if (!bq2_ok) faults |= 0x02;
 	}
+
+	// Include voltage-settled flag (bit 2)
+	if (m_settled_flag) faults |= 0x04;
 
 	// Send all messages per protocol
 	// TX queue is 20 messages, we send 10, so no delays needed
@@ -1742,6 +1756,7 @@ static void load_extensions(bool main_found) {
 	// CAN protocol for master-slave communication (11-bit IDs)
 	lbm_add_extension("bms-broadcast-all", ext_broadcast_all);
 	lbm_add_extension("bms-set-fault-flags", ext_set_fault_flags);
+	lbm_add_extension("bms-set-settled-flag", ext_set_settled_flag);
 	lbm_add_extension("bms-set-bal-bitmap", ext_set_bal_bitmap);
 	lbm_add_extension("bms-get-bal-bitmap", ext_get_bal_bitmap);
 	lbm_add_extension("bms-stop-balancing", ext_stop_balancing);

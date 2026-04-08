@@ -26,6 +26,9 @@
 ; Previous balance masks for change detection (only print when mask changes)
 (def prev-ic1-mask (list 0))
 (def prev-ic2-mask (list 0))
+; Settle tracking: count loops with zero balance bitmap
+; After 20 loops (2s at 10Hz) voltages are considered settled for master balance decisions
+(def settle-counter (list 20))  ; Start settled (no balancing at boot)
 
 ; Balance visualization: show which cells are balancing per IC
 ; mask = 16-bit balance mask, ncells = number of configured cells
@@ -170,6 +173,21 @@
             (if (and (>= (length temps) 4) (> (ix temps 3) -200.0))
                 (setq bq2-ok true)
                 (setq bq2-ok false))
+        })
+
+        ; Track settle state for master balance synchronization
+        ; When balance FETs are off for >= 2s, voltages are settled and accurate
+        (var bal-bmp-now (bms-get-bal-bitmap))
+        (if (= bal-bmp-now 0) {
+            ; Balance is off - increment settle counter toward threshold
+            (if (< (ix settle-counter 0) 20)
+                (setix settle-counter 0 (+ (ix settle-counter 0) 1)))
+            (if (>= (ix settle-counter 0) 20)
+                (bms-set-settled-flag 1))
+        } {
+            ; Balance is active - voltages are not settled
+            (setix settle-counter 0 0)
+            (bms-set-settled-flag 0)
         })
 
         ; If a balance command was received, broadcast status immediately

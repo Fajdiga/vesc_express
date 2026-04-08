@@ -193,12 +193,13 @@ Byte:   0      1      2      3      4      5      6
 | 5 | CellsIC1 | Number of cells on BQ1 (0-16) |
 | 6 | CellsIC2 | Number of cells on BQ2 (0-16, 0 = single chip) |
 
-**Fault Byte (Byte 4):**
+**Fault/Flags Byte (Byte 4):**
 | Bit | Meaning |
 |-----|---------|
 | 0 | BQ1 initialization failed |
 | 1 | BQ2 initialization failed |
-| 2-7 | Reserved (set to 0) |
+| 2 | Voltage-settled flag (1 = balance FETs off >= 2s, voltages are accurate) |
+| 3-7 | Reserved (set to 0) |
 
 **CellsIC1 / CellsIC2 (Bytes 5-6):**
 Tells the master the exact cell configuration per BQ76952 chip. This is critical for:
@@ -300,6 +301,43 @@ Status
 - If collision → lower CAN ID wins, other retries immediately when bus is free
 
 Messages from multiple slaves naturally interleave without explicit coordination.
+
+---
+
+## Balance Settle Synchronization
+
+### Problem
+BQ76952 balancing FETs cause voltage measurement errors while active. The internal balancing resistor draws current through the cell, causing an IR drop that makes the cell appear at a different voltage than its true open-circuit voltage. Using these "dirty" readings for balance decisions causes oscillation or over-balancing.
+
+### Solution: Master-Driven Settle Cycle
+The master coordinates a settle period before reading voltages for balance decisions. This mirrors the approach used by the VBMS32 (Harmony32) firmware.
+
+**Balance cycle (repeated while balancing is active):**
+
+```
+1. Master sends zero balance mask to ALL slaves     (CAN TX, ~1ms)
+2. Master stops local BQ76952 balancing             (I2C, ~1ms)
+3. All devices settle for 2 seconds                 (FET-induced voltage error dissipates)
+4. Slaves read settled voltages and broadcast them   (automatic, 10Hz continuous)
+5. Master drains CAN buffer to get latest settled slave voltages
+6. Master reads local BQ76952 voltages (also settled)
+7. Master computes new balance masks from settled data
+8. Master sends new balance commands to slaves       (CAN TX)
+9. Balancing runs until next cycle (~0.2s cadence)
+```
+
+### Voltage-Settled Flag (Status Byte Bit 2)
+Slaves track how long balance FETs have been off. After 20 consecutive loops (2 seconds at 10Hz) with zero balance bitmap, the slave sets bit 2 in the status message faults byte. This flag indicates to the master that the voltages being broadcast are accurate (not affected by balancing).
+
+**Flag behavior:**
+| Condition | Settled Flag |
+|-----------|-------------|
+| No balance command ever received (boot) | 1 (settled) |
+| Balance bitmap is zero for >= 2s | 1 (settled) |
+| Balance bitmap is non-zero | 0 (not settled) |
+| Balance just stopped (< 2s ago) | 0 (not settled) |
+
+The master can check this flag via `(master-get-slave-settled? slave-id)` to verify data quality before computing balance masks.
 
 ---
 

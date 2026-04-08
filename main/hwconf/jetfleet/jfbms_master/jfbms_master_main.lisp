@@ -149,10 +149,10 @@
 ; ============================================================================
 ; Balance Thread
 ; ============================================================================
-; Compute balance masks once per cycle from cached voltages.
+; Compute balance masks once per cycle from settled voltages.
+; Each cycle: stop ALL balancing (local + slaves) -> 2s settle -> read -> compute -> re-enable.
+; This ensures both local BQ and slave BQ voltages are accurate (no FET-induced error).
 ; Main loop sends cached slave balance masks at 1 Hz while balancing is active.
-; No pause needed for slave cells (they send voltages continuously via CAN).
-; Only local BQ needs pause for clean I2C readings (when wired).
 ; 1 Hz command keepalive minimizes CAN load and stays within 10 s watchdog.
 
 (defun balance-thd () (loopwhile t {
@@ -174,18 +174,36 @@
             (stop-all-balancing)
         })
     } {
+        ; --- Step 0: Stop all balancing for settle (local + slaves) ---
+        ; Send zero to slaves so they stop balancing and voltages settle
+        (var settle-sid 1)
+        (loopwhile (<= settle-sid 8) {
+            (if (master-slave-active? settle-sid)
+                (master-send-balance settle-sid 0 0 0))
+            (setq settle-sid (+ settle-sid 1))
+        })
+        ; Clear cached masks so main loop keepalive sends zero during settle
+        (looprange i 0 8 {
+            (setix slave-bal-mask-ic1 i 0)
+            (setix slave-bal-mask-ic2 i 0)
+        })
+        ; Stop local balance
+        (if (> local-total 0) {
+            (trap (looprange i 0 local-total (bms-set-bal i 0)))
+        })
+        ; Wait 2s for all voltages to settle (local BQ + slave BQs)
+        (sleep 2.0)
+        ; Drain CAN to get latest settled voltages from slaves
+        (master-can-read-all)
+
         ; --- Step 1: Read all cell voltages and find global minimum ---
         (var global-min 9.0)
         (var any-cells false)
 
-        ; Read local BQ cells (if configured)
+        ; Read local BQ cells (if configured, already settled from step 0)
         (var local-cells nil)
         (if (> local-total 0) {
-            (match (trap {
-                (looprange i 0 local-total (bms-set-bal i 0))
-                (sleep 2.0)
-                (bms-get-vcells)
-            })
+            (match (trap (bms-get-vcells))
                 ((exit-ok (? cells)) {
                     (if (and cells (> (length cells) 0)) {
                         (setq local-cells cells)
@@ -199,8 +217,7 @@
             )
         })
 
-        ; Read slave cells from CAN cache (no pause needed)
-        ; Store as list of (slave-id cells ic1-count ic2-count)
+        ; Read slave cells from CAN cache (settled after 2s pause)
         (var slave-data '())
         (var sid 1)
         (loopwhile (<= sid 8) {

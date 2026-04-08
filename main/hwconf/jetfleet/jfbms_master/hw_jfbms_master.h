@@ -245,6 +245,7 @@ typedef struct {
 	uint8_t  cells_ic2[MAX_SLAVES];
 	uint32_t last_seen_ms[MAX_SLAVES];
 	bool     active[MAX_SLAVES];
+	bool     settled[MAX_SLAVES];  // Voltage-settled flag from slave (bit 2 of faults byte)
 } master_bms_data_t;
 
 // Functions
