@@ -147,13 +147,12 @@
 )))
 
 ; ============================================================================
-; Balance Thread
+; Balance Thread - 3 Phase: Settle -> Compute -> Hold
 ; ============================================================================
-; Compute balance masks once per cycle from settled voltages.
-; Each cycle: stop ALL balancing (local + slaves) -> 2s settle -> read -> compute -> re-enable.
-; This ensures both local BQ and slave BQ voltages are accurate (no FET-induced error).
-; Main loop sends cached slave balance masks at 1 Hz while balancing is active.
-; 1 Hz command keepalive minimizes CAN load and stays within 10 s watchdog.
+; Phase 1 (Settle): Stop all balancing, poll slave settled flags + 2s local min
+; Phase 2 (Compute): Read settled voltages, compute balance masks, apply
+; Phase 3 (Hold): Let balancing run ~30s, main loop sends keepalive at 1Hz
+; Cell voltage monitoring at 20Hz continues in main loop regardless of phase.
 
 (defun balance-thd () (loopwhile t {
     ; Read package config each iteration so threshold changes take effect
@@ -173,8 +172,9 @@
             (print "BAL: stopped by command")
             (stop-all-balancing)
         })
+        (sleep 0.2)
     } {
-        ; --- Step 0: Stop all balancing for settle (local + slaves) ---
+        ; ===== PHASE 1: SETTLE =====
         ; Send zero to slaves so they stop balancing and voltages settle
         (var settle-sid 1)
         (loopwhile (<= settle-sid 8) {
@@ -191,135 +191,157 @@
         (if (> local-total 0) {
             (trap (looprange i 0 local-total (bms-set-bal i 0)))
         })
-        ; Wait 2s for all voltages to settle (local BQ + slave BQs)
-        (sleep 2.0)
-        ; Drain CAN to get latest settled voltages from slaves
+
+        ; Poll until all active slaves report settled (min 2s for local BQ, 5s timeout)
+        (var settle-wait 0)
+        (var max-settle-wait 50)  ; 50 x 100ms = 5s timeout
+        (loopwhile (and bal-request (< settle-wait max-settle-wait)) {
+            (sleep 0.1)
+            (master-can-read-all)
+            (setq settle-wait (+ settle-wait 1))
+            ; Need at least 2s for local BQ settle
+            (if (>= settle-wait 20) {
+                ; Check if all active slaves report settled
+                (var all-settled true)
+                (var chk-sid 1)
+                (loopwhile (<= chk-sid 8) {
+                    (if (and (master-slave-active? chk-sid)
+                             (not (master-get-slave-settled? chk-sid)))
+                        (setq all-settled false))
+                    (setq chk-sid (+ chk-sid 1))
+                })
+                (if all-settled (break))
+            })
+        })
+
+        ; Final CAN drain to get latest settled voltages
         (master-can-read-all)
 
-        ; --- Step 1: Read all cell voltages and find global minimum ---
-        (var global-min 9.0)
-        (var any-cells false)
+        ; ===== PHASE 2: COMPUTE =====
+        (if bal-request {
+            ; --- Read all cell voltages and find global minimum ---
+            (var global-min 9.0)
+            (var any-cells false)
 
-        ; Read local BQ cells (if configured, already settled from step 0)
-        (var local-cells nil)
-        (if (> local-total 0) {
-            (match (trap (bms-get-vcells))
-                ((exit-ok (? cells)) {
-                    (if (and cells (> (length cells) 0)) {
-                        (setq local-cells cells)
+            ; Read local BQ cells (settled after 2s)
+            (var local-cells nil)
+            (if (> local-total 0) {
+                (match (trap (bms-get-vcells))
+                    ((exit-ok (? cells)) {
+                        (if (and cells (> (length cells) 0)) {
+                            (setq local-cells cells)
+                            (setq any-cells true)
+                            (loopforeach v local-cells {
+                                (if (< v global-min) (setq global-min v))
+                            })
+                        })
+                    })
+                    (_ (print "BAL: local BQ comm failed"))
+                )
+            })
+
+            ; Read slave cells from CAN cache (settled, confirmed by flag)
+            (var slave-data '())
+            (var sid 1)
+            (loopwhile (<= sid 8) {
+                (if (master-slave-active? sid) {
+                    (var cells (master-get-slave-cells sid))
+                    (var s-ic1 (master-get-cells-ic1 sid))
+                    (var s-ic2 (master-get-cells-ic2 sid))
+                    (var cnt (+ s-ic1 s-ic2))
+                    (if (and cells (> (length cells) 0) (= (length cells) cnt)) {
                         (setq any-cells true)
-                        (loopforeach v local-cells {
+                        (setq slave-data (cons (list sid cells s-ic1 s-ic2) slave-data))
+                        (loopforeach v cells {
                             (if (< v global-min) (setq global-min v))
                         })
                     })
                 })
-                (_ (print "BAL: local BQ comm failed"))
-            )
-        })
+                (setq sid (+ sid 1))
+            })
 
-        ; Read slave cells from CAN cache (settled after 2s pause)
-        (var slave-data '())
-        (var sid 1)
-        (loopwhile (<= sid 8) {
-            (if (master-slave-active? sid) {
-                (var cells (master-get-slave-cells sid))
-                (var s-ic1 (master-get-cells-ic1 sid))
-                (var s-ic2 (master-get-cells-ic2 sid))
-                (var cnt (+ s-ic1 s-ic2))
-                (if (and cells (> (length cells) 0) (= (length cells) cnt)) {
-                    (setq any-cells true)
-                    (setq slave-data (cons (list sid cells s-ic1 s-ic2) slave-data))
-                    (loopforeach v cells {
-                        (if (< v global-min) (setq global-min v))
+            ; --- Check if balancing is allowed ---
+            (var bal-allowed (and any-cells (> global-min bal-min)))
+
+            (if bal-allowed {
+                ; --- Compute balance masks ---
+                (var any-bal false)
+
+                ; Local BQ
+                (if (and local-cells (> (length local-cells) 0)) {
+                    (var local-mask (balance-ic-group local-cells global-min threshold max-ch))
+                    (trap (looprange i 0 (length local-cells) {
+                        (bms-set-bal i (if (> (bitwise-and local-mask (shl 1 i)) 0) 1 0))
+                    }))
+                    (if (> local-mask 0) {
+                        (setq any-bal true)
+                        (print (str-merge "BAL LOCAL: " (mask-to-bin local-mask local-total)
+                            " min=" (str-from-n global-min "%.3f")))
                     })
                 })
-            })
-            (setq sid (+ sid 1))
-        })
 
-        ; --- Step 2: Check if balancing is allowed ---
-        (var bal-allowed (and
-                any-cells
-                (> global-min bal-min)
-        ))
+                ; Slave ICs: update cached masks for 1Hz keepalive in main loop
+                (loopforeach sd slave-data {
+                    (var s-id (ix sd 0))
+                    (var cells (ix sd 1))
+                    (var ic1-cnt (ix sd 2))
+                    (var ic2-cnt (ix sd 3))
 
-        (if bal-allowed {
-            ; --- Step 3: Balance each IC group ---
-            (var any-bal false)
+                    (var ic1-volts (map (fn (i) (ix cells i)) (range ic1-cnt)))
+                    (var ic2-volts (if (> ic2-cnt 0)
+                        (map (fn (i) (ix cells (+ ic1-cnt i))) (range ic2-cnt))
+                        '()
+                    ))
 
-            ; Local BQ (single IC on master) - trap in case BQ not wired
-            (if (and local-cells (> (length local-cells) 0)) {
-                (var local-mask (balance-ic-group local-cells global-min threshold max-ch))
-                (trap (looprange i 0 (length local-cells) {
-                    (bms-set-bal i (if (> (bitwise-and local-mask (shl 1 i)) 0) 1 0))
-                }))
-                (if (> local-mask 0) {
-                    (setq any-bal true)
-                    (print (str-merge "BAL LOCAL: " (mask-to-bin local-mask local-total)
-                        " min=" (str-from-n global-min "%.3f")))
+                    (var ic1-mask (balance-ic-group ic1-volts global-min threshold max-ch))
+                    (var ic2-mask (if (> ic2-cnt 0)
+                        (balance-ic-group ic2-volts global-min threshold max-ch)
+                        0
+                    ))
+
+                    (if (or (> ic1-mask 0) (> ic2-mask 0)) {
+                        (setq any-bal true)
+                        (print (str-merge "BAL S" (str-from-n s-id "%d")
+                            " IC1:" (mask-to-bin ic1-mask ic1-cnt)
+                            " IC2:" (mask-to-bin ic2-mask ic2-cnt)
+                            " min=" (str-from-n global-min "%.3f")))
+                    })
+                    (setix slave-bal-mask-ic1 (- s-id 1) ic1-mask)
+                    (setix slave-bal-mask-ic2 (- s-id 1) ic2-mask)
                 })
-            })
 
-            ; Slave ICs: compute masks and cache them for 1 Hz keepalive TX in main loop.
-            ; Do not clear global cached masks before compute: main loop can transmit in
-            ; parallel, and a transient all-zero cache would make balancing blink off.
-            (loopforeach sd slave-data {
-                (var s-id (ix sd 0))
-                (var cells (ix sd 1))
-                (var ic1-cnt (ix sd 2))
-                (var ic2-cnt (ix sd 3))
+                (if any-bal {
+                    (setix bal-state 0 1)
+                    ; Kick immediate keepalive so slaves get masks without 1Hz delay
+                    (setix bal-keepalive-kick 0 1)
 
-                ; Extract IC1 voltages (cells 0 to ic1-cnt-1)
-                (var ic1-volts (map (fn (i) (ix cells i)) (range ic1-cnt)))
-
-                ; Extract IC2 voltages (cells ic1-cnt to total-1)
-                (var ic2-volts (if (> ic2-cnt 0)
-                    (map (fn (i) (ix cells (+ ic1-cnt i))) (range ic2-cnt))
-                    '()
-                ))
-
-                ; Compute balance masks per IC
-                (var ic1-mask (balance-ic-group ic1-volts global-min threshold max-ch))
-                (var ic2-mask (if (> ic2-cnt 0)
-                    (balance-ic-group ic2-volts global-min threshold max-ch)
-                    0
-                ))
-
-                (if (or (> ic1-mask 0) (> ic2-mask 0)) {
-                    (setq any-bal true)
-                    (print (str-merge "BAL S" (str-from-n s-id "%d")
-                        " IC1:" (mask-to-bin ic1-mask ic1-cnt)
-                        " IC2:" (mask-to-bin ic2-mask ic2-cnt)
-                        " min=" (str-from-n global-min "%.3f")))
+                    ; ===== PHASE 3: HOLD =====
+                    ; Let balancing run ~30s. Main loop sends keepalive at 1Hz.
+                    ; Check bal-request each second for responsive stop.
+                    (var hold-cnt 0)
+                    (loopwhile (and bal-request (< hold-cnt 30)) {
+                        (sleep 1.0)
+                        (setq hold-cnt (+ hold-cnt 1))
+                    })
+                } {
+                    (setix bal-state 0 0)
+                    (setq bal-request false)
+                    (print "BAL: target reached")
                 })
-                (setix slave-bal-mask-ic1 (- s-id 1) ic1-mask)
-                (setix slave-bal-mask-ic2 (- s-id 1) ic2-mask)
-            })
-
-            ; Update balancing state
-            (if any-bal {
-                (setix bal-state 0 1)
             } {
-                (setix bal-state 0 0)
+                ; Balancing blocked by voltage/cell availability
+                (stop-all-balancing)
                 (setq bal-request false)
-                (print "BAL: target reached")
+                (if any-cells
+                    (print "BAL: stopped (conditions not met)")
+                    (print "BAL: stopped (no cells available)")
+                )
             })
-        } {
-            ; Balancing blocked by voltage/cell availability. Stop and end request.
-            (stop-all-balancing)
-            (setq bal-request false)
-            (if any-cells
-                (print "BAL: stopped (conditions not met)")
-                (print "BAL: stopped (no cells available)")
-            )
         })
     })
 
-    ; If stop was requested mid-cycle, send stop immediately instead of waiting
+    ; If stop was requested mid-cycle, send stop immediately
     (if (and (not bal-request) (= (ix bal-state 0) 1)) (stop-all-balancing))
-
-    ; Balance compute cadence (actual slave TX keepalive runs in main loop at 1 Hz)
-    (sleep 0.2)
 }))
 
 ; ============================================================================
