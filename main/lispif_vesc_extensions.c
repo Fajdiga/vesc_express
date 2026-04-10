@@ -67,6 +67,7 @@
 #include "comm_ble.h"
 #include "lbm_image.h"
 #include "packet.h"
+#include "flash_helper.h"
 
 #include "esp_netif.h"
 #include "esp_wifi.h"
@@ -2055,6 +2056,32 @@ lbm_value ext_lbm_set_gc_stack_size(lbm_value *args, lbm_uint argn) {
 	return ENC_SYM_TERROR;
 }
 
+// Diagnostics for long-running units. Returns
+//   (code-size heap-free heap-size gc-num erase-cnt-tot erase-cnt-max)
+// so Lisp scripts can log it every wake and detect accumulation bugs
+// (flash wear, heap fragmentation) before the unit becomes unresponsive.
+// Uses lbm_enc_u32 because gc_num and erase counters can exceed 28 bits
+// on long-running units.
+static lbm_value ext_lbm_flash_info(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+
+	flast_stats fs = flash_helper_stats();
+	uint32_t code_size = flash_helper_code_size(CODE_IND_LISP);
+	uint32_t heap_free = (uint32_t)lbm_heap_num_free();
+	uint32_t heap_size = (uint32_t)lbm_heap_size();
+	uint32_t gc_num    = (uint32_t)lbm_heap_state.gc_num;
+
+	lbm_value res = ENC_SYM_NIL;
+	res = lbm_cons(lbm_enc_u32(fs.erase_cnt_max), res);
+	res = lbm_cons(lbm_enc_u32(fs.erase_cnt_tot), res);
+	res = lbm_cons(lbm_enc_u32(gc_num),           res);
+	res = lbm_cons(lbm_enc_u32(heap_size),        res);
+	res = lbm_cons(lbm_enc_u32(heap_free),        res);
+	res = lbm_cons(lbm_enc_u32(code_size),        res);
+	return res;
+}
+
 static lbm_value ext_plot_init(lbm_value *args, lbm_uint argn) {
 	if (argn != 2) {
 		return ENC_SYM_EERROR;
@@ -3510,14 +3537,39 @@ static lbm_value ext_set_pos_time(lbm_value *args, lbm_uint argn) {
 	return ENC_SYM_TRUE;
 }
 
+// Tear down radios before sleeping. Leaving Bluedroid/BT controller enabled
+// across esp_deep_sleep_start() has been observed to corrupt BLE state over
+// many sleep cycles (BMS freeze after weeks of 2h-cycle wakes).
+static void sleep_shutdown_radios(void) {
+	esp_wifi_stop();
+
+	if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_ENABLED) {
+		esp_bluedroid_disable();
+	}
+	if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_INITIALIZED) {
+		esp_bluedroid_deinit();
+	}
+
+	esp_bt_controller_status_t bt_status = esp_bt_controller_get_status();
+	if (bt_status == ESP_BT_CONTROLLER_STATUS_ENABLED) {
+		esp_bt_controller_disable();
+		bt_status = esp_bt_controller_get_status();
+	}
+	if (bt_status == ESP_BT_CONTROLLER_STATUS_INITED) {
+		esp_bt_controller_deinit();
+	}
+}
+
 static lbm_value ext_sleep_deep(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 
-	esp_wifi_stop();
+	sleep_shutdown_radios();
 
 	float sleep_time = lbm_dec_as_float(args[0]);
 	if (sleep_time > 0) {
-		esp_sleep_enable_timer_wakeup((uint32_t)(sleep_time * 1.0e6));
+		// Use uint64_t: (uint32_t) wraps for sleep_time > ~4294 s.
+		// A customer-configured 2h wake cycle previously aliased to ~48.5 min.
+		esp_sleep_enable_timer_wakeup((uint64_t)(sleep_time * 1.0e6));
 	}
 
 	esp_deep_sleep_start();
@@ -3528,11 +3580,11 @@ static lbm_value ext_sleep_deep(lbm_value *args, lbm_uint argn) {
 static lbm_value ext_sleep_light(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 
-	esp_wifi_stop();
+	sleep_shutdown_radios();
 
 	float sleep_time = lbm_dec_as_float(args[0]);
 	if (sleep_time > 0) {
-		esp_sleep_enable_timer_wakeup((uint32_t)(sleep_time * 1.0e6));
+		esp_sleep_enable_timer_wakeup((uint64_t)(sleep_time * 1.0e6));
 	}
 
 	esp_light_sleep_start();
@@ -6682,6 +6734,7 @@ void lispif_load_vesc_extensions(bool main_found) {
 		// Lbm settings
 		lbm_add_extension("lbm-set-quota", ext_lbm_set_quota);
 		lbm_add_extension("lbm-set-gc-stack-size", ext_lbm_set_gc_stack_size);
+		lbm_add_extension("lbm-flash-info", ext_lbm_flash_info);
 
 		// Plot
 		lbm_add_extension("plot-init", ext_plot_init);
