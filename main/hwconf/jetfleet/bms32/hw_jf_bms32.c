@@ -528,6 +528,16 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 		return ENC_SYM_NIL;
 	}
 
+	// i2c_tx_rx() serializes through i2c_mutex, but i2c_driver_delete /
+	// _install bypass it. If any other caller (Lisp i2c-tx-rx, i2c-detect,
+	// future hardware) is mid-transfer on port 0 while we tear it down, the
+	// driver state goes invalid. Hold both mutexes across the reinstall.
+	if (xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+		xSemaphoreGive(bq_mutex);
+		lbm_set_error_reason("i2c_mutex timeout in bms-init");
+		return ENC_SYM_NIL;
+	}
+
 	// Disable COMM unil the i2c-address of the first BQ
 	// is changed.
 	gpio_set_level(PIN_COM_EN, 1);
@@ -550,6 +560,8 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 
 	i2c_reset_tx_fifo(0);
 	i2c_reset_rx_fifo(0);
+
+	xSemaphoreGive(i2c_mutex);
 
 	vTaskDelay(50);
 
