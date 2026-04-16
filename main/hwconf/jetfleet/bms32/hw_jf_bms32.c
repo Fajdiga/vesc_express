@@ -591,35 +591,59 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 
 	vTaskDelay(50);
 
-	// Reset the address of the first BQ just in case.
-	// BQ76952 datasheet allows up to ~260 ms for RESET to complete. The
-	// previous 60 ms delay could race the chip and leave it half-reset,
-	// which then wedges the I2C bus on the next subcommand.
-	command_subcommands(BQ_ADDR_1, BQ769x2_RESET);
-	vTaskDelay(pdMS_TO_TICKS(300));
-	command_subcommands(BQ_ADDR_1, SWAP_COMM_MODE);
+	// Wake BQ1 if it was put into BQ-level DEEPSLEEP by a previous
+	// bms-sleep. The BQ I2C interface stays alive in DEEPSLEEP listening
+	// for EXIT_DEEPSLEEP at the chip's address (which persists through
+	// sleep — BQ1 stays at 0x10 once moved). Cold-boot fresh chips are
+	// still at 0x08, so this NAKs harmlessly.
+	command_subcommands(BQ_ADDR_1, EXIT_DEEPSLEEP);
+	command_subcommands(BQ_ADDR_1, EXIT_DEEPSLEEP);
+	vTaskDelay(pdMS_TO_TICKS(10));
 
-	bq_init(BQ_ADDR_2);
-	command_subcommands(BQ_ADDR_2, SET_CFGUPDATE);
-	if (!bq_set_reg(BQ_ADDR_2, I2CAddress, 0x20, 1)) {
-		commands_printf_lisp("Could not update I2C address");
+	// Probe BQ1 at its post-init address (0x10) first. If it ACKs, the
+	// address change has already been done — either from a previous boot
+	// in this session or because the new I2CAddress is committed to data
+	// flash and survives BQ769x2_RESET. In that case the old code path
+	// (RESET → write I2CAddress at 0x08) NAKs forever because nothing is
+	// at 0x08 (BQ2 silenced via COM_EN, BQ1 still at 0x10) — which is the
+	// "Could not update I2C address" loop seen on warm boots.
+	//
+	// COM_EN=1 here means BQ2 is silenced, so an ACK at 0x10 can only be
+	// from BQ1. Use a single direct command read; no state changes if it
+	// fails.
+	bool bq1_at_target = false;
+	command_read(BQ_ADDR_1, Cell1Voltage, &bq1_at_target);
+
+	if (!bq1_at_target) {
+		// Cold-boot / DF-default path: BQ1 expected at default 0x08.
+		// BQ76952 datasheet allows up to ~260 ms for RESET to complete; a
+		// shorter delay can leave the chip half-reset and wedge the bus.
+		// SWAP_COMM_MODE is belt-and-suspenders for chips that came up
+		// in HDQ mode — harmless NAK otherwise.
+		command_subcommands(BQ_ADDR_1, BQ769x2_RESET);
+		vTaskDelay(pdMS_TO_TICKS(300));
+		command_subcommands(BQ_ADDR_1, SWAP_COMM_MODE);
+
+		bq_init(BQ_ADDR_2);
+		command_subcommands(BQ_ADDR_2, SET_CFGUPDATE);
+		if (!bq_set_reg(BQ_ADDR_2, I2CAddress, 0x20, 1)) {
+			commands_printf_lisp("Could not update I2C address");
+		}
+		command_subcommands(BQ_ADDR_2, EXIT_CFGUPDATE);
+		command_subcommands(BQ_ADDR_2, SWAP_COMM_MODE);
 	}
-	command_subcommands(BQ_ADDR_2, EXIT_CFGUPDATE);
-	// EXIT_CFGUPDATE applies I2CAddress immediately, so BQ1 should already
-	// be at 0x10 by the time this SWAP_COMM_MODE goes out at 0x08 — making
-	// it likely a silent NAK. Left in place because removing it untested
-	// carries the same risk that motivated commit 1c3b75c: if the address
-	// change hasn't taken effect, a SWAP at 0x08 could push BQ1 from I2C to
-	// HDQ (1-wire) and brick the bus on the next transaction.
-	command_subcommands(BQ_ADDR_2, SWAP_COMM_MODE);
 
-	// Enable the other i2c now that the first address is updated
+	// Enable the other i2c now that BQ1's address is settled at 0x10
 	gpio_set_level(PIN_COM_EN, 0);
 	vTaskDelay(50);
 
 	if (cells_ic2 != 0) {
 		bq_init(BQ_ADDR_2);
 	}
+
+	// Always init BQ1 at its final address so its config is fresh on
+	// every bms-init, regardless of which path we took above.
+	bq_init(BQ_ADDR_1);
 
 	m_cells_ic1 = cells_ic1;
 	m_cells_ic2 = cells_ic2;

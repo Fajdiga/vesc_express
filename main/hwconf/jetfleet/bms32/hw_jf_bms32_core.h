@@ -10,6 +10,7 @@
 #define HW_EARLY_LBM_INIT
 #define HW_NO_UART
 #define HW_INIT_HOOK()				hw_init()
+#define USER_EXTENSION_STORAGE_SIZE	50 // Extra slots for hw extensions (default 350 not enough)
 //#define HW_POST_LISPIF_HOOK()		vTaskDelay(200);
 
 // Configuration overrides
