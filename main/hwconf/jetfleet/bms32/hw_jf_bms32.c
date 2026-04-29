@@ -500,6 +500,33 @@ static void bq_init(uint8_t dev_addr) {
 }
 
 // Extensions
+
+// ext_bms_init — bring up the dual-BQ76952 stack on a single I2C bus.
+//
+// At cold boot both chips power up at the BQ76952 default address 0x08.
+// To run them on the same bus we move BQ1 to 0x10, leaving BQ2 at 0x08.
+// PIN_COM_EN is wired so that pulling it HIGH silences BQ2's I2C interface,
+// giving us a window in which only BQ1 is reachable on the bus.
+//
+// Naming caveat — read carefully:
+//   BQ_ADDR_1 = 0x10 — BQ1's address AFTER it has been re-addressed.
+//   BQ_ADDR_2 = 0x08 — BQ2's address (always), AND BQ1's default address.
+// During the address-change window below we talk to BQ1 using BQ_ADDR_2
+// (= 0x08), because BQ1 hasn't moved yet and BQ2 is silenced via COM_EN.
+// So `bq_init(BQ_ADDR_2)` followed by `bq_set_reg(BQ_ADDR_2, I2CAddress, …)`
+// is initialising BQ1, not BQ2. This is confusing but correct.
+//
+// Phases:
+//   1. PIN_COM_EN = HIGH — silence BQ2.
+//   2. Reinstall the I2C driver to recover from any wedged bus state.
+//   3. RESET BQ1 at BQ_ADDR_1 (works on warm boot when BQ1 is at 0x10;
+//      NAKs harmlessly on cold boot when BQ1 is already at 0x08). After
+//      RESET, BQ1 is guaranteed to be at default 0x08 either way.
+//   4. Configure BQ1 at BQ_ADDR_2 (0x08), write I2CAddress = 0x20 so that
+//      EXIT_CFGUPDATE moves BQ1 to 0x10.
+//   5. PIN_COM_EN = LOW — bring BQ2 back on the bus, now at 0x08 with no
+//      address conflict (BQ1 is at 0x10).
+//   6. Configure BQ2 at BQ_ADDR_2 (0x08).
 static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_NUMBER_ALL();
 
@@ -578,6 +605,12 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 		commands_printf_lisp("Could not update I2C address");
 	}
 	command_subcommands(BQ_ADDR_2, EXIT_CFGUPDATE);
+	// EXIT_CFGUPDATE applies I2CAddress immediately, so BQ1 should already
+	// be at 0x10 by the time this SWAP_COMM_MODE goes out at 0x08 — making
+	// it likely a silent NAK. Left in place because removing it untested
+	// carries the same risk that motivated commit 1c3b75c: if the address
+	// change hasn't taken effect, a SWAP at 0x08 could push BQ1 from I2C to
+	// HDQ (1-wire) and brick the bus on the next transaction.
 	command_subcommands(BQ_ADDR_2, SWAP_COMM_MODE);
 
 	// Enable the other i2c now that the first address is updated
@@ -608,9 +641,43 @@ static lbm_value ext_hw_sleep(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 
-	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+	// Sleep entry is rare and not latency-critical. Use a generous timeout
+	// (5 s vs the 500 ms default) so transient I2C contention doesn't cause
+	// us to skip BQ DEEPSLEEP — that would leave each BQ in active mode
+	// (~mA) drawing only from its top cell, causing progressive top-cell
+	// imbalance over weeks of 2 h-cycle wakes. Return EERROR (not NIL) so
+	// Lisp `with-com` retries via its trap loop instead of silently letting
+	// the caller proceed to sleep-deep with the BQs still active.
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
 		lbm_set_error_reason("bq_mutex timeout in bms-sleep");
-		return ENC_SYM_NIL;
+		return ENC_SYM_EERROR;
+	}
+
+	// Pre-flight: confirm both BQs respond at their expected addresses
+	// BEFORE we disable switches and start writing sleep config. If BQ1
+	// somehow ended up at the default 0x08 (e.g. a previous bms-init
+	// partially failed), DEEPSLEEP at 0x10 would NAK while DEEPSLEEP at
+	// 0x08 might put the wrong chip to sleep — and we'd discover this
+	// only after switches are off and TS pins reconfigured, leaving the
+	// device in a half-prepared-for-sleep state. Bail early and let
+	// Lisp's recovery path re-run init-hw to re-establish addresses.
+	{
+		bool probe_ok = false;
+		command_read(BQ_ADDR_1, Cell1Voltage, &probe_ok);
+		if (!probe_ok) {
+			xSemaphoreGive(bq_mutex);
+			lbm_set_error_reason("BQ1 not responsive at 0x10 before sleep");
+			return ENC_SYM_EERROR;
+		}
+		if (m_cells_ic2 != 0) {
+			probe_ok = false;
+			command_read(BQ_ADDR_2, Cell1Voltage, &probe_ok);
+			if (!probe_ok) {
+				xSemaphoreGive(bq_mutex);
+				lbm_set_error_reason("BQ2 not responsive at 0x08 before sleep");
+				return ENC_SYM_EERROR;
+			}
+		}
 	}
 
 	// Disable all switches
@@ -634,7 +701,7 @@ static lbm_value ext_hw_sleep(lbm_value *args, lbm_uint argn) {
 	}
 
 	// Disable temperature measurement pull-ups and ensure that regulator is kept on in DEEP SLEEP
-	
+
 	if (!command_subcommands(BQ_ADDR_1, SET_CFGUPDATE) ||
 		!bq_set_reg(BQ_ADDR_1, PowerConfig, 0b0010011010000000, 2) ||
 		!bq_set_reg(BQ_ADDR_1, TS1Config, 0x00, 1) ||
@@ -653,20 +720,29 @@ static lbm_value ext_hw_sleep(lbm_value *args, lbm_uint argn) {
 			}
 	}
 
-	command_subcommands(BQ_ADDR_1, DEEPSLEEP);
-	command_subcommands(BQ_ADDR_1, DEEPSLEEP);
+	// DEEPSLEEP requires the subcommand to be sent twice in succession
+	// (TI safety pattern: first call arms, second commits). Error-check
+	// both: a NAK here means the chip stayed in ACTIVE mode (~mA draw
+	// from the top cell) while ESP goes to deep sleep — silent battery
+	// damage. Surface failures so Lisp doesn't proceed to sleep-deep.
+	if (!command_subcommands(BQ_ADDR_1, DEEPSLEEP) ||
+		!command_subcommands(BQ_ADDR_1, DEEPSLEEP)) {
+		goto exit_error1;
+	}
 
 	if (m_cells_ic2 != 0) {
-		command_subcommands(BQ_ADDR_2, DEEPSLEEP);
-		command_subcommands(BQ_ADDR_2, DEEPSLEEP);
+		if (!command_subcommands(BQ_ADDR_2, DEEPSLEEP) ||
+			!command_subcommands(BQ_ADDR_2, DEEPSLEEP)) {
+			goto exit_error2;
+		}
 	}
-	
+
 	// Disable CAN-bus and other COMM
-	gpio_set_level(PIN_COM_EN, 1);	
+	gpio_set_level(PIN_COM_EN, 1);
 
 	xSemaphoreGive(bq_mutex);
 	return ENC_SYM_TRUE;
-	
+
 exit_error1:
 	xSemaphoreGive(bq_mutex);
 	lbm_set_error_reason(error_comm_bq1);
