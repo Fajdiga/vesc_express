@@ -27,6 +27,7 @@
 #include "lispbm.h"
 #include "commands.h"
 #include "utils.h"
+#include "flash_helper.h"
 
 #include <math.h>
 #include <sys/time.h>
@@ -657,6 +658,21 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 	}
 
 	xSemaphoreGive(bq_mutex);
+
+	// Long-term accumulation diagnostic: log LBM flash / heap state on every
+	// bms-init so weeks-long accumulation (flash wear, heap fragmentation)
+	// becomes visible before the unit freezes.
+	flast_stats fs = flash_helper_stats();
+	commands_printf_lisp(
+		"bms-init: lbm_code=%u B  heap_free=%u/%u  gc=%u  "
+		"erase_tot=%u  erase_max=%u",
+		(unsigned int)flash_helper_code_size(CODE_IND_LISP),
+		(unsigned int)lbm_heap_num_free(),
+		(unsigned int)lbm_heap_size(),
+		(unsigned int)lbm_heap_state.gc_num,
+		fs.erase_cnt_tot,
+		fs.erase_cnt_max
+	);
 
 	return res ? ENC_SYM_TRUE : ENC_SYM_NIL;
 }
