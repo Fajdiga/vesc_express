@@ -22,6 +22,7 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 #include "driver/uart.h"
+#include "esp_task_wdt.h"
 
 #include "conf_general.h"
 #include "comm_ble.h"
@@ -68,6 +69,7 @@ volatile static bool init_done = false;
 // Private functions
 static void terminal_nmea(int argc, const char **argv);
 static void terminal_ublox_reinit(int argc, const char **argv);
+static void wdt_monitor_task(void *arg);
 
 void app_main(void) {
 	struct timeval tv;
@@ -192,10 +194,62 @@ void app_main(void) {
 			0,
 			terminal_ublox_reinit);
 
+	xTaskCreatePinnedToCore(wdt_monitor_task, "wdt_monitor", 2048, NULL, 1, NULL, tskNO_AFFINITY);
+
 	init_done = true;
 
 	// Exit main to free up heap-space
 	vTaskDelete(NULL);
+}
+
+// LBM-liveness watchdog. The task WDT in sdkconfig only watches the idle task,
+// so an LBM eval thread that deadlocks on a mutex (or any other blocking call)
+// will never trip it. Idle still runs, the BMS appears frozen, and only a
+// power-cycle recovers it.
+//
+// This task registers itself with the WDT and keeps feeding it as long as the
+// LBM heap shows GC activity — a reliable sign the eval thread is making
+// progress. If gc_num stays flat for STALL_LIMIT_S consecutive seconds we stop
+// feeding; the WDT then panics and resets the chip.
+//
+// Pre-arm: we wait for the first GC before starting to count stalls so that
+// units booted without a Lisp script don't reset themselves.
+static void wdt_monitor_task(void *arg) {
+	(void)arg;
+
+	esp_task_wdt_add(NULL);
+
+	const int STALL_LIMIT_S = 30;
+	lbm_uint last_gc = 0;
+	int stalled_s = 0;
+	bool armed = false;
+
+	for (;;) {
+		vTaskDelay(pdMS_TO_TICKS(1000));
+
+		lbm_uint now_gc = lbm_heap_state.gc_num;
+
+		if (!armed) {
+			if (now_gc > 0) {
+				armed = true;
+				last_gc = now_gc;
+			}
+			esp_task_wdt_reset();
+			continue;
+		}
+
+		if (now_gc != last_gc) {
+			last_gc = now_gc;
+			stalled_s = 0;
+		} else {
+			stalled_s++;
+		}
+
+		if (stalled_s < STALL_LIMIT_S) {
+			esp_task_wdt_reset();
+		}
+		// else: stop feeding — WDT panics within CONFIG_ESP_TASK_WDT_TIMEOUT_S
+	}
 }
 
 uint32_t main_calc_hw_crc(void) {
