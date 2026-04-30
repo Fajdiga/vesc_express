@@ -36,6 +36,11 @@
 #define BQ_ADDR_2 0x08
 #define I2C_SPEED 100000
 
+// Bound all I2C / BQ mutex waits so a stuck holder cannot deadlock every
+// caller forever. If this ever times out we bail out with an error instead of
+// blocking — combined with the task WDT this is what lets a stuck bus recover.
+#define I2C_MUTEX_TIMEOUT_MS 500
+
 // Macros
 #define M_CELLS (m_cells_ic1 + m_cells_ic2)
 
@@ -56,7 +61,9 @@ static esp_err_t i2c_tx_rx(
 	uint8_t *read_buffer, size_t read_size
 ) {
 
-	xSemaphoreTake(i2c_mutex, portMAX_DELAY);
+	if (xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+		return ESP_ERR_TIMEOUT;
+	}
 
 	esp_err_t res;
 	if (read_size > 0 && read_buffer != NULL) {
@@ -515,7 +522,10 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 		return ENC_SYM_TERROR;
 	}
 
-	xSemaphoreTake(bq_mutex, portMAX_DELAY);
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+		lbm_set_error_reason("bq_mutex timeout in bms-init");
+		return ENC_SYM_NIL;
+	}
 
 	// Disable COMM unil the i2c-address of the first BQ
 	// is changed.
@@ -583,7 +593,10 @@ static lbm_value ext_hw_sleep(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 
-	xSemaphoreTake(bq_mutex, portMAX_DELAY);
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+		lbm_set_error_reason("bq_mutex timeout in bms-sleep");
+		return ENC_SYM_NIL;
+	}
 
 	// Disable all switches
 	gpio_set_level(PIN_OUT_EN, 0);
@@ -1436,7 +1449,9 @@ static lbm_value ext_i2c_detect_addr(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 
 	uint8_t address = lbm_dec_as_u32(args[0]);
-	xSemaphoreTake(i2c_mutex, portMAX_DELAY);
+	if (xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+		return ENC_SYM_NIL;
+	}
 	i2c_cmd_handle_t cmd = i2c_cmd_link_create();
 	i2c_master_start(cmd);
 	i2c_master_write_byte(cmd, (address << 1) | I2C_MASTER_WRITE, true);
