@@ -3517,7 +3517,9 @@ static lbm_value ext_sleep_deep(lbm_value *args, lbm_uint argn) {
 
 	float sleep_time = lbm_dec_as_float(args[0]);
 	if (sleep_time > 0) {
-		esp_sleep_enable_timer_wakeup((uint32_t)(sleep_time * 1.0e6));
+		// Use uint64_t: (uint32_t) wraps for sleep_time > ~4294 s.
+		// A customer-configured 2h wake cycle previously aliased to ~48.5 min.
+		esp_sleep_enable_timer_wakeup((uint64_t)(sleep_time * 1.0e6));
 	}
 
 	esp_deep_sleep_start();
@@ -3532,7 +3534,7 @@ static lbm_value ext_sleep_light(lbm_value *args, lbm_uint argn) {
 
 	float sleep_time = lbm_dec_as_float(args[0]);
 	if (sleep_time > 0) {
-		esp_sleep_enable_timer_wakeup((uint32_t)(sleep_time * 1.0e6));
+		esp_sleep_enable_timer_wakeup((uint64_t)(sleep_time * 1.0e6));
 	}
 
 	esp_light_sleep_start();
