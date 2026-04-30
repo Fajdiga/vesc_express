@@ -552,9 +552,12 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 
 	vTaskDelay(50);
 
-	// Reset the address of the first BQ just in case
+	// Reset the address of the first BQ just in case.
+	// BQ76952 datasheet allows up to ~260 ms for RESET to complete. The
+	// previous 60 ms delay could race the chip and leave it half-reset,
+	// which then wedges the I2C bus on the next subcommand.
 	command_subcommands(BQ_ADDR_1, BQ769x2_RESET);
-	vTaskDelay(60);
+	vTaskDelay(pdMS_TO_TICKS(300));
 	command_subcommands(BQ_ADDR_1, SWAP_COMM_MODE);
 
 	bq_init(BQ_ADDR_2);
