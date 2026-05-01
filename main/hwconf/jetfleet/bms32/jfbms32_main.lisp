@@ -52,11 +52,6 @@
 (def did-crash false)
 (def crash-cnt 0)
 
-; Test instrumentation: counts main-ctrl iterations to throttle the
-; periodic lbm-flash-info diagnostic. main-ctrl runs at ~10 Hz so 600
-; iterations ≈ 60 s.
-(def diag-cnt 0)
-
 @const-start
 
 ;;; Hack until problem is found ;;;
@@ -818,22 +813,6 @@ loopwhile-thd
                         (sleep 1.0)
                     })
                 )
-        })
-
-        ; TEST INSTRUMENTATION: log lbm-flash-info once per minute so we can
-        ; watch heap, GC activity, and flash erase counters across long runs.
-        ; Returns (code-size heap-free heap-size gc-num erase-cnt-tot erase-cnt-max).
-        (setq diag-cnt (+ diag-cnt 1))
-        (if (>= diag-cnt 600) {
-                (setq diag-cnt 0)
-                (var fi (lbm-flash-info))
-                (print (str-merge
-                    "lbm-diag: code=" (str-from-n (ix fi 0) "%d")
-                    " heap=" (str-from-n (ix fi 1) "%d") "/" (str-from-n (ix fi 2) "%d")
-                    " gc=" (str-from-n (ix fi 3) "%d")
-                    " erase_tot=" (str-from-n (ix fi 4) "%d")
-                    " erase_max=" (str-from-n (ix fi 5) "%d")
-                ))
         })
 
         (sleep 0.1)
