@@ -159,6 +159,45 @@ For proper Master-Slave communication:
 
 ## Development History
 
+### 2026-05-04: ESP32-C6 NimBLE Port — Stage 3 (custom_ble.c full port) — IMPLEMENTED, UNTESTED
+
+**Goal:** Replace the Stage 2 stub `custom_ble_nimble.c` with a working implementation so the LispBM `ble-*` extensions in `lispif_ble_extensions.c` work on C6. Stage 2 had every entry point return `CUSTOM_BLE_NOT_STARTED` because JFBMS production never uses `BLE_MODE_SCRIPTING` — this stage closes that gap for any future C6 firmware that wants to expose custom GATT services from Lisp.
+
+**Architecture:**
+- Internal state mirrors the Bluedroid version: `service_instance_t[ble_service_capacity]` + flat `attr_instance_t[ble_chr_descr_capacity]` table, with each attr owning its heap-allocated value buffer.
+- NimBLE's GATT registration is declarative (`ble_gatt_svc_def[]`), so dynamic add/remove is implemented as a full **rebuild**: `ble_gap_adv_stop` → `ble_gatts_reset` → `ble_svc_gap_init` / `ble_svc_gatt_init` → `ble_gatts_count_cfg` / `ble_gatts_add_svcs` → `ble_gatts_start` → restart adv. Triggered on every `custom_ble_add_service` / `custom_ble_remove_service`.
+- Handle capture is via `ble_hs_cfg.gatts_register_cb` — NimBLE fires it once per service / chr / dsc as `ble_gatts_start()` walks the table in declaration order. We track three cursors (`reg_cur_service`, `reg_cur_chr_attr_idx`, `reg_cur_dsc_attr_idx`) into `custom_attr[]` and write the assigned handles back. Auto-CCCDs (UUID 0x2902) inserted by NimBLE for chars with NOTIFY/INDICATE flags are detected by UUID and skipped — they aren't user-defined attrs.
+- Single `gatt_access_cb` for everything; `arg` field on each `ble_gatt_chr_def` / `ble_gatt_dsc_def` points back to the `attr_instance_t`. Reads append `value`/`value_len` to the response mbuf; writes flatten the inbound mbuf into the attr's value buffer (clamped to `value_max_len`) and fire the global `attr_write_cb`.
+- `custom_ble_set_attr_value` calls `ble_gattc_notify_custom` and/or `ble_gattc_indicate_custom` based on the char's prop flags when a peer is connected.
+- **Disconnect-before-rebuild** (approved at proposal time): `ble_gatts_reset()` requires no active conns, so any rebuild while a peer is connected calls `ble_gap_terminate` and waits up to 500 ms on a binary semaphore signaled from the disconnect event. Scripts that mutate GATT only at startup never hit this; mutations during an active session will kick the peer (expected).
+
+**UUID / flag conversions** (all in `custom_ble_nimble.c`):
+- `bd_uuid_to_nimble`: maps `esp_bt_uuid_t` (Bluedroid-shaped) to `ble_uuid_any_t`. 128-bit UUIDs are LE in both representations → straight memcpy.
+- `chr_flags_from(prop, perm)`: ORs property bits (`READ`/`WRITE`/`WRITE_NR`/`NOTIFY`/`INDICATE`/`BROADCAST`) and permission bits (`READ_ENCRYPTED`/`READ_ENC_MITM`/`WRITE_ENCRYPTED`/`WRITE_ENC_MITM`/`WRITE_SIGNED`) into the right `BLE_GATT_CHR_F_*` flags.
+- `dsc_flags_from(perm)`: same idea for descriptor `att_flags`, mapping into `BLE_ATT_F_*`.
+
+**Memory model:** All built-table allocations (`built_svcs`, `built_chrs`, `built_dscs`, `built_uuids`, `built_val_handles`) are freed at the start of every rebuild via `free_built_tables()`. NimBLE's contract is that `ble_gatt_svc_def[]` and everything it points to must outlive registration but doesn't need to live past it — the host copies what it needs internally.
+
+**Files modified:**
+- `main/ble/custom_ble_nimble.c` — was a 105-line Stage 2 stub, now ~580 lines of real implementation. No other file touched (`custom_ble.h`, `ble_compat.h`, `lispif_ble_extensions.c`, `comm_ble_nimble.c`, `custom_ble_bluedroid.c`, `main/CMakeLists.txt` all unchanged).
+
+**Image-size delta (JFBMS_MASTER_C6):**
+- Stage 2 stub: 1,585,964 bytes
+- Stage 3 full: 1,592,332 bytes
+- Growth: ~6 KB (the implementation is mostly bookkeeping and short helper fns; NimBLE GATT host code was already linked in for Stage 2). OTA slot usage 84% of 1856 KB, ~302 KB headroom.
+
+**Test status — IMPLEMENTED, UNTESTED.**
+- Build: clean (no new warnings, all NimBLE symbols resolve against IDF v5.5 headers).
+- Runtime: not exercised. JFBMS production firmware never sets `ble_mode = BLE_MODE_SCRIPTING`, so the Stage 3 path is dormant in shipping C6 builds. Same was true on C3/Bluedroid — the upstream `custom_ble.c` has been in the tree since 2023 but JFBMS has never used it. Whoever first wires a C6 Lisp script to `ble-add-service` / `ble-attr-set-value` will be the first to exercise this code; expect to iterate when that happens.
+- To test on hardware when the time comes: set `ble_mode = BLE_MODE_SCRIPTING`, set `ble_service_capacity > 0` and `ble_chr_descr_capacity > 0` in BMS config, then run a Lisp script that calls `(ble-start-app)` followed by `(ble-add-service …)` / `(ble-attr-set-value …)` and connect with nRF Connect or LightBlue to verify reads/writes/notifications. Removing then re-adding a service while a peer is connected will disconnect the peer (this is the approved rebuild semantic).
+
+**Sharp edges to watch when first exercising:**
+- The disconnect/rebuild path is timing-sensitive — the 500 ms semaphore timeout is a guess. If a real peer takes longer to ack `ble_gap_terminate`, raise it.
+- `ble_gatts_reset()` returns `BLE_HS_EBUSY` on an active connection; the disconnect-first dance is required, not optional. If for some reason the disconnect signal is missed, the rebuild will fail with `CUSTOM_BLE_ESP_ERROR`.
+- Auto-CCCD detection skips by UUID 0x2902. If NimBLE's auto-inserted CCCD ever uses a different UUID type (it shouldn't), the cursor advance will desynchronize and chr/dsc handles will be wrong.
+
+---
+
 ### 2026-05-04: ESP32-C6 NimBLE Port — Stage 1+2 (VESC Tool BLE Channel)
 
 **Goal:** Cut ~150 KB of flash on `JFBMS_MASTER_C6` by replacing the Bluedroid host stack with NimBLE. C3 hardware (`JFBMS_MASTER`, slave, all other VESC HW) stays on Bluedroid — no functional change there.
