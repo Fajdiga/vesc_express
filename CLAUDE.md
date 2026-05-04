@@ -159,6 +159,61 @@ For proper Master-Slave communication:
 
 ## Development History
 
+### 2026-05-04: ESP32-C6 NimBLE Port — Stage 1+2 (VESC Tool BLE Channel)
+
+**Goal:** Cut ~150 KB of flash on `JFBMS_MASTER_C6` by replacing the Bluedroid host stack with NimBLE. C3 hardware (`JFBMS_MASTER`, slave, all other VESC HW) stays on Bluedroid — no functional change there.
+
+**Architecture — stack split via CMake selector:**
+- `main/comm_ble.c` → renamed `main/comm_ble_bluedroid.c`
+- `main/ble/custom_ble.c` → renamed `main/ble/custom_ble_bluedroid.c`
+- New `main/comm_ble_nimble.c` — full VESC Tool GATT channel (RX write, TX notify, MTU, encrypted-mode passkey pairing) on NimBLE. Same Nordic-UART-style 128-bit UUIDs as Bluedroid → VESC Tool sees an identical profile.
+- New `main/ble/custom_ble_nimble.c` — Stage 3 stub. All Lisp `ble-*` extensions return `CUSTOM_BLE_NOT_STARTED`. JFBMS doesn't use the LispBM custom-GATT API so this is fine in production; full NimBLE port deferred.
+- New `main/ble/ble_compat.h` — type shim. On Bluedroid builds it's a transparent pass-through (`#include "esp_bt_defs.h"` etc.). On NimBLE builds it re-defines `esp_bt_uuid_t`, `esp_gatt_perm_t`, `esp_gatt_char_prop_t`, `esp_ble_adv_params_t`, `ESP_UUID_LEN_*`, `ESP_GATT_PERM_*`, `ESP_GATT_CHAR_PROP_BIT_*`, `ADV_CHNL_*` so `custom_ble.h` and `lispif_ble_extensions.c` compile against either stack with no source changes.
+
+**CMake selector (`main/CMakeLists.txt`):** picks `_nimble.c` when `CONFIG_BT_NIMBLE_ENABLED`, `_bluedroid.c` otherwise. Gated only when not a slave build.
+
+**Upstream VESC files patched:**
+- `main/commands.c` — `#include "esp_bt_main.h"` gated behind `#ifdef CONFIG_BT_BLUEDROID_ENABLED` (was unused but the include broke compilation when Bluedroid headers vanished from the include path).
+- `main/lispif_vesc_extensions.c` — `sleep_disable_radios` / `sleep_deinit_radios` provide a NimBLE branch using `nimble_port_stop()` / `nimble_port_deinit()` instead of `esp_bluedroid_disable/deinit`. The controller calls (`esp_bt_controller_*`) are stack-agnostic and stayed.
+
+**sdkconfig (`sdkconfig.defaults.esp32c6`):**
+- `# CONFIG_BT_BLUEDROID_ENABLED is not set`
+- `CONFIG_BT_NIMBLE_ENABLED=y`
+- `CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1`, `BT_NIMBLE_ROLE_PERIPHERAL=y`, `BT_NIMBLE_ROLE_BROADCASTER=y`, central/observer disabled
+- `CONFIG_BT_NIMBLE_NVS_PERSIST=y`, `BT_NIMBLE_SM_LEGACY=y`, `BT_NIMBLE_SM_SC=y` for encrypted-mode passkey pairing parity
+
+**Image-size delta (C6, JFBMS_MASTER_C6):**
+- Bluedroid: 1,743,538 bytes
+- NimBLE: 1,585,964 bytes
+- Saved: ~154 KB (~9%). OTA slot usage 91% → 83%, ~280 KB headroom in the 1856 KB slot.
+
+**Sharp edges hit during the port (lessons for next time):**
+- **Cached `sdkconfig` trap (again).** First "successful" C6 build still ran on Bluedroid because the project-root `sdkconfig` file was generated from the previous defaults and hasn't been regenerated when only `sdkconfig.defaults.esp32c6` changes. ESP-IDF only reads `sdkconfig.defaults*` when there is no `sdkconfig`. Workflow: `del sdkconfig`, `rmdir /S /Q build`, then reconfigure. Same trap as the C6 partition table swap a few weeks ago.
+- **`BLE_GAP_EVENT_REPEAT_PAIRING` member confusion.** `event->repeat_pairing` only carries `conn_handle` — to delete the bonded peer you have to look up the conn descriptor first via `ble_gap_conn_find` and pass `desc.peer_id_addr` to `ble_store_util_delete_peer`.
+- **`bool` not in `custom_ble.h`.** The header used `bool` in function signatures but only got `<stdbool.h>` transitively through Bluedroid headers. Without those on NimBLE builds the header doesn't parse — added explicit `#include <stdbool.h>` to the header.
+
+**Stage 3 (deferred):** Full NimBLE port of `custom_ble.c` (~1100 lines, dynamic GATT add/remove) and the LispBM `ble-*` extensions. Not blocking — JFBMS_MASTER_C6 uses BLE_MODE_OPEN/ENCRYPTED via `comm_ble_nimble.c` and never enters BLE_MODE_SCRIPTING.
+
+**Files modified:**
+- `main/CMakeLists.txt`
+- `main/commands.c`, `main/lispif_vesc_extensions.c`
+- `main/ble/custom_ble.h`, `main/ble/lispif_ble_extensions.c`
+- `sdkconfig.defaults.esp32c6`
+- `.vscode/settings.json` (default IDF_TARGET → esp32c6)
+
+**Files renamed:**
+- `main/comm_ble.c` → `main/comm_ble_bluedroid.c`
+- `main/ble/custom_ble.c` → `main/ble/custom_ble_bluedroid.c`
+
+**Files added:**
+- `main/comm_ble_nimble.c`
+- `main/ble/custom_ble_nimble.c` (Stage 3 stub)
+- `main/ble/ble_compat.h`
+
+**Status:** Built clean, flashed to C6 PCB, VESC Tool pairs and exchanges packets, BLE-triggered reboot command round-trips correctly. C3 master build path untouched (verified by reading the resulting include chain: Bluedroid headers stay in the include path on C3 builds because `CONFIG_BT_BLUEDROID_ENABLED=y` there).
+
+---
+
 ### 2026-05-04: ESP32-C6 Master Variant — `JFBMS_MASTER_C6` Builds Cleanly with BLE+WiFi
 
 **Goal:** Add a second master variant targeting the ESP32-C6-MINI-N4 module (future product with current sensing, MOSFET switching, and full BLE/WiFi). First milestone is "compiles and links cleanly with BLE+WiFi enabled" — pin map and peripheral wiring stay as placeholders until the C6 PCB is available.

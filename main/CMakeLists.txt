@@ -79,12 +79,25 @@ if(IS_SLAVE_BUILD)
 else()
     list(APPEND COMPONENT_SRCS
         "comm_wifi.c"
-        "comm_ble.c"
         "wifi/lispif_wifi_extensions.c"
-        "ble/custom_ble.c"
         "ble/lispif_ble_extensions.c"
         "rgbled/lispif_rgbled_extensions.c"
     )
+
+    # Select BLE host stack implementation files at build time.
+    # NimBLE is used on ESP32-C6 (smaller flash footprint); Bluedroid on
+    # everything else (C3, S3, …) so existing hardware is unaffected.
+    if(CONFIG_BT_NIMBLE_ENABLED)
+        list(APPEND COMPONENT_SRCS
+            "comm_ble_nimble.c"
+            "ble/custom_ble_nimble.c"
+        )
+    else()
+        list(APPEND COMPONENT_SRCS
+            "comm_ble_bluedroid.c"
+            "ble/custom_ble_bluedroid.c"
+        )
+    endif()
 endif()
 
 list(APPEND COMPONENT_SRCS
