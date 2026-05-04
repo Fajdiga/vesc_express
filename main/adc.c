@@ -17,18 +17,28 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
     */
 
-#include "esp_adc_cal.h"
 #include "adc.h"
 #include "terminal.h"
 #include "commands.h"
 
 #include <math.h>
 
+// The legacy esp_adc_cal_* API does not exist for ESP32-C6. The C6 build of the
+// JFBMS master does not currently use ADC channels (CAN runs on GPIO 0/1, so no
+// HW_ADC_CH* are defined), so for now adc_init() is a no-op and adc_get_voltage()
+// reports the same uncalibrated fallback as on other targets when calibration
+// efuse data is missing. When the C6 master needs ADC, migrate to the new
+// adc_oneshot / adc_cali API rather than reviving the deprecated path.
+#if !CONFIG_IDF_TARGET_ESP32C6
+#include "esp_adc_cal.h"
+
 // Private variables
 static bool cal_ok = false;
 static esp_adc_cal_characteristics_t adc1_chars;
+#endif
 
 void adc_init(void) {
+#if !CONFIG_IDF_TARGET_ESP32C6
 	adc1_config_width(ADC_WIDTH_BIT_DEFAULT);
 
 #ifdef HW_ADC_CH0
@@ -51,14 +61,19 @@ void adc_init(void) {
 		esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_12, ADC_WIDTH_BIT_DEFAULT, 0, &adc1_chars);
 		cal_ok = true;
 	}
+#endif
 }
 
 float adc_get_voltage(adc1_channel_t ch) {
 	float res = -1.0;
 
+#if !CONFIG_IDF_TARGET_ESP32C6
 	if (cal_ok) {
 		res = (float)esp_adc_cal_raw_to_voltage(adc1_get_raw(ch), &adc1_chars) / 1000.0;
 	}
+#else
+	(void)ch;
+#endif
 
 	return res;
 }

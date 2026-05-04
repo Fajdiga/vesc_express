@@ -42,6 +42,9 @@ static int m_pin_dc    = -1;
 #elif CONFIG_IDF_TARGET_ESP32C3
 	#define DISP_REG_SET		GPIO.out_w1ts.val
 	#define DISP_REG_CLR		GPIO.out_w1tc.val
+#elif CONFIG_IDF_TARGET_ESP32C6
+	#define DISP_REG_SET		GPIO.out_w1ts.val
+	#define DISP_REG_CLR		GPIO.out_w1tc.val
 #else
 	#error "Unsupported target"
 #endif

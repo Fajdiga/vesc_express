@@ -1,0 +1,19 @@
+// JFBMS Master C6 config parser header
+
+#ifndef JFBMS_MASTER_C6_CONFPARSER_H_
+#define JFBMS_MASTER_C6_CONFPARSER_H_
+
+#include "datatypes.h"
+#include <stdint.h>
+#include <stdbool.h>
+
+// Constants
+#define MAIN_CONFIG_T_SIGNATURE		822273783
+
+// Functions
+int32_t jfbms_master_c6_confparser_serialize_main_config_t(uint8_t *buffer, const main_config_t *conf);
+bool jfbms_master_c6_confparser_deserialize_main_config_t(const uint8_t *buffer, main_config_t *conf);
+void jfbms_master_c6_confparser_set_defaults_main_config_t(main_config_t *conf);
+
+// JFBMS_MASTER_C6_CONFPARSER_H_
+#endif

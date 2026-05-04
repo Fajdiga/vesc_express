@@ -1051,12 +1051,22 @@ void comm_can_change_pins(int tx, int rx) {
 	g_config.tx_io = tx;
 	g_config.rx_io = rx;
 
+	// ESP32-C6 has two TWAI controllers, so the signal indexes are namespaced
+	// (TWAI0_*/TWAI1_*) instead of the single TWAI_*. We use TWAI0 on C6.
+#if CONFIG_IDF_TARGET_ESP32C6
+	const uint32_t twai_tx_sig = TWAI0_TX_IDX;
+	const uint32_t twai_rx_sig = TWAI0_RX_IDX;
+#else
+	const uint32_t twai_tx_sig = TWAI_TX_IDX;
+	const uint32_t twai_rx_sig = TWAI_RX_IDX;
+#endif
+
 	gpio_set_pull_mode(tx, GPIO_FLOATING);
-	esp_rom_gpio_connect_out_signal(tx, TWAI_TX_IDX, false, false);
+	esp_rom_gpio_connect_out_signal(tx, twai_tx_sig, false, false);
 	esp_rom_gpio_pad_select_gpio(tx);
 
 	gpio_set_pull_mode(rx, GPIO_FLOATING);
-	esp_rom_gpio_connect_in_signal(rx, TWAI_RX_IDX, false);
+	esp_rom_gpio_connect_in_signal(rx, twai_rx_sig, false);
 	esp_rom_gpio_pad_select_gpio(rx);
 	gpio_set_direction(rx, GPIO_MODE_INPUT);
 

@@ -1,0 +1,12 @@
+# Name,Type,SubType,Offset,Size
+# ESP32-C6 OTA partition table.
+# Larger app slots than partition_ota.csv because the C6 image is bigger
+# (Bluedroid + WiFi + BLE all linked, plus more peripheral support code).
+# Total flash: 4 MB. lisp and qml are slightly smaller than on C3 to make room.
+nvs,data,nvs,,0x6000
+otadata,data,ota,,0x2000
+phy_init,data,phy,,0x1000
+ota_0,app,ota_0,0x20000,1856k
+ota_1,app,ota_1,0x1f0000,1856k
+lisp,data,nvs,0x3c0000,192k
+qml,data,nvs,0x3f0000,64k

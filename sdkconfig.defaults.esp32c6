@@ -1,0 +1,26 @@
+# sdkconfig.defaults for ESP32-C6 builds (e.g. JFBMS_MASTER_C6)
+#
+# This file is auto-loaded by ESP-IDF on top of sdkconfig.defaults when
+# IDF_TARGET=esp32c6. Keys here override the common defaults.
+#
+# Most BT/BLE/WiFi/PHY keys in sdkconfig.defaults are still valid on C6 because
+# both C3 and C6 use Bluedroid BLE-only and the standard esp_wifi APIs. C6 has
+# additional radios (802.15.4) but they are disabled by default unless we
+# opt in. Anything chip-specific that needs to differ from C3 lives below.
+
+# Console: ESP32-C6-MINI-N4 has built-in USB-Serial-JTAG (same as C3/S3)
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=y
+
+# CPU frequency - C6 supports 160 MHz max
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=160
+
+# Bluetooth Stack Size (parity with S3 default; C3 leaves this implicit)
+CONFIG_BT_BTU_TASK_STACK_SIZE=4096
+
+# Use a C6-specific partition table with larger OTA slots (the C6 firmware
+# image is ~1.75 MB, which doesn't fit the 1600 KB slots used on C3).
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partition_ota_c6.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partition_ota_c6.csv"

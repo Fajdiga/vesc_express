@@ -103,6 +103,8 @@
 	#define LBM_EVENTS_TASK_STACK_SIZE 1280
 #elif CONFIG_IDF_TARGET_ESP32C3
 	#define LBM_EVENTS_TASK_STACK_SIZE 640
+#elif CONFIG_IDF_TARGET_ESP32C6
+	#define LBM_EVENTS_TASK_STACK_SIZE 640
 #else
 	#error "Unsupported target"
 #endif
@@ -2910,11 +2912,18 @@ static lbm_value ext_gpio_hold_deepsleep(lbm_value *args, lbm_uint argn) {
 
 	int state = lbm_dec_as_i32(args[0]);
 
+#if CONFIG_IDF_TARGET_ESP32C6
+	// ESP32-C6 does not expose gpio_deep_sleep_hold_en/dis (different deep-sleep
+	// pin-hold model). For now this is a no-op on C6; revisit if/when the C6 master
+	// needs deep-sleep GPIO retention.
+	(void)state;
+#else
 	if (state) {
 		gpio_deep_sleep_hold_en();
 	} else {
 		gpio_deep_sleep_hold_dis();
 	}
+#endif
 
 	return ENC_SYM_TRUE;
 }
@@ -3616,6 +3625,9 @@ static lbm_value ext_sleep_config_wakeup_pin(lbm_value *args, lbm_uint argn) {
 	esp_sleep_enable_ext0_wakeup(pin, mode ? 1 : 0);
 	esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 #elif CONFIG_IDF_TARGET_ESP32C3
+	esp_deep_sleep_enable_gpio_wakeup(1 << pin,
+			mode ? ESP_GPIO_WAKEUP_GPIO_HIGH : ESP_GPIO_WAKEUP_GPIO_LOW);
+#elif CONFIG_IDF_TARGET_ESP32C6
 	esp_deep_sleep_enable_gpio_wakeup(1 << pin,
 			mode ? ESP_GPIO_WAKEUP_GPIO_HIGH : ESP_GPIO_WAKEUP_GPIO_LOW);
 #else

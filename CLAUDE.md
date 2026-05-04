@@ -159,6 +159,54 @@ For proper Master-Slave communication:
 
 ## Development History
 
+### 2026-05-04: ESP32-C6 Master Variant — `JFBMS_MASTER_C6` Builds Cleanly with BLE+WiFi
+
+**Goal:** Add a second master variant targeting the ESP32-C6-MINI-N4 module (future product with current sensing, MOSFET switching, and full BLE/WiFi). First milestone is "compiles and links cleanly with BLE+WiFi enabled" — pin map and peripheral wiring stay as placeholders until the C6 PCB is available.
+
+**New hardware variant:** `main/hwconf/jetfleet/jfbms_master_c6/` cloned from `jfbms_master/` with:
+- `HW_NAME "JFBMS_MASTER_C6"`, `HW_TARGET "esp32c6"`, `VAR_INIT_CODE` bumped (so existing C3 master units never load this struct)
+- Conf-parser symbols namespaced to `jfbms_master_c6_confparser_*` and `jfbms_master_c6_confxml_*`
+- All `OVR_CONF_*` and `#include` paths point at the renamed conf files
+- `#warning` in `hw_init()` flags placeholder pin map; `// TODO C6 pin map` in the header
+
+**Build-system / CMake:** Added `hwconf/jetfleet/jfbms_master_c6` to `main/CMakeLists.txt` `COMPONENT_ADD_INCLUDEDIRS`. Simplified the default-HW_NAME logic in root `CMakeLists.txt` to `JFBMS_MASTER_C6`.
+
+**ESP32-C6 chip-API drift fixes** (each gated by `CONFIG_IDF_TARGET_ESP32C6`, no behaviour change on C3/S3):
+- `main/comm_wifi.c` — added C6 case for `UDP_MULTICAST_TASK_STACK_SIZE`
+- `main/lispif.c` — added C6 case for LBM heap/mem/bitmap sizes
+- `main/lispif_vesc_extensions.c` — added C6 case for `LBM_EVENTS_TASK_STACK_SIZE`, `esp_deep_sleep_enable_gpio_wakeup` path. Stubbed `gpio_deep_sleep_hold_en/dis` on C6 (functions don't exist there)
+- `main/drivers/hwspi.c`, `main/drivers/spi_bb.c` — added C6 case for GPIO register macros. C6 uses `GPIO.in.val` (not `.data`)
+- `main/display/disp_{ili9341,ili9488,sh8601,ssd1351,st7735,st7789}.c` — added C6 case for `DISP_REG_SET/CLR`
+- `main/adc.c` — gated the legacy `esp_adc_cal_*` calibration API for C6 (not available there in IDF v5.5+); `adc_get_voltage` returns -1.0 on C6 same as the uncalibrated fallback. New ADC API migration deferred until C6 master needs it.
+- `main/comm_can.c` — C6 has two TWAI controllers, so signal indexes are namespaced (`TWAI0_TX_IDX`/`TWAI0_RX_IDX` instead of `TWAI_TX_IDX`/`TWAI_RX_IDX`)
+
+**SDKconfig & partition table:**
+- New `sdkconfig.defaults.esp32c6` overrides only what differs from `sdkconfig.defaults`: USB-Serial-JTAG console, 160 MHz CPU, BT_BTU stack size, and the partition file
+- New `partition_ota_c6.csv` because the C6 image (~1.75 MB with Bluedroid + WiFi + BLE) does not fit C3's 1600 KB OTA slots. Layout: ota_0/ota_1 = 1856 KB each, lisp = 192 KB, qml = 64 KB. Total = 4 MB exactly.
+
+**Bluetooth/WiFi stack:** Bluedroid (BLE-only mode) works on ESP32-C6 in IDF v5.5.x — no host-stack swap to NimBLE was needed. The previous attempt to port to C6 stalled because the cached `sdkconfig` at the project root pinned `partition_ota.csv`; deleting it forced regen against the new defaults stack and the build flowed through.
+
+**Files modified:**
+- `CMakeLists.txt`, `main/CMakeLists.txt`
+- `main/adc.c`, `main/comm_can.c`, `main/comm_wifi.c`, `main/lispif.c`, `main/lispif_vesc_extensions.c`
+- `main/drivers/hwspi.c`, `main/drivers/spi_bb.c`
+- `main/display/disp_ili9341.c`, `disp_ili9488.c`, `disp_sh8601.c`, `disp_ssd1351.c`, `disp_st7735.c`, `disp_st7789.c`
+
+**Files added:**
+- `main/hwconf/jetfleet/jfbms_master_c6/` (9 files: hw + conf + lisp + bq769x2_defs)
+- `partition_ota_c6.csv`
+- `sdkconfig.defaults.esp32c6`
+
+**Build command:**
+```
+idf.py -B build -DIDF_TARGET=esp32c6 -DHW_NAME=JFBMS_MASTER_C6 reconfigure
+idf.py -B build build
+```
+
+**Status:** Build succeeds end-to-end on ESP32-C6 target. Bootloader + app binaries produced; partition check passes. Hardware bring-up (pin remap, BQ I2C, FET drivers, BLE pairing, WiFi STA join) is the next step once the C6 PCB is in hand.
+
+---
+
 ### 2026-02-16: Master GPIO Pin Remap & Hardware Init Cleanup
 
 **Changes:**

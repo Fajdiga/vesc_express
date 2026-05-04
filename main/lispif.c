@@ -107,7 +107,11 @@ void lispif_init(void) {
 	heap_size = (2048 + 512);
 	mem_size = LBM_MEMORY_SIZE_KB(32);
 	bitmap_size = LBM_BITMAP_SIZE_KB(32);
-#else 
+#elif CONFIG_IDF_TARGET_ESP32C6
+	heap_size = (2048 + 512);
+	mem_size = LBM_MEMORY_SIZE_KB(32);
+	bitmap_size = LBM_BITMAP_SIZE_KB(32);
+#else
 	#error "Unsupported target"
 #endif
 
