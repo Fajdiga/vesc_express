@@ -159,7 +159,7 @@ For proper Master-Slave communication:
 
 ## Development History
 
-### 2026-05-04: ESP32-C6 NimBLE Port — Stage 3 (custom_ble.c full port) — IMPLEMENTED, UNTESTED
+### 2026-05-05: ESP32-C6 NimBLE Port — Stage 3 (custom_ble.c full port) — IMPLEMENTED, UNTESTED
 
 **Goal:** Replace the Stage 2 stub `custom_ble_nimble.c` with a working implementation so the LispBM `ble-*` extensions in `lispif_ble_extensions.c` work on C6. Stage 2 had every entry point return `CUSTOM_BLE_NOT_STARTED` because JFBMS production never uses `BLE_MODE_SCRIPTING` — this stage closes that gap for any future C6 firmware that wants to expose custom GATT services from Lisp.
 
