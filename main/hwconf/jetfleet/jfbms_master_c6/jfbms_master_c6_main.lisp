@@ -5,7 +5,10 @@
 (print "=== JFBMS Master ===")
 
 ; COM enable low (active)
-(gpio-write 9 0)
+(gpio-write 6 0)
+
+; Buzzer on GPIO8 — 4 kHz carrier, duty 0 (silent until beep command)
+(pwm-start 4000 0.0 0 8)
 
 ; Config
 (def slave-timeout 500)
@@ -142,6 +145,10 @@
                     } {
                         (print "BAL CMD: stop")
                     })
+            })
+            ((event-bms-zero-ofs) {
+                    (print "CAL: zero current...")
+                    (master-calibrate-current)
             })
             (_ nil)
 )))
@@ -359,11 +366,18 @@
 ; Register BMS command events used by VESC Tool
 (event-register-handler (spawn event-handler))
 (event-enable 'event-bms-force-bal)
+(event-enable 'event-bms-zero-ofs)
 
 ; Spawn balance thread
 (print "Spawning balance thread...")
 (spawn 200 balance-thd)
 (print "Balance thread spawned")
+
+; 2 beeps = initialization complete
+(pwm-set-duty 0.5 0) (sleep 0.1)
+(pwm-set-duty 0.0 0) (sleep 0.1)
+(pwm-set-duty 0.5 0) (sleep 0.1)
+(pwm-set-duty 0.0 0)
 
 ; Track previous balance mask per slave for change detection (8 slaves)
 (def prev-bal-mask (list 0 0 0 0 0 0 0 0))

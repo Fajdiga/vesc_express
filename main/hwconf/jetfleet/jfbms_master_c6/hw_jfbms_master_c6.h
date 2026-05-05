@@ -214,15 +214,20 @@ typedef struct {
 #define PIN_BQ1_EN					3	// BQ1 enable
 #define PIN_OUT_EN					4	// Discharge FET
 #define PIN_CHG_EN					5	// Charge FET
-#define PIN_SHUTDOWN				8	// Shutdown (kill main power)
-#define PIN_COM_EN					9	// COM enable
+#define PIN_BUZZER					8	// Buzzer (PWM output)
+#define PIN_SHUTDOWN				19	// Shutdown (kill main power)
+#define PIN_COM_EN					6	// COM enable
 #define PIN_PCHG_EN					10	// Precharge FET
 
-// ADC - only available when CAN is on GPIO 6/7 (GPIO 0/1 free for ADC)
+// ADC - voltage dividers (only when CAN is on GPIO 6/7)
 #if !JFBMS_USE_CAN_IO_0_1
 #define HW_ADC_CH0					ADC1_CHANNEL_0 // DIV_CHG
 #define HW_ADC_CH1					ADC1_CHANNEL_1 // DIV_OUT
 #endif
+// GPIO2 = current sense amplifier output (1 mΩ shunt, 50x gain, center ~1.65V)
+// Note: PIN_ENABLE was placeholder-assigned to GPIO2 from C3; it is not used as
+// digital I/O on the C6 PCB — the ADC driver owns this pin.
+#define HW_ADC_CH2					ADC1_CHANNEL_2 // Current sense
 
 // Parameters
 #define HW_R_SHUNT					0.001

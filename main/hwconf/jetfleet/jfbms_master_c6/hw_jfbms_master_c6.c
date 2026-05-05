@@ -58,6 +58,23 @@ static bool m_bq_init_done = false;
 static char *error_comm_bq1 = "BQ1 communication error";
 
 // ============================================================================
+// Current Sense (GPIO2 / ADC1_CH2): 1 mΩ shunt, 50x amplifier, center ~1.65 V
+// ============================================================================
+
+#define ISENSE_GAIN    50.0f
+#define ISENSE_RSHUNT  0.001f
+// 1 / (gain * R) = 20 A/V
+#define ISENSE_SCALE   (1.0f / (ISENSE_GAIN * ISENSE_RSHUNT))
+
+// Zero-current ADC voltage — calibrated at startup, default 1.65 V
+static float m_current_offset = 1.65f;
+// EMA-filtered current reading updated by master-update-vesc-bms (10 Hz)
+static float m_current_filtered = 0.0f;
+static bool  m_current_filter_init = false;
+static volatile bool m_calibrate_request = false;
+#define ISENSE_EMA_ALPHA  0.60f   // 90% settling in ~5 updates = 500 ms at 10 Hz
+
+// ============================================================================
 // Section B: Master CAN Protocol
 // ============================================================================
 
@@ -1708,6 +1725,32 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 		bms->i_in = (float)command_read(BQ_ADDR_1, CC2Current, &i_ok) / 100.0f;
 		bms->i_in_ic = bms->i_in;
 	}
+	// Read pack current — single call drains the entire DMA ring buffer (~2000 samples
+	// at 20 kHz / 10 Hz), all pre-filtered by the hardware IIR (coeff 64). Apply EMA on top.
+	{
+		float v = adc_get_voltage(HW_ADC_CH2);
+		if (v >= 0.0f) {
+			if (m_calibrate_request) {
+				m_current_offset      = v;
+				m_current_filtered    = 0.0f;
+				m_current_filter_init = false;
+				m_calibrate_request   = false;
+				commands_printf_lisp("Current calibrated: offset=%.4f V (range +-%.1f A)",
+					m_current_offset, 1.65f * ISENSE_SCALE);
+			}
+			float raw_a = (v - m_current_offset) * ISENSE_SCALE;
+			if (!m_current_filter_init) {
+				m_current_filtered    = raw_a;
+				m_current_filter_init = true;
+			} else {
+				m_current_filtered = ISENSE_EMA_ALPHA * m_current_filtered
+				                   + (1.0f - ISENSE_EMA_ALPHA) * raw_a;
+			}
+			bms->i_in    = m_current_filtered;
+			bms->i_in_ic = m_current_filtered;
+		}
+	}
+
 	bms->v_cell_min = (total_cells > 0) ? v_min : 0.0f;
 	bms->v_cell_max = (total_cells > 0) ? v_max : 0.0f;
 	// VESC 6.06 temperature sensor convention (indices 0-4)
@@ -1746,6 +1789,28 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 	bms->update_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
 
 	return ENC_SYM_TRUE;
+}
+
+// ============================================================================
+// Current Sense Extensions
+// ============================================================================
+
+// (master-calibrate-current) — request zero-current calibration.
+// Sets a flag consumed by master-update-vesc-bms on its next ADC read (within ~100 ms).
+// Returns true immediately; calibration confirmation is printed by the update loop.
+static lbm_value ext_master_calibrate_current(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	m_calibrate_request = true;
+	commands_printf_lisp("Current calibration requested — will apply on next ADC update");
+	return ENC_SYM_TRUE;
+}
+
+// (master-get-current) — returns EMA-filtered current (A); updated by master-update-vesc-bms
+static lbm_value ext_master_get_current(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	return lbm_enc_float(m_current_filtered);
 }
 
 // ============================================================================
@@ -1876,6 +1941,10 @@ static void load_extensions(bool main_found) {
 	// VESC BMS display
 	lbm_add_extension("master-update-vesc-bms", ext_master_update_vesc_bms);
 
+	// Current sense
+	lbm_add_extension("master-calibrate-current", ext_master_calibrate_current);
+	lbm_add_extension("master-get-current", ext_master_get_current);
+
 	// Debug
 	lbm_add_extension("can-debug", ext_can_debug);
 }
@@ -1915,7 +1984,8 @@ void hw_init(void) {
 	gpio_set_level(PIN_COM_EN, 0);
 	gpio_set_level(PIN_BQ1_EN, 1);
 
-	// Open-drain outputs (active low, default off = hi-Z)
+	// Open-drain output: SHUTDOWN on GPIO19 (active low, default hi-Z = off)
+	// GPIO8 (buzzer) is driven by the PWM peripheral — not configured here
 	gpio_set_level(PIN_SHUTDOWN, 1);
 
 	gpconf.pin_bit_mask = BIT(PIN_SHUTDOWN);
@@ -1927,12 +1997,7 @@ void hw_init(void) {
 
 	gpio_set_level(PIN_SHUTDOWN, 1);
 
-	gpconf.pin_bit_mask = BIT(PIN_ENABLE);
-	gpconf.intr_type    = GPIO_FLOATING;
-	gpconf.mode         = GPIO_MODE_INPUT;
-	gpconf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-	gpconf.pull_up_en   = GPIO_PULLUP_DISABLE;
-	gpio_config(&gpconf);
+	// GPIO2 (PIN_ENABLE) is the current sense ADC input — do not configure as digital I/O
 
 	// I2C setup
 	i2c_config_t conf = {
@@ -1946,6 +2011,14 @@ void hw_init(void) {
 
 	i2c_param_config(0, &conf);
 	i2c_driver_install(0, conf.mode, 0, 0, 0);
+
+	// Calibrate current sense zero offset.
+	// Wait 500 ms so the DMA ring buffer fills before the first read.
+	vTaskDelay(pdMS_TO_TICKS(500));
+	{
+		float v = adc_get_voltage(HW_ADC_CH2);
+		if (v >= 0.0f) m_current_offset = v;
+	}
 
 	lispif_add_ext_load_callback(load_extensions);
 }
