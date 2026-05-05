@@ -159,6 +159,26 @@ For proper Master-Slave communication:
 
 ## Development History
 
+### 2026-05-05: C6 BMS Data Tab Buttons Wired Up + `event-bms-zero-ofs` Pattern Bug Fix
+
+**Problem:** In VESC Tool's BMS Data tab on `JFBMS_MASTER_C6`, only "Bal On/Off" worked. "Chg En/Dis", "Reset Ah/Wh", and "Cal Zero Current" did nothing.
+
+**Root cause for Cal Zero Current (was already coded but silently broken):** `event-bms-zero-ofs` is sent from C as a **bare symbol** (`f_sym(&v, sym_bms_zero_ofs)` in `lispif_vesc_extensions.c:1956-1967`) — no surrounding `f_cons` like every other BMS event. The Lisp pattern `((event-bms-zero-ofs) ...)` matched a 1-element list, not a bare symbol, so the recv clause never fired. Fix: pattern is now `(event-bms-zero-ofs ...)` (bare-symbol literal). bms32 has the same dead `event-enable` registration but never had a recv clause for zero-ofs, so this trap is brand new.
+
+**New handlers added in `jfbms_master_c6_main.lisp`:**
+- `event-bms-chg-allow` — toggles `PIN_CHG_EN` (GPIO 5, confirmed wired to charge FET on the C6 PCB) via existing `bms-set-chg`. Mirrors state to VESC Tool via `(set-bms-val 'bms-chg-allowed ...)` so the button label updates correctly. **Default at boot: charge OFF** — user must explicitly press "Chg En" to enable charging (matches user's safety preference for this hardware).
+- `event-bms-reset-cnt` — zeroes `ah-cnt` and/or `wh-cnt` based on the (ah, wh) flags from VESC Tool, pushes new value to BMS struct immediately so the UI reflects reset.
+- 10 Hz Ah/Wh integrator in main loop: accumulates `(master-get-current) * 0.1 s` into Ah and `i * v_tot * 0.1 / 3600` into Wh, gated by `min_current_ah_wh_cnt` so quiescent-noise current doesn't drift the counters. Counters do NOT persist across reboots (no NVS save — bms32 does this via `store-setting`, deferred for C6).
+
+**`set-bms-val` quirk:** `bms-chg-allowed` is stored as `int` in the bms struct (`get_or_set_i` at `lispif_vesc_extensions.c:660-661`), not `bool` — must pass `(if chg-allowed 1 0)`, not the raw bool, otherwise the value doesn't propagate.
+
+**Files modified:**
+- `main/hwconf/jetfleet/jfbms_master_c6/jfbms_master_c6_main.lisp` — handlers, integrator, default-OFF charge state
+
+**Status:** Tested on hardware — all four button groups (Bal On/Off, Chg En/Dis, Reset Ah/Wh, Cal Zero Current) now respond correctly. Charge FET defaults to OFF at boot.
+
+---
+
 ### 2026-05-05: ESP32-C6 NimBLE Port — Stage 3 (custom_ble.c full port) — IMPLEMENTED, UNTESTED
 
 **Goal:** Replace the Stage 2 stub `custom_ble_nimble.c` with a working implementation so the LispBM `ble-*` extensions in `lispif_ble_extensions.c` work on C6. Stage 2 had every entry point return `CUSTOM_BLE_NOT_STARTED` because JFBMS production never uses `BLE_MODE_SCRIPTING` — this stage closes that gap for any future C6 firmware that wants to expose custom GATT services from Lisp.

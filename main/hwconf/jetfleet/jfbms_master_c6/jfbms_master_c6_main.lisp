@@ -16,6 +16,14 @@
 ; Reset slave data
 (master-reset-slaves)
 
+; Charge allow state — true means charge FET enabled (default OFF at boot;
+; user must press "Chg En" in VESC Tool to enable charging)
+(def chg-allowed false)
+
+; Coulomb / energy counters (reset on power-cycle, no NVS persistence)
+(def ah-cnt 0.0)
+(def wh-cnt 0.0)
+
 ; Previous active state for each slave (1-8)
 ; Using mutable list for loop persistence
 (def prev-active (list 0 0 0 0 0 0 0 0))
@@ -133,7 +141,9 @@
     (setix bal-state 0 0)
 })
 
-; Handle balance start/stop commands from VESC Tool
+; Handle BMS Data tab button events from VESC Tool
+; Note: event-bms-zero-ofs is sent by C as a bare symbol (no cons wrapper),
+; so its match pattern must be the bare symbol, not (event-bms-zero-ofs).
 (defun event-handler ()
     (loopwhile t
         (recv
@@ -146,7 +156,25 @@
                         (print "BAL CMD: stop")
                     })
             })
-            ((event-bms-zero-ofs) {
+            ((event-bms-chg-allow (? allow)) {
+                    (setq chg-allowed (= allow 1))
+                    (bms-set-chg (if chg-allowed 1 0))
+                    (set-bms-val 'bms-chg-allowed (if chg-allowed 1 0))
+                    (print (str-merge "CHG: " (if chg-allowed "enabled" "disabled")))
+            })
+            ((event-bms-reset-cnt (? ah) (? wh)) {
+                    (if (= ah 1) {
+                        (setq ah-cnt 0.0)
+                        (set-bms-val 'bms-ah-cnt 0.0)
+                    })
+                    (if (= wh 1) {
+                        (setq wh-cnt 0.0)
+                        (set-bms-val 'bms-wh-cnt 0.0)
+                    })
+                    (print (str-merge "RESET CNT: ah=" (str-from-n ah "%d")
+                        " wh=" (str-from-n wh "%d")))
+            })
+            (event-bms-zero-ofs {
                     (print "CAL: zero current...")
                     (master-calibrate-current)
             })
@@ -363,9 +391,14 @@
     (print (str-merge "BQ init OK: " (str-from-n bq-ic1 "%d") " cells"))
 })
 
+; Apply initial FET state matching default chg-allowed = false (charge OFF)
+(bms-set-chg 0)
+
 ; Register BMS command events used by VESC Tool
 (event-register-handler (spawn event-handler))
 (event-enable 'event-bms-force-bal)
+(event-enable 'event-bms-chg-allow)
+(event-enable 'event-bms-reset-cnt)
 (event-enable 'event-bms-zero-ofs)
 
 ; Spawn balance thread
@@ -428,6 +461,20 @@
 
         ; Update VESC BMS display with local BQ + slave cell voltages
         (master-update-vesc-bms)
+
+        ; Integrate Ah/Wh from filtered current (10 Hz -> dt = 0.1 s).
+        ; Gate by min_current_ah_wh_cnt so quiescent-noise current does not drift counters.
+        ; Sign convention: positive current accumulates positively (matches bms32).
+        (var i-now (master-get-current))
+        (var i-min-cnt (bms-get-param 'min_current_ah_wh_cnt))
+        (if (> (abs i-now) i-min-cnt) {
+            (var v-tot (get-bms-val 'bms-v-tot))
+            (setq ah-cnt (+ ah-cnt (/ (* i-now 0.1) 3600.0)))
+            (setq wh-cnt (+ wh-cnt (/ (* i-now v-tot 0.1) 3600.0)))
+        })
+        (set-bms-val 'bms-ah-cnt ah-cnt)
+        (set-bms-val 'bms-wh-cnt wh-cnt)
+        (set-bms-val 'bms-chg-allowed (if chg-allowed 1 0))
 
         ; Broadcast BMS data to ESC via VESC CAN protocol (for phone app)
         (send-bms-can)
