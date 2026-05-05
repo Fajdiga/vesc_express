@@ -10,7 +10,7 @@
     "idf.pythonInstallPath": "C:\\Users\\mihap\\.espressif\\tools\\idf-python\\3.11.2\\python.exe",
     "idf.currentSetup": "C:\\esp\\v5.5.3\\esp-idf",
     "idf.customExtraVars": {
-        "IDF_TARGET": "esp32c3"
+        "IDF_TARGET": "esp32c6"
     },
-    "idf.portWin": "COM24"
+    "idf.portWin": "COM62"
 }
