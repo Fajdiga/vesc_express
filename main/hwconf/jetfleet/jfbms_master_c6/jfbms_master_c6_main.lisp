@@ -114,16 +114,8 @@
     s
 })
 
-; Stop local and slave balancing outputs
+; Stop slave balancing outputs
 (defun stop-all-balancing () {
-    (var local-ic1 (bms-get-param 'cells_ic1))
-    (var local-ic2 (bms-get-param 'cells_ic2))
-    (var local-total (+ local-ic1 local-ic2))
-
-    (if (> local-total 0) {
-        (trap (looprange i 0 local-total (bms-set-bal i 0)))
-    })
-
     (var sid 1)
     (loopwhile (<= sid 8) {
         (if (master-slave-active? sid)
@@ -158,7 +150,7 @@
             })
             ((event-bms-chg-allow (? allow)) {
                     (setq chg-allowed (= allow 1))
-                    (bms-set-chg (if chg-allowed 1 0))
+                    (gpio-write 5 (if chg-allowed 1 0))
                     (set-bms-val 'bms-chg-allowed (if chg-allowed 1 0))
                     (print (str-merge "CHG: " (if chg-allowed "enabled" "disabled")))
             })
@@ -184,7 +176,7 @@
 ; ============================================================================
 ; Balance Thread - 3 Phase: Settle -> Compute -> Hold
 ; ============================================================================
-; Phase 1 (Settle): Stop all balancing, poll slave settled flags + 2s local min
+; Phase 1 (Settle): Stop all balancing, poll slave settled flags
 ; Phase 2 (Compute): Read settled voltages, compute balance masks, apply
 ; Phase 3 (Hold): Let balancing run ~30s, main loop sends keepalive at 1Hz
 ; Cell voltage monitoring at 20Hz continues in main loop regardless of phase.
@@ -195,9 +187,6 @@
     (var bal-start (bms-get-param 'vc_balance_start))
     (var bal-end (bms-get-param 'vc_balance_end))
     (var bal-min (bms-get-param 'vc_balance_min))
-    (var local-ic1 (bms-get-param 'cells_ic1))
-    (var local-ic2 (bms-get-param 'cells_ic2))
-    (var local-total (+ local-ic1 local-ic2))
     (var is-bal (= (ix bal-state 0) 1))
     (var threshold (if is-bal bal-end bal-start))
 
@@ -222,31 +211,23 @@
             (setix slave-bal-mask-ic1 i 0)
             (setix slave-bal-mask-ic2 i 0)
         })
-        ; Stop local balance
-        (if (> local-total 0) {
-            (trap (looprange i 0 local-total (bms-set-bal i 0)))
-        })
-
-        ; Poll until all active slaves report settled (min 2s for local BQ, 5s timeout)
+        ; Poll until all active slaves report settled (5s timeout)
         (var settle-wait 0)
         (var max-settle-wait 50)  ; 50 x 100ms = 5s timeout
         (loopwhile (and bal-request (< settle-wait max-settle-wait)) {
             (sleep 0.1)
             (master-can-read-all)
             (setq settle-wait (+ settle-wait 1))
-            ; Need at least 2s for local BQ settle
-            (if (>= settle-wait 20) {
-                ; Check if all active slaves report settled
-                (var all-settled true)
-                (var chk-sid 1)
-                (loopwhile (<= chk-sid 8) {
-                    (if (and (master-slave-active? chk-sid)
-                             (not (master-get-slave-settled? chk-sid)))
-                        (setq all-settled false))
-                    (setq chk-sid (+ chk-sid 1))
-                })
-                (if all-settled (break))
+            ; Check if all active slaves report settled
+            (var all-settled true)
+            (var chk-sid 1)
+            (loopwhile (<= chk-sid 8) {
+                (if (and (master-slave-active? chk-sid)
+                         (not (master-get-slave-settled? chk-sid)))
+                    (setq all-settled false))
+                (setq chk-sid (+ chk-sid 1))
             })
+            (if all-settled (break))
         })
 
         ; Final CAN drain to get latest settled voltages
@@ -257,23 +238,6 @@
             ; --- Read all cell voltages and find global minimum ---
             (var global-min 9.0)
             (var any-cells false)
-
-            ; Read local BQ cells (settled after 2s)
-            (var local-cells nil)
-            (if (> local-total 0) {
-                (match (trap (bms-get-vcells))
-                    ((exit-ok (? cells)) {
-                        (if (and cells (> (length cells) 0)) {
-                            (setq local-cells cells)
-                            (setq any-cells true)
-                            (loopforeach v local-cells {
-                                (if (< v global-min) (setq global-min v))
-                            })
-                        })
-                    })
-                    (_ (print "BAL: local BQ comm failed"))
-                )
-            })
 
             ; Read slave cells from CAN cache (settled, confirmed by flag)
             (var slave-data '())
@@ -301,19 +265,6 @@
             (if bal-allowed {
                 ; --- Compute balance masks ---
                 (var any-bal false)
-
-                ; Local BQ
-                (if (and local-cells (> (length local-cells) 0)) {
-                    (var local-mask (balance-ic-group local-cells global-min threshold max-ch))
-                    (trap (looprange i 0 (length local-cells) {
-                        (bms-set-bal i (if (> (bitwise-and local-mask (shl 1 i)) 0) 1 0))
-                    }))
-                    (if (> local-mask 0) {
-                        (setq any-bal true)
-                        (print (str-merge "BAL LOCAL: " (mask-to-bin local-mask local-total)
-                            " min=" (str-from-n global-min "%.3f")))
-                    })
-                })
 
                 ; Slave ICs: update cached masks for 1Hz keepalive in main loop
                 (loopforeach sd slave-data {
@@ -383,16 +334,8 @@
 ; Main Loop
 ; ============================================================================
 
-; Initialize local BQ76952 (single chip on master) - retry until ready
-(def bq-ic1 (bms-get-param 'cells_ic1))
-(if (> bq-ic1 0) {
-    (print "BQ init: waiting for BQ76952...")
-    (loopwhile (not (bms-init bq-ic1)) (sleep 1.0))
-    (print (str-merge "BQ init OK: " (str-from-n bq-ic1 "%d") " cells"))
-})
-
 ; Apply initial FET state matching default chg-allowed = false (charge OFF)
-(bms-set-chg 0)
+(gpio-write 5 0)
 
 ; Register BMS command events used by VESC Tool
 (event-register-handler (spawn event-handler))
@@ -459,7 +402,7 @@
             (setix bal-keepalive-kick 0 0)
         })
 
-        ; Update VESC BMS display with local BQ + slave cell voltages
+        ; Update VESC BMS display with slave cell voltages
         (master-update-vesc-bms)
 
         ; Integrate Ah/Wh from filtered current (10 Hz -> dt = 0.1 s).

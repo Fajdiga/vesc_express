@@ -21,8 +21,9 @@
 #ifndef MAIN_HWCONF_JETFLEET_JFBMS_MASTER_C6_H_
 #define MAIN_HWCONF_JETFLEET_JFBMS_MASTER_C6_H_
 
-// JFBMS Master C6: ESP32-C6-MINI-N4 variant with BLE/WiFi, current sensing, FET control
-// NOTE: pin map is currently a placeholder copy from the C3 master — TODO C6 pin map
+// JFBMS Master C6: ESP32-C6-MINI-N4 variant. No local BQ76952 — cell data comes
+// from slaves over CAN. On-board: shunt + amp current sense, NTC PCB temp,
+// charger voltage divider, charge FET drive, buzzer, COM_EN, shutdown.
 
 #include "adc.h"
 #include "driver/gpio.h"
@@ -191,55 +192,29 @@ typedef struct {
 // Default setting Overrides
 #define HW_DEFAULT_ID				3
 
-// TODO C6 pin map: all GPIO assignments below are placeholders copied verbatim from the
-// ESP32-C3 master. ESP32-C6-MINI-N4 has a different pin-out and exposed peripherals;
-// remap these once the C6 hardware schematic is finalized before flashing real hardware.
-
-// Board variant: set to 1 for CAN on GPIO 0/1, set to 0 for CAN on GPIO 6/7
-#define JFBMS_USE_CAN_IO_0_1		1
-
-// CAN
-#if JFBMS_USE_CAN_IO_0_1
+// CAN on GPIO 0/1
 #define CAN_TX_GPIO_NUM				1
 #define CAN_RX_GPIO_NUM				0
-#else
-#define CAN_TX_GPIO_NUM				7
-#define CAN_RX_GPIO_NUM				6
-#endif
 
-// Other pins
-#define PIN_SDA						21
-#define PIN_SCL						20
-#define PIN_ENABLE					2	// Input: detect ESC alive
-#define PIN_BQ1_EN					3	// BQ1 enable
-#define PIN_OUT_EN					4	// Discharge FET
-#define PIN_CHG_EN					5	// Charge FET
+// Pins
+#define PIN_CHG_EN					5	// Charge FET (active high)
+#define PIN_COM_EN					6	// COM enable (active low)
 #define PIN_BUZZER					8	// Buzzer (PWM output)
-#define PIN_SHUTDOWN				19	// Shutdown (kill main power)
-#define PIN_COM_EN					6	// COM enable
-#define PIN_PCHG_EN					10	// Precharge FET
+#define PIN_PCHG_EN					10	// Precharge FET / aux output
+#define PIN_SHUTDOWN				19	// Shutdown, open-drain (active low)
 
-// ADC - voltage dividers (only when CAN is on GPIO 6/7)
-#if !JFBMS_USE_CAN_IO_0_1
-#define HW_ADC_CH0					ADC1_CHANNEL_0 // DIV_CHG
-#define HW_ADC_CH1					ADC1_CHANNEL_1 // DIV_OUT
-#endif
-// GPIO2 = current sense amplifier output (1 mΩ shunt, 50x gain, center ~1.65V)
-// Note: PIN_ENABLE was placeholder-assigned to GPIO2 from C3; it is not used as
-// digital I/O on the C6 PCB — the ADC driver owns this pin.
+// ADC channels
+// GPIO2 = current sense amp output (1 mΩ shunt, 50× gain, center ~1.65 V)
+// GPIO3 = charger voltage divider (300 kΩ : 4.7 kΩ → 64.83×)
+// GPIO4 = NTC NCP18XH103F03RB (10 k @ 25 °C, B25/85 = 3434), 10 kΩ pull-up to 3.3 V
 #define HW_ADC_CH2					ADC1_CHANNEL_2 // Current sense
+#define HW_ADC_CH3					ADC1_CHANNEL_3 // Charger voltage divider
+#define HW_ADC_CH4					ADC1_CHANNEL_4 // PCB NTC
 
-// Parameters
-#define HW_R_SHUNT					0.001
-
-// Macros
-#if JFBMS_USE_CAN_IO_0_1
+// VESC charge-detect helper: read divider scaled back to charger voltage.
+// (300 kΩ + 4.7 kΩ) / 4.7 kΩ = 64.83×. Returns -1.0 × 64.83 if ADC unavailable.
+#define HW_GET_VCHG()				((adc_get_voltage(ADC1_CHANNEL_3) * (300.0e3 + 4.7e3)) / 4.7e3)
 #define HW_GET_VOUT()				(0.0)
-#define HW_GET_VCHG()				(0.0)
-#else
-#define HW_GET_VOUT()				((adc_get_voltage(ADC1_CHANNEL_1) * (300.0e3 + 4.7e3)) / 4.7e3)
-#define HW_GET_VCHG()				((adc_get_voltage(ADC1_CHANNEL_0) * (300.0e3 + 4.7e3)) / 4.7e3)
-#endif
 
 // Master slave data storage
 #define MAX_SLAVES					8

@@ -24,9 +24,11 @@
 #include <math.h>
 
 #if CONFIG_IDF_TARGET_ESP32C6
-// ESP32-C6: continuous DMA mode at 20 kHz with hardware IIR filter (coeff 64).
-// adc_get_voltage() drains the entire ring buffer and returns the average —
-// ~2000 samples at 10 Hz update rate, zero blocking wait.
+// ESP32-C6: continuous DMA mode at 5 kHz with hardware IIR filter (coeff 64,
+// single-pole recursive: y[n] = x[n]/64 + y[n-1]*63/64; -3 dB cutoff ~12.4 Hz,
+// 95% settling in ~38 ms — faster than the 100 ms drain interval).
+// adc_get_voltage() drains the ring buffer and averages all samples for the
+// requested channel — ~500 samples per drain at the 10 Hz update rate.
 #include "esp_adc/adc_continuous.h"
 #include "esp_adc/adc_filter.h"
 #include "esp_adc/adc_cali.h"
@@ -37,12 +39,12 @@ static adc_cali_handle_t       c6_cali_handle = NULL;
 static bool                    c6_cali_ok     = false;
 
 void adc_init(void) {
-	// 1 kHz sample rate: 400 bytes/drain cycle (10 Hz) vs 16 KB ring buffer — no overflow.
-	// conv_frame_size 64 bytes = 16 samples = 16 ms per frame; calibration 100 ms timeout
-	// catches 6+ frames even right after a flush.
+	// 5 kHz sample rate: 2000 bytes/drain cycle (10 Hz) vs 4 KB ring buffer — fits with
+	// margin. conv_frame_size 256 bytes = 64 samples = 12.8 ms per frame; calibration
+	// 100 ms timeout catches 7+ frames even right after a flush.
 	adc_continuous_handle_cfg_t hcfg = {
 		.max_store_buf_size = 4096,
-		.conv_frame_size    = 64,
+		.conv_frame_size    = 256,
 	};
 	if (adc_continuous_new_handle(&hcfg, &c6_cont_handle) != ESP_OK) return;
 
@@ -78,7 +80,7 @@ void adc_init(void) {
 	adc_continuous_config_t ccfg = {
 		.pattern_num    = (uint32_t)npat,
 		.adc_pattern    = patterns,
-		.sample_freq_hz = 1000,
+		.sample_freq_hz = 5000,
 		.conv_mode      = ADC_CONV_SINGLE_UNIT_1,
 		.format         = ADC_DIGI_OUTPUT_FORMAT_TYPE2,
 	};
@@ -125,7 +127,7 @@ fail:
 float adc_get_voltage(adc1_channel_t ch) {
 	if (!c6_cont_handle) return -1.0f;
 
-	static uint8_t buf[256];  // static: not on stack; holds 4× conv_frame_size
+	static uint8_t buf[1024];  // static: not on stack; holds 4× conv_frame_size
 	uint64_t sum   = 0;
 	uint32_t count = 0, ret_num = 0;
 
