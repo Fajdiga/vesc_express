@@ -1,16 +1,22 @@
 {
-    "idf.buildPath": "${workspaceFolder}/build",
-    "idf.port": "COM3",
-    "idf.flashType": "UART",
-    "idf.openOcdConfigs": [
-        "board/esp32c6-builtin.cfg"
-    ],
-    "idf.espIdfPathWin": "C:\\Users\\mihap\\esp\\v5.5.2\\esp-idf",
-    "idf.toolsPathWin": "C:\\Users\\mihap\\.espressif",
-    "idf.pythonInstallPath": "C:\\Users\\mihap\\.espressif\\tools\\idf-python\\3.11.2\\python.exe",
-    "idf.currentSetup": "C:\\esp\\v5.5.3\\esp-idf",
-    "idf.customExtraVars": {
-        "IDF_TARGET": "esp32c6"
-    },
-    "idf.portWin": "COM62"
+  "idf.buildPath": "${workspaceFolder}/build",
+  "idf.port": "COM3",
+  "idf.flashType": "UART",
+  "idf.openOcdConfigs": [
+    "board/esp32c6-builtin.cfg"
+  ],
+  "idf.espIdfPathWin": "C:\\Users\\mihap\\esp\\v5.5.2\\esp-idf",
+  "idf.toolsPathWin": "C:\\Users\\mihap\\.espressif",
+  "idf.pythonInstallPath": "C:\\Users\\mihap\\.espressif\\tools\\idf-python\\3.11.2\\python.exe",
+  "idf.currentSetup": "C:\\esp\\v5.5.3\\esp-idf",
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32c6"
+  },
+  "idf.portWin": "COM62",
+  "clangd.path": "C:\\Espressif\\tools\\esp-clang\\esp-19.1.2_20250312\\esp-clang\\bin\\clangd.exe",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=c:\\Users\\jerne\\Documents\\JetFleet_Altium\\BMS\\github-code\\build"
+  ]
 }

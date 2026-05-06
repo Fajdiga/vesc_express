@@ -37,6 +37,7 @@
 #define HW_EARLY_LBM_INIT
 #define HW_NO_UART
 #define HW_INIT_HOOK()				hw_init()
+#define HW_SHUTDOWN_HOOK()			hw_shutdown()
 #define USER_EXTENSION_STORAGE_SIZE	50
 
 // CAN: Normal ACK mode for reliable master-slave communication
@@ -239,5 +240,6 @@ typedef struct {
 
 // Functions
 void hw_init(void);
+void hw_shutdown(void);
 
 #endif /* MAIN_HWCONF_JETFLEET_JFBMS_MASTER_C6_H_ */

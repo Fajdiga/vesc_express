@@ -370,6 +370,10 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 		esp_deep_sleep_start();
 	} break;
 
+	case COMM_SHUTDOWN: {
+		HW_SHUTDOWN_HOOK();
+	} break;
+
 	case COMM_FORWARD_CAN:
 		send_func_can_fwd = reply_func;
 		comm_can_send_buffer(data[0], data + 1, len - 1, 0);

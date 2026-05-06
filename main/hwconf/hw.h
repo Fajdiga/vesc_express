@@ -69,6 +69,10 @@
 #define HW_POST_LISPIF_HOOK()
 #endif
 
+#ifndef HW_SHUTDOWN_HOOK
+#define HW_SHUTDOWN_HOOK()
+#endif
+
 #ifndef LOGS_ENABLED
 // Should contain 0 or 1
 #define LOGS_ENABLED 0

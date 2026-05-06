@@ -29,6 +29,7 @@
 #include "lispif.h"
 #include "lispbm.h"
 #include "commands.h"
+#include "terminal.h"
 #include "utils.h"
 #include "comm_can.h"
 #include "bms.h"
@@ -1218,6 +1219,21 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 // Section E: Extension Registration & hw_init
 // ============================================================================
 
+void hw_shutdown(void) {
+	commands_printf("Shutdown: pulling GPIO%d low", PIN_SHUTDOWN);
+
+	gpio_set_level(PIN_CHG_EN, 0);
+	gpio_set_level(PIN_PCHG_EN, 0);
+	gpio_set_level(PIN_SHUTDOWN, 0);
+}
+
+static void terminal_shutdown(int argc, const char **argv) {
+	(void)argc;
+	(void)argv;
+
+	hw_shutdown();
+}
+
 static void load_extensions(bool main_found) {
 	(void)main_found;
 
@@ -1311,6 +1327,12 @@ void hw_init(void) {
 	gpio_set_level(PIN_SHUTDOWN, 1);
 
 	// GPIO2/3/4 are ADC inputs; do not configure them as digital I/O.
+
+	terminal_register_command_callback(
+			"shutdown",
+			"Pull GPIO19 shutdown low",
+			0,
+			terminal_shutdown);
 
 	// Calibrate current sense zero offset.
 	// Wait 500 ms so the DMA ring buffer fills before the first read.
