@@ -192,9 +192,13 @@ typedef struct {
 // Default setting Overrides
 #define HW_DEFAULT_ID				3
 
-// CAN on GPIO 0/1
-#define CAN_TX_GPIO_NUM				1
-#define CAN_RX_GPIO_NUM				0
+// ESC/VESC CAN bus: TWAI0 on GPIO20/21.
+// Private master<->slave BMS CAN bus: TWAI1 on GPIO22/23.
+#define CAN_TX_GPIO_NUM				20
+#define CAN_RX_GPIO_NUM				21
+#define JFBMS_SLAVE_CAN_TX_GPIO_NUM	22
+#define JFBMS_SLAVE_CAN_RX_GPIO_NUM	23
+#define JFBMS_SLAVE_CAN_TWAI_ID		1
 
 // Pins
 #define PIN_CHG_EN					5	// Charge FET (active high)

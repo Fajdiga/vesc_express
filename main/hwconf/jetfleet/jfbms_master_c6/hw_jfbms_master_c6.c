@@ -24,6 +24,7 @@
 
 #include "main.h"
 #include "driver/gpio.h"
+#include "driver/twai.h"
 #include "esp_sleep.h"
 #include "lispif.h"
 #include "lispbm.h"
@@ -31,6 +32,7 @@
 #include "utils.h"
 #include "comm_can.h"
 #include "bms.h"
+#include "soc/soc_caps.h"
 
 #include <math.h>
 #include <string.h>
@@ -99,6 +101,15 @@ static can_msg_t can_rx_buf[CAN_BUF_SIZE];
 static volatile int can_rx_head = 0;
 static volatile int can_rx_tail = 0;
 static volatile uint32_t can_rx_overflow = 0;
+static volatile uint32_t can_rx_total = 0;
+
+static twai_handle_t m_slave_twai = NULL;
+static SemaphoreHandle_t m_slave_twai_mutex;
+static volatile bool slave_can_stop = false;
+static volatile bool slave_can_running = false;
+static volatile uint32_t slave_can_recovery_cnt = 0;
+static volatile uint32_t slave_can_tx_fail_cnt = 0;
+static volatile uint32_t slave_can_tx_timeout_cnt = 0;
 
 // Master slave data
 static master_bms_data_t m_bms_data;
@@ -106,11 +117,51 @@ static SemaphoreHandle_t m_data_mutex;
 
 
 // ============================================================================
-// Section B: CAN RX Hook & Message Parsing
+// Section B: Slave CAN Bus, RX Buffer & Message Parsing
 // ============================================================================
 
-// Called from comm_can.c ISR context for every received CAN frame
-void hw_can_rx_hook(uint32_t id, uint8_t *data, int len, bool is_ext) {
+static twai_timing_config_t slave_can_timing_config(CAN_BAUD baudrate) {
+	switch (baudrate) {
+	case CAN_BAUD_125K: {
+		twai_timing_config_t cfg = TWAI_TIMING_CONFIG_125KBITS();
+		return cfg;
+	}
+	case CAN_BAUD_250K: {
+		twai_timing_config_t cfg = TWAI_TIMING_CONFIG_250KBITS();
+		return cfg;
+	}
+	case CAN_BAUD_500K: {
+		twai_timing_config_t cfg = TWAI_TIMING_CONFIG_500KBITS();
+		return cfg;
+	}
+	case CAN_BAUD_1M: {
+		twai_timing_config_t cfg = TWAI_TIMING_CONFIG_1MBITS();
+		return cfg;
+	}
+	case CAN_BAUD_10K: {
+		twai_timing_config_t cfg = TWAI_TIMING_CONFIG_10KBITS();
+		return cfg;
+	}
+	case CAN_BAUD_20K: {
+		twai_timing_config_t cfg = TWAI_TIMING_CONFIG_20KBITS();
+		return cfg;
+	}
+	case CAN_BAUD_50K: {
+		twai_timing_config_t cfg = TWAI_TIMING_CONFIG_50KBITS();
+		return cfg;
+	}
+	case CAN_BAUD_100K: {
+		twai_timing_config_t cfg = TWAI_TIMING_CONFIG_100KBITS();
+		return cfg;
+	}
+	default: {
+		twai_timing_config_t cfg = TWAI_TIMING_CONFIG_500KBITS();
+		return cfg;
+	}
+	}
+}
+
+static void slave_can_buffer_rx(uint32_t id, uint8_t *data, int len, bool is_ext) {
 	if (is_ext) return;  // Only handle 11-bit standard IDs
 
 	int next_head = (can_rx_head + 1) % CAN_BUF_SIZE;
@@ -123,6 +174,126 @@ void hw_can_rx_hook(uint32_t id, uint8_t *data, int len, bool is_ext) {
 	can_rx_buf[can_rx_head].len = (len > 8) ? 8 : len;
 	memcpy(can_rx_buf[can_rx_head].data, data, can_rx_buf[can_rx_head].len);
 	can_rx_head = next_head;
+	can_rx_total++;
+}
+
+// comm_can.c is the ESC/VESC bus on TWAI0. Do not parse private slave traffic there.
+void hw_can_rx_hook(uint32_t id, uint8_t *data, int len, bool is_ext) {
+	(void)id;
+	(void)data;
+	(void)len;
+	(void)is_ext;
+}
+
+static void slave_can_rx_task(void *arg) {
+	(void)arg;
+
+	twai_message_t rx_message;
+
+	while (!slave_can_stop) {
+		esp_err_t res = twai_receive_v2(m_slave_twai, &rx_message, pdMS_TO_TICKS(2));
+		if (res == ESP_OK) {
+			slave_can_buffer_rx(rx_message.identifier, rx_message.data,
+					rx_message.data_length_code, rx_message.extd);
+		}
+
+		twai_status_info_t status;
+		if (twai_get_status_info_v2(m_slave_twai, &status) == ESP_OK &&
+				(status.state == TWAI_STATE_BUS_OFF || status.state == TWAI_STATE_RECOVERING)) {
+			twai_initiate_recovery_v2(m_slave_twai);
+
+			int timeout = 1500;
+			while (status.state == TWAI_STATE_BUS_OFF || status.state == TWAI_STATE_RECOVERING) {
+				vTaskDelay(1);
+				twai_get_status_info_v2(m_slave_twai, &status);
+				timeout--;
+
+				if (slave_can_stop || timeout == 0) {
+					break;
+				}
+			}
+
+			if (!slave_can_stop) {
+				twai_start_v2(m_slave_twai);
+			}
+
+			slave_can_recovery_cnt++;
+		}
+	}
+
+	slave_can_running = false;
+	vTaskDelete(NULL);
+}
+
+static bool slave_can_start(void) {
+#if SOC_TWAI_CONTROLLER_NUM < 2
+	return false;
+#else
+	if (m_slave_twai) {
+		return true;
+	}
+
+	twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT_V2(
+			JFBMS_SLAVE_CAN_TWAI_ID,
+			JFBMS_SLAVE_CAN_TX_GPIO_NUM,
+			JFBMS_SLAVE_CAN_RX_GPIO_NUM,
+			TWAI_MODE_NORMAL);
+	twai_timing_config_t t_config = slave_can_timing_config(backup.config.can_baud_rate);
+	twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+
+	g_config.tx_queue_len = 20;
+	g_config.rx_queue_len = 20;
+
+	esp_err_t res = twai_driver_install_v2(&g_config, &t_config, &f_config, &m_slave_twai);
+	if (res != ESP_OK) {
+		m_slave_twai = NULL;
+		return false;
+	}
+
+	res = twai_start_v2(m_slave_twai);
+	if (res != ESP_OK) {
+		twai_driver_uninstall_v2(m_slave_twai);
+		m_slave_twai = NULL;
+		return false;
+	}
+
+	slave_can_stop = false;
+	slave_can_running = true;
+	xTaskCreatePinnedToCore(slave_can_rx_task, "jfbms_can_rx", 1024, NULL,
+			configMAX_PRIORITIES - 1, NULL, tskNO_AFFINITY);
+
+	return true;
+#endif
+}
+
+static bool slave_can_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len) {
+	if (!m_slave_twai) {
+		return false;
+	}
+
+	if (len > 8) {
+		len = 8;
+	}
+
+	twai_message_t tx_msg = {0};
+	tx_msg.extd = 0;
+	tx_msg.identifier = id;
+	tx_msg.data_length_code = len;
+	memcpy(tx_msg.data, data, len);
+
+	xSemaphoreTake(m_slave_twai_mutex, portMAX_DELAY);
+	esp_err_t res = twai_transmit_v2(m_slave_twai, &tx_msg, pdMS_TO_TICKS(5));
+	xSemaphoreGive(m_slave_twai_mutex);
+
+	if (res != ESP_OK) {
+		slave_can_tx_fail_cnt++;
+		if (res == ESP_ERR_TIMEOUT) {
+			slave_can_tx_timeout_cnt++;
+		}
+		return false;
+	}
+
+	return true;
 }
 
 // Parse a single CAN message from a slave
@@ -218,7 +389,7 @@ static void send_balance_cmd(uint8_t slave_id, uint32_t mask, uint8_t beep_code)
 	buf[2] = (mask >> 16) & 0xFF;
 	buf[3] = (mask >> 24) & 0xFF;
 	buf[4] = beep_code;
-	comm_can_transmit_sid(CAN_ID_BAL_CMD(slave_id), buf, 5);
+	slave_can_transmit_sid(CAN_ID_BAL_CMD(slave_id), buf, 5);
 }
 
 
@@ -1012,9 +1183,8 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 
-	commands_printf_lisp("CAN RX buf: head=%d tail=%d overflow=%lu",
-		can_rx_head, can_rx_tail, (unsigned long)can_rx_overflow);
-	commands_printf_lisp("CAN core: rx_total=%lu rx_recovery=%d ring_ovf=%lu q_missed=%lu q_overrun=%lu tx_fail=%lu tx_timeout=%lu",
+	commands_printf_lisp("ESC CAN TWAI0: tx=%d rx=%d core_rx=%lu recovery=%d ring_ovf=%lu q_missed=%lu q_overrun=%lu tx_fail=%lu tx_timeout=%lu",
+		CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM,
 		(unsigned long)comm_can_get_rx_total_cnt(),
 		comm_can_get_rx_recovery_cnt(),
 		(unsigned long)comm_can_get_rx_ring_overflow_cnt(),
@@ -1022,6 +1192,14 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 		(unsigned long)comm_can_get_rx_queue_overrun_cnt(),
 		(unsigned long)comm_can_get_tx_fail_cnt(),
 		(unsigned long)comm_can_get_tx_timeout_cnt());
+	commands_printf_lisp("Slave CAN TWAI%d: tx=%d rx=%d running=%d rx_total=%lu buf_head=%d buf_tail=%d overflow=%lu recovery=%lu tx_fail=%lu tx_timeout=%lu",
+		JFBMS_SLAVE_CAN_TWAI_ID, JFBMS_SLAVE_CAN_TX_GPIO_NUM, JFBMS_SLAVE_CAN_RX_GPIO_NUM,
+		slave_can_running ? 1 : 0,
+		(unsigned long)can_rx_total,
+		can_rx_head, can_rx_tail, (unsigned long)can_rx_overflow,
+		(unsigned long)slave_can_recovery_cnt,
+		(unsigned long)slave_can_tx_fail_cnt,
+		(unsigned long)slave_can_tx_timeout_cnt);
 
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 	for (int i = 0; i < MAX_SLAVES; i++) {
@@ -1090,6 +1268,7 @@ static void load_extensions(bool main_found) {
 
 void hw_init(void) {
 	m_data_mutex = xSemaphoreCreateMutex();
+	m_slave_twai_mutex = xSemaphoreCreateMutex();
 
 	// Initialize master slave data
 	memset(&m_bms_data, 0, sizeof(m_bms_data));
@@ -1140,6 +1319,8 @@ void hw_init(void) {
 		float v = adc_get_voltage(HW_ADC_CH2);
 		if (v >= 0.0f) m_current_offset = v;
 	}
+
+	slave_can_start();
 
 	lispif_add_ext_load_callback(load_extensions);
 }
