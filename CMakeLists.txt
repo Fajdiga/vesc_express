@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.5)
 
 # Default build target Logic
 if(NOT DEFINED HW_NAME)
-    set(HW_NAME "JFBMS_MASTER_C6")
+    set(HW_NAME "JFBMS_SLAVE")
 endif()
 
 # Look for hardware header files based on HW_NAME

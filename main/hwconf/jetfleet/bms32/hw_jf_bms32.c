@@ -619,11 +619,10 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 		// Cold-boot / DF-default path: BQ1 expected at default 0x08.
 		// BQ76952 datasheet allows up to ~260 ms for RESET to complete; a
 		// shorter delay can leave the chip half-reset and wedge the bus.
-		// SWAP_COMM_MODE is belt-and-suspenders for chips that came up
-		// in HDQ mode — harmless NAK otherwise.
+		// Do not send SWAP_COMM_MODE at 0x10 here: after RESET the chip is
+		// expected at its default address, so that old call only NAKed.
 		command_subcommands(BQ_ADDR_1, BQ769x2_RESET);
 		vTaskDelay(pdMS_TO_TICKS(300));
-		command_subcommands(BQ_ADDR_1, SWAP_COMM_MODE);
 
 		bq_init(BQ_ADDR_2);
 		command_subcommands(BQ_ADDR_2, SET_CFGUPDATE);
@@ -631,6 +630,8 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 			commands_printf_lisp("Could not update I2C address");
 		}
 		command_subcommands(BQ_ADDR_2, EXIT_CFGUPDATE);
+		// I2CAddress is applied on reset or SWAP_COMM_MODE. We are already
+		// in I2C mode; this makes the new address take effect immediately.
 		command_subcommands(BQ_ADDR_2, SWAP_COMM_MODE);
 	}
 

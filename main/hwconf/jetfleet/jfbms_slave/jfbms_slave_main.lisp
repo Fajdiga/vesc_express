@@ -30,6 +30,13 @@
 ; After 20 loops (2s at 10Hz) voltages are considered settled for master balance decisions
 (def settle-counter (list 20))  ; Start settled (no balancing at boot)
 
+(defun trap-value (expr fallback) {
+    (match (trap (eval expr))
+        ((exit-ok (? value)) value)
+        (_ fallback)
+    )
+})
+
 ; Balance visualization: show which cells are balancing per IC
 ; mask = 16-bit balance mask, ncells = number of configured cells
 ; Returns e.g. "_.X.X._" for cells 2,4 balancing out of 7
@@ -88,7 +95,7 @@
                 (var ic1-mask (+ (bufget-u8 data 0) (shl (bufget-u8 data 1) 8)))
                 (var ic2-mask (+ (bufget-u8 data 2) (shl (bufget-u8 data 3) 8)))
                 ; Apply to BQ immediately
-                (var result (bms-set-bal-bitmap ic1-mask ic2-mask))
+                (var result (trap-value `(bms-set-bal-bitmap ,ic1-mask ,ic2-mask) false))
                 ; Reset watchdog counter (1 = command received, will increment each loop)
                 (setix bal-state 0 1)
                 (setix bal-rx-flag 0 1)
@@ -129,7 +136,7 @@
         (setix bal-state 0 (+ cnt 1))
         ; Check if timeout exceeded
         (if (> cnt bal-watchdog-limit) {
-            (bms-stop-balancing)
+            (trap-value '(bms-stop-balancing) false)
             (setix bal-state 0 0)
             (print "Balance watchdog triggered - stopped balancing")
         })
@@ -151,7 +158,7 @@
         (process-can-messages)
 
         ; Read cell voltages from both BQ chips
-        (var cells (bms-get-vcells))
+        (var cells (trap-value '(bms-get-vcells) nil))
         (if (eq cells nil) {
             (setq bq1-ok false)
             (setq cells '())
@@ -161,7 +168,7 @@
         (process-can-messages)
 
         ; Read temperatures (BQ1-Int, TS1, TS3, BQ2-Int)
-        (var temps (bms-get-temps))
+        (var temps (trap-value '(bms-get-temps) nil))
         (if (eq temps nil)
             (setq temps '(-273.0 -273.0 -273.0 -273.0)))
 
@@ -224,6 +231,16 @@
     })
 })
 
+(defun main-supervisor () {
+    (loopwhile t {
+        (match (trap (main-thd))
+            ((exit-ok _) (print "main-thd exited - restarting"))
+            (_ (print "main-thd crashed - restarting"))
+        )
+        (sleep 1.0)
+    })
+})
+
 ; ============================================================================
 ; Startup
 ; ============================================================================
@@ -266,7 +283,7 @@
 (if init-ok {
     ; Start main broadcast loop (CAN RX is polled in main loop)
     (print "Starting CAN broadcast loop...")
-    (spawn 150 main-thd)
+    (spawn 200 main-supervisor)
 } {
     ; Init failed - enter diagnostic loop, but still broadcast status
     (print "Entering diagnostic mode due to init failure")

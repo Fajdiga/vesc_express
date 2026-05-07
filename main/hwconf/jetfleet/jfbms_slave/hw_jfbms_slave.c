@@ -43,6 +43,7 @@
 #define BQ_ADDR_1 0x10  // BQ1 address after I2C address change during init
 #define BQ_ADDR_2 0x08  // BQ2 stays at default address
 #define I2C_SPEED 100000
+#define I2C_MUTEX_TIMEOUT_MS 500
 
 // Macros
 #define M_CELLS (m_cells_ic1 + m_cells_ic2)
@@ -221,7 +222,9 @@ static esp_err_t i2c_tx_rx(
 	uint8_t *read_buffer, size_t read_size
 ) {
 
-	xSemaphoreTake(i2c_mutex, portMAX_DELAY);
+	if (xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+		return ESP_ERR_TIMEOUT;
+	}
 
 	esp_err_t res;
 	if (read_size > 0 && read_buffer != NULL) {
@@ -697,13 +700,23 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 		return ENC_SYM_TERROR;
 	}
 
-	xSemaphoreTake(bq_mutex, portMAX_DELAY);
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+		lbm_set_error_reason("bq_mutex timeout in bms-init");
+		return ENC_SYM_NIL;
+	}
 
 	// Disable BQ2 so only BQ1 is on the I2C bus during address change
 	gpio_set_level(PIN_BQ1_EN, 0);  // Enable BQ1
 	gpio_set_level(PIN_BQ2_EN, 1);  // Disable BQ2
 
-	// Restart i2c
+	// Restart I2C while holding i2c_mutex. i2c_tx_rx() serializes transfers
+	// through this mutex, but driver delete/install bypass it.
+	if (xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+		xSemaphoreGive(bq_mutex);
+		lbm_set_error_reason("i2c_mutex timeout in bms-init");
+		return ENC_SYM_NIL;
+	}
+
 	i2c_driver_delete(0);
 
 	i2c_config_t conf = {
@@ -721,25 +734,41 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 	i2c_reset_tx_fifo(0);
 	i2c_reset_rx_fifo(0);
 
+	xSemaphoreGive(i2c_mutex);
+
 	vTaskDelay(50);
 
-	// Reset BQ1's address back to default (0x08) in case it was previously
-	// changed to 0x10. If BQ1 is already at 0x08, this command has no target.
-	command_subcommands(BQ_ADDR_1, BQ769x2_RESET);
-	vTaskDelay(60);
-	command_subcommands(BQ_ADDR_1, SWAP_COMM_MODE);
+	// Wake BQ1 if it was left in BQ-level DEEPSLEEP. In that mode its
+	// configured I2C address is preserved, so try the post-init address first.
+	command_subcommands(BQ_ADDR_1, EXIT_DEEPSLEEP);
+	command_subcommands(BQ_ADDR_1, EXIT_DEEPSLEEP);
+	vTaskDelay(pdMS_TO_TICKS(10));
 
-	// Initialize BQ1 at its default address (0x08)
-	bq_init(BQ_ADDR_2);
+	// With BQ2 disabled, an ACK at 0x10 can only be BQ1. If it is already
+	// there, skip the reset/address-change path for faster warm/deepsleep boot.
+	bool bq1_at_target = false;
+	command_read(BQ_ADDR_1, Cell1Voltage, &bq1_at_target);
 
-	// Change BQ1's I2C address from 0x08 to 0x10
-	// I2CAddress register takes the 8-bit address (7-bit addr << 1), so 0x10 << 1 = 0x20
-	command_subcommands(BQ_ADDR_2, SET_CFGUPDATE);
-	if (!bq_set_reg(BQ_ADDR_2, I2CAddress, 0x20, 1)) {
-		commands_printf_lisp("Could not update BQ1 I2C address");
+	if (!bq1_at_target) {
+		// Cold-boot / default-address path: BQ1 is expected at 0x08.
+		// If it was at 0x10, RESET moves it back to 0x08; if already at
+		// 0x08, the reset at 0x10 simply NAKs. Allow the datasheet reset time.
+		command_subcommands(BQ_ADDR_1, BQ769x2_RESET);
+		vTaskDelay(pdMS_TO_TICKS(300));
+
+		// Initialize BQ1 at its default address (0x08)
+		bq_init(BQ_ADDR_2);
+
+		// Change BQ1's I2C address from 0x08 to 0x10. I2CAddress takes
+		// the 8-bit write address, so 0x10 << 1 = 0x20.
+		command_subcommands(BQ_ADDR_2, SET_CFGUPDATE);
+		if (!bq_set_reg(BQ_ADDR_2, I2CAddress, 0x20, 1)) {
+			commands_printf_lisp("Could not update BQ1 I2C address");
+		}
+		command_subcommands(BQ_ADDR_2, EXIT_CFGUPDATE);
+		// Apply the new I2C address immediately. Comm Type remains I2C.
+		command_subcommands(BQ_ADDR_2, SWAP_COMM_MODE);
 	}
-	command_subcommands(BQ_ADDR_2, EXIT_CFGUPDATE);
-	command_subcommands(BQ_ADDR_2, SWAP_COMM_MODE);
 
 	// Enable both BQs now that BQ1 has a unique address (0x10)
 	gpio_set_level(PIN_BQ1_EN, 0);  // Enable BQ1 (at 0x10)
@@ -750,6 +779,9 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 	if (cells_ic2 > 0) {
 		bq_init(BQ_ADDR_2);
 	}
+
+	// Always refresh BQ1 configuration at its final address.
+	bq_init(BQ_ADDR_1);
 
 	m_cells_ic1 = cells_ic1;
 	m_cells_ic2 = cells_ic2;
@@ -772,7 +804,32 @@ static lbm_value ext_hw_sleep(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 
-	xSemaphoreTake(bq_mutex, portMAX_DELAY);
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+		lbm_set_error_reason("bq_mutex timeout in bms-sleep");
+		return ENC_SYM_EERROR;
+	}
+
+	// Confirm both BQs respond before preparing them for DEEPSLEEP. If BQ1
+	// lost its configured address after shutdown/power loss, fail early so the
+	// caller can re-run bms-init instead of leaving the chips half-configured.
+	{
+		bool probe_ok = false;
+		command_read(BQ_ADDR_1, Cell1Voltage, &probe_ok);
+		if (!probe_ok) {
+			xSemaphoreGive(bq_mutex);
+			lbm_set_error_reason("BQ1 not responsive at 0x10 before sleep");
+			return ENC_SYM_EERROR;
+		}
+		if (m_cells_ic2 > 0) {
+			probe_ok = false;
+			command_read(BQ_ADDR_2, Cell1Voltage, &probe_ok);
+			if (!probe_ok) {
+				xSemaphoreGive(bq_mutex);
+				lbm_set_error_reason("BQ2 not responsive at 0x08 before sleep");
+				return ENC_SYM_EERROR;
+			}
+		}
+	}
 
 	// Stop balancing on both chips
 	m_bal_state_ic1 = 0;
@@ -808,14 +865,18 @@ static lbm_value ext_hw_sleep(lbm_value *args, lbm_uint argn) {
 		}
 	}
 
-	// Send DEEPSLEEP command to BQ1
-	command_subcommands(BQ_ADDR_1, DEEPSLEEP);
-	command_subcommands(BQ_ADDR_1, DEEPSLEEP);
+	// DEEPSLEEP must be sent twice in succession. Check both commands so a
+	// NAK does not look like successful sleep entry to the Lisp caller.
+	if (!command_subcommands(BQ_ADDR_1, DEEPSLEEP) ||
+		!command_subcommands(BQ_ADDR_1, DEEPSLEEP)) {
+		goto exit_error1;
+	}
 
-	// Send DEEPSLEEP command to BQ2 if present
 	if (m_cells_ic2 > 0) {
-		command_subcommands(BQ_ADDR_2, DEEPSLEEP);
-		command_subcommands(BQ_ADDR_2, DEEPSLEEP);
+		if (!command_subcommands(BQ_ADDR_2, DEEPSLEEP) ||
+			!command_subcommands(BQ_ADDR_2, DEEPSLEEP)) {
+			goto exit_error2;
+		}
 	}
 
 	xSemaphoreGive(bq_mutex);
@@ -1268,7 +1329,9 @@ static lbm_value ext_i2c_detect_addr(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 
 	uint8_t address = lbm_dec_as_u32(args[0]);
-	xSemaphoreTake(i2c_mutex, portMAX_DELAY);
+	if (xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+		return ENC_SYM_NIL;
+	}
 	i2c_cmd_handle_t cmd = i2c_cmd_link_create();
 	i2c_master_start(cmd);
 	i2c_master_write_byte(cmd, (address << 1) | I2C_MASTER_WRITE, true);
@@ -1403,7 +1466,10 @@ static lbm_value ext_set_bal_bitmap(lbm_value *args, lbm_uint argn) {
 	uint32_t ic2_mask = lbm_dec_as_u32(args[1]) & 0xFFFF;
 	uint32_t bitmap = ic1_mask | (ic2_mask << 16);
 
-	xSemaphoreTake(bq_mutex, portMAX_DELAY);
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+		lbm_set_error_reason("bq_mutex timeout in bms-set-bal-bitmap");
+		return ENC_SYM_EERROR;
+	}
 	bool res = apply_bal_bitmap(bitmap);
 	xSemaphoreGive(bq_mutex);
 
@@ -1424,7 +1490,10 @@ static lbm_value ext_stop_balancing(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 
-	xSemaphoreTake(bq_mutex, portMAX_DELAY);
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+		lbm_set_error_reason("bq_mutex timeout in bms-stop-balancing");
+		return ENC_SYM_EERROR;
+	}
 	bool res = stop_all_balancing();
 	xSemaphoreGive(bq_mutex);
 

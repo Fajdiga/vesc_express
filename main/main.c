@@ -54,6 +54,7 @@
 #include "main.h"
 #include "mempools.h"
 #include "lispif.h"
+#include "eval_cps.h"
 #include "bms.h"
 #include "ble/custom_ble.h"
 
@@ -209,38 +210,38 @@ void app_main(void) {
 // power-cycle recovers it.
 //
 // This task registers itself with the WDT and keeps feeding it as long as the
-// LBM heap shows GC activity — a reliable sign the eval thread is making
-// progress. If gc_num stays flat for STALL_LIMIT_S consecutive seconds we stop
-// feeding; the WDT then panics and resets the chip.
+// LispBM evaluator heartbeat advances. That heartbeat is driven by the
+// evaluator scheduler, so normal Lisp execution, sleeps, and pauses are all
+// treated as healthy; a wedged C extension or deadlocked eval task stops it.
 //
-// Pre-arm: we wait for the first GC before starting to count stalls so that
-// units booted without a Lisp script don't reset themselves.
+// Pre-arm: we wait for the first heartbeat before counting stalls so units
+// where the evaluator never starts do not reset themselves.
 static void wdt_monitor_task(void *arg) {
 	(void)arg;
 
 	esp_task_wdt_add(NULL);
 
 	const int STALL_LIMIT_S = 30;
-	lbm_uint last_gc = 0;
+	lbm_uint last_heartbeat = 0;
 	int stalled_s = 0;
 	bool armed = false;
 
 	for (;;) {
 		vTaskDelay(pdMS_TO_TICKS(1000));
 
-		lbm_uint now_gc = lbm_heap_state.gc_num;
+		lbm_uint now_heartbeat = lbm_get_eval_heartbeat();
 
 		if (!armed) {
-			if (now_gc > 0) {
+			if (now_heartbeat > 0) {
 				armed = true;
-				last_gc = now_gc;
+				last_heartbeat = now_heartbeat;
 			}
 			esp_task_wdt_reset();
 			continue;
 		}
 
-		if (now_gc != last_gc) {
-			last_gc = now_gc;
+		if (now_heartbeat != last_heartbeat) {
+			last_heartbeat = now_heartbeat;
 			stalled_s = 0;
 		} else {
 			stalled_s++;
