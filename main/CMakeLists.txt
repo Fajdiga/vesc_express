@@ -29,6 +29,7 @@ set(COMPONENT_SRCS
 "bms.c"
 "log_comm.c"
 "digital_filter.c"
+"i2c_compat.c"
 
 "config/confsrc.c"
 "hwconf/hw.c"
@@ -179,6 +180,7 @@ idf_component_register(
         efuse
         esp_adc
         esp_driver_gpio
+        esp_driver_i2c
         esp_driver_ledc
         esp_driver_rmt
         esp_driver_spi

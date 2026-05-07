@@ -24,7 +24,7 @@
 #include "heap.h"
 #include "lbm_defines.h"
 #include "main.h"
-#include "driver/i2c.h"
+#include "i2c_compat.h"
 #include "esp_sleep.h"
 #include "lispif.h"
 #include "lispbm.h"

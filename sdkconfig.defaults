@@ -10,9 +10,8 @@ CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP=y
 CONFIG_BOOTLOADER_SKIP_VALIDATE_ON_POWER_ON=y
 CONFIG_BOOTLOADER_RESERVE_RTC_SIZE=0x10
 
-# ESP-IDF 6.0 migration: keep legacy I2C/TWAI drivers quiet until the project
-# wrappers are moved to driver/i2c_master.h and esp_twai.h.
-CONFIG_I2C_SUPPRESS_DEPRECATE_WARN=y
+# ESP-IDF 6.0 migration: keep legacy TWAI driver quiet until the project
+# wrappers are moved to esp_twai.h.
 CONFIG_TWAI_SUPPRESS_DEPRECATE_WARN=y
 
 # Application manager
@@ -331,5 +330,3 @@ CONFIG_TCP_WND_DEFAULT=2440
 # CONFIG_TCP_QUEUE_OOSEQ is not set
 # CONFIG_TCP_OVERSIZE_MSS is not set
 CONFIG_TCP_OVERSIZE_QUARTER_MSS=y
-
-
