@@ -22,6 +22,7 @@
 #include "freertos/semphr.h"
 #include "datatypes.h"
 #include "buffer.h"
+#include "driver/gpio.h"
 #include "driver/twai.h"
 #include "comm_can.h"
 #include "datatypes.h"
@@ -35,6 +36,7 @@
 #include "lispif.h"
 #include "bms.h"
 #include "utils.h"
+#include "esp_rom_gpio.h"
 #include "soc/gpio_sig_map.h"
 #include <string.h>
 

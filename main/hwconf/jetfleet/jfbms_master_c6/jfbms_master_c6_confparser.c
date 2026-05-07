@@ -178,5 +178,15 @@ void jfbms_master_c6_confparser_set_defaults_main_config_t(main_config_t *conf) 
 	conf->sleep_long = CONF_SLEEP_LONG;
 	conf->soc_filter_const = CONF_SOC_FILTER_CONST;
 	conf->t_charge_min = CONF_T_CHARGE_MIN;
+	conf->cells_ic1 = CONF_CELLS_IC1;
+	conf->cells_ic2 = CONF_CELLS_IC2;
+	conf->temp_num = CONF_TEMP_NUM;
+	conf->t_charge_mon_en = CONF_T_CHARGE_MON_EN;
+	conf->psw_t_pchg = CONF_PSW_T_PCHG;
+	conf->psw_scd_en = CONF_PSW_SCD_EN;
+	conf->psw_scd_tres = CONF_PSW_SCD_TRES;
+	conf->t_psw_en = CONF_T_PSW_EN;
+	conf->t_psw_max_mos = CONF_T_PSW_MAX_MOS;
+	conf->psw_wait_init = CONF_PSW_WAIT_INIT;
+	conf->num_slaves = CONF_NUM_SLAVES;
 }
-

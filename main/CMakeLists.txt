@@ -1,6 +1,3 @@
-set(COMPONENT_REQUIRES )
-set(COMPONENT_PRIV_REQUIRES )
-
 # Detect if building for slave hardware (no WiFi/BLE needed)
 set(IS_SLAVE_BUILD FALSE)
 if(DEFINED HW_FILE_NAME)
@@ -102,8 +99,6 @@ endif()
 
 list(APPEND COMPONENT_SRCS
 
-"touch/lispif_touch_extensions.c"
-
 "display/lispif_disp_extensions.c"
 "display/disp_sh8501b.c"
 "display/disp_ili9341.c"
@@ -126,6 +121,12 @@ list(APPEND COMPONENT_SRCS
 
 "lowzip/lowzip.c"
 )
+
+if(IDF_TARGET STREQUAL "esp32c6")
+    list(APPEND COMPONENT_SRCS "touch/lispif_touch_extensions_stub.c")
+else()
+    list(APPEND COMPONENT_SRCS "touch/lispif_touch_extensions.c")
+endif()
 
 set(COMPONENT_ADD_INCLUDEDIRS
 "."
@@ -167,7 +168,48 @@ set(COMPONENT_ADD_INCLUDEDIRS
 "lowzip"
 )
 
-register_component()
+idf_component_register(
+    SRCS ${COMPONENT_SRCS}
+    INCLUDE_DIRS ${COMPONENT_ADD_INCLUDEDIRS}
+    REQUIRES
+        app_update
+        bt
+        console
+        driver
+        efuse
+        esp_adc
+        esp_driver_gpio
+        esp_driver_ledc
+        esp_driver_rmt
+        esp_driver_spi
+        esp_driver_twai
+        esp_driver_uart
+        esp_driver_usb_serial_jtag
+        esp_event
+        esp_hal_ana_conv
+        esp_hal_usb
+        esp_hw_support
+        esp_http_client
+        esp_netif
+        esp_partition
+        esp_rom
+        esp_system
+        esp_timer
+        esp_wifi
+        fatfs
+        freertos
+        hal
+        heap
+        log
+        lwip
+        mbedtls
+        nvs_flash
+        sdmmc
+        soc
+        spi_flash
+        vfs
+        wear_levelling
+)
 
 add_compile_definitions(
     LBM_USE_DYN_FUNS

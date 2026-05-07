@@ -1,11 +1,9 @@
 @echo off
 REM Build JFBMS Slave firmware
 echo Building JFBMS Slave...
-set HW_SRC=hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.c
-set HW_HEADER=hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.h
-idf.py -B build_slave build
+idf.py -B build_slave -DIDF_TARGET=esp32c3 -DHW_NAME=JFBMS_SLAVE -DSDKCONFIG=build_slave/sdkconfig build
 if %errorlevel% equ 0 (
     echo.
-    echo Build complete: build_slave\vesc_express.bin
+    echo Build complete: build_slave\
     echo To flash: idf.py -B build_slave flash
 )

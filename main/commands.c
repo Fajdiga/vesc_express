@@ -129,6 +129,25 @@ static void send_func_dummy(unsigned char *data, unsigned int len) {
 	(void)data; (void)len;
 }
 
+static bool clamp_stream_read_len(int32_t total_len, int32_t *read_len, int32_t read_ofs) {
+	if (!read_len || total_len < 0 || *read_len < 0 || read_ofs < 0 || read_ofs > total_len) {
+		return false;
+	}
+
+	int32_t max_len = PACKET_MAX_PL_LEN - 10;
+	int32_t len_remaining = total_len - read_ofs;
+
+	if (*read_len > max_len) {
+		*read_len = max_len;
+	}
+
+	if (*read_len > len_remaining) {
+		*read_len = len_remaining;
+	}
+
+	return true;
+}
+
 static void block_task(void *arg) {
 	for (;;) {
 		is_blocking = false;
@@ -469,7 +488,7 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 		int32_t len_conf = buffer_get_int32(data, &ind);
 		int32_t ofs_conf = buffer_get_int32(data, &ind);
 
-		if ((len_conf + ofs_conf) > DATA_MAIN_CONFIG_T__SIZE || len_conf > (PACKET_MAX_PL_LEN - 10)) {
+		if (!clamp_stream_read_len(DATA_MAIN_CONFIG_T__SIZE, &len_conf, ofs_conf)) {
 			break;
 		}
 
@@ -802,9 +821,7 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 		int32_t len_qml = buffer_get_int32(data, &ind);
 		int32_t ofs_qml = buffer_get_int32(data, &ind);
 
-		if (ofs_qml < 0 || len_qml < 0 ||
-				(len_qml + ofs_qml) > (int32_t)data_qml_hw_len ||
-				len_qml > (PACKET_MAX_PL_LEN - 10)) {
+		if (!clamp_stream_read_len((int32_t)data_qml_hw_len, &len_qml, ofs_qml)) {
 			break;
 		}
 
@@ -844,7 +861,7 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 			break;
 		}
 
-		if ((len_qml + ofs_qml) > qmlui_len || len_qml > (PACKET_MAX_PL_LEN - 10)) {
+		if (!clamp_stream_read_len(qmlui_len, &len_qml, ofs_qml)) {
 			break;
 		}
 

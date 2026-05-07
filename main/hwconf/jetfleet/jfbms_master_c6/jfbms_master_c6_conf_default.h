@@ -228,6 +228,60 @@
 #define CONF_T_CHARGE_MIN 0
 #endif
 
-// JFBMS_MASTER_C6_CONF_DEFAULT_H_
+// Cells on first balance IC
+#ifndef CONF_CELLS_IC1
+#define CONF_CELLS_IC1 16
 #endif
 
+// Cells on second balance IC
+#ifndef CONF_CELLS_IC2
+#define CONF_CELLS_IC2 16
+#endif
+
+// Number of external temperature sensors
+#ifndef CONF_TEMP_NUM
+#define CONF_TEMP_NUM 4
+#endif
+
+// Enable temperature monitoring during charging
+#ifndef CONF_T_CHARGE_MON_EN
+#define CONF_T_CHARGE_MON_EN 1
+#endif
+
+// Maximum precharge time
+#ifndef CONF_PSW_T_PCHG
+#define CONF_PSW_T_PCHG 3
+#endif
+
+// Shortcircuit protection enabled
+#ifndef CONF_PSW_SCD_EN
+#define CONF_PSW_SCD_EN 1
+#endif
+
+// Shortcircuit protection threshold
+#ifndef CONF_PSW_SCD_TRES
+#define CONF_PSW_SCD_TRES 4
+#endif
+
+// Enable overtemperature protection
+#ifndef CONF_T_PSW_EN
+#define CONF_T_PSW_EN 1
+#endif
+
+// Turn off power switch when MOSFET temperature is above this value
+#ifndef CONF_T_PSW_MAX_MOS
+#define CONF_T_PSW_MAX_MOS 105
+#endif
+
+// Wait for init done before enabling power switch
+#ifndef CONF_PSW_WAIT_INIT
+#define CONF_PSW_WAIT_INIT 0
+#endif
+
+// Number of expected slave devices
+#ifndef CONF_NUM_SLAVES
+#define CONF_NUM_SLAVES 1
+#endif
+
+// JFBMS_MASTER_C6_CONF_DEFAULT_H_
+#endif

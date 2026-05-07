@@ -124,7 +124,7 @@ fail:
 // Blocks up to 100 ms on the first read so callers work correctly even right after
 // the buffer was flushed (e.g. calibration). Subsequent reads use timeout=0 to drain.
 // Returns calibrated voltage in V, or -1.0 if no data arrives within 100 ms.
-float adc_get_voltage(adc1_channel_t ch) {
+float adc_get_voltage(adc_channel_t ch) {
 	if (!c6_cont_handle) return -1.0f;
 
 	static uint8_t buf[1024];  // static: not on stack; holds 4× conv_frame_size
@@ -171,42 +171,79 @@ float adc_get_voltage(adc1_channel_t ch) {
 }
 
 #else
-// Non-C6 targets: legacy esp_adc_cal API
-#include "esp_adc_cal.h"
+// Non-C6 targets: oneshot ADC with the ESP-IDF 6 calibration driver.
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
 
+static adc_oneshot_unit_handle_t adc1_handle = NULL;
+static adc_cali_handle_t adc1_cali_handle = NULL;
 static bool cal_ok = false;
-static esp_adc_cal_characteristics_t adc1_chars;
 
-void adc_init(void) {
-	adc1_config_width(ADC_WIDTH_BIT_DEFAULT);
-
-#ifdef HW_ADC_CH0
-	adc1_config_channel_atten(HW_ADC_CH0, ADC_ATTEN_DB_12);
-#endif
-#ifdef HW_ADC_CH1
-	adc1_config_channel_atten(HW_ADC_CH1, ADC_ATTEN_DB_12);
-#endif
-#ifdef HW_ADC_CH2
-	adc1_config_channel_atten(HW_ADC_CH2, ADC_ATTEN_DB_12);
-#endif
-#ifdef HW_ADC_CH3
-	adc1_config_channel_atten(HW_ADC_CH3, ADC_ATTEN_DB_12);
-#endif
-#ifdef HW_ADC_CH4
-	adc1_config_channel_atten(HW_ADC_CH4, ADC_ATTEN_DB_12);
-#endif
-
-	if (esp_adc_cal_check_efuse(ESP_ADC_CAL_VAL_EFUSE_TP) == ESP_OK) {
-		esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_12, ADC_WIDTH_BIT_DEFAULT, 0, &adc1_chars);
-		cal_ok = true;
+static void adc_config_channel_if_present(adc_channel_t ch) {
+	if (!adc1_handle) {
+		return;
 	}
+
+	adc_oneshot_chan_cfg_t cfg = {
+		.atten = ADC_ATTEN_DB_12,
+		.bitwidth = ADC_BITWIDTH_DEFAULT,
+	};
+	adc_oneshot_config_channel(adc1_handle, ch, &cfg);
 }
 
-float adc_get_voltage(adc1_channel_t ch) {
-	float res = -1.0;
-	if (cal_ok) {
-		res = (float)esp_adc_cal_raw_to_voltage(adc1_get_raw(ch), &adc1_chars) / 1000.0;
+void adc_init(void) {
+	adc_oneshot_unit_init_cfg_t init_cfg = {
+		.unit_id = ADC_UNIT_1,
+		.ulp_mode = ADC_ULP_MODE_DISABLE,
+	};
+	if (adc_oneshot_new_unit(&init_cfg, &adc1_handle) != ESP_OK) {
+		adc1_handle = NULL;
+		return;
 	}
-	return res;
+
+#ifdef HW_ADC_CH0
+	adc_config_channel_if_present(HW_ADC_CH0);
+#endif
+#ifdef HW_ADC_CH1
+	adc_config_channel_if_present(HW_ADC_CH1);
+#endif
+#ifdef HW_ADC_CH2
+	adc_config_channel_if_present(HW_ADC_CH2);
+#endif
+#ifdef HW_ADC_CH3
+	adc_config_channel_if_present(HW_ADC_CH3);
+#endif
+#ifdef HW_ADC_CH4
+	adc_config_channel_if_present(HW_ADC_CH4);
+#endif
+
+	adc_cali_curve_fitting_config_t cal_cfg = {
+		.unit_id = ADC_UNIT_1,
+		.chan = ADC_CHANNEL_0,
+		.atten = ADC_ATTEN_DB_12,
+		.bitwidth = ADC_BITWIDTH_DEFAULT,
+	};
+	cal_ok = (adc_cali_create_scheme_curve_fitting(&cal_cfg, &adc1_cali_handle) == ESP_OK);
+}
+
+float adc_get_voltage(adc_channel_t ch) {
+	if (!adc1_handle) {
+		return -1.0f;
+	}
+
+	int raw = 0;
+	if (adc_oneshot_read(adc1_handle, ch, &raw) != ESP_OK) {
+		return -1.0f;
+	}
+
+	if (cal_ok && adc1_cali_handle) {
+		int mv = 0;
+		if (adc_cali_raw_to_voltage(adc1_cali_handle, raw, &mv) == ESP_OK) {
+			return (float)mv / 1000.0f;
+		}
+	}
+
+	return (float)raw * (3.3f / 4095.0f);
 }
 #endif

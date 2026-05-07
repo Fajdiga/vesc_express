@@ -17,9 +17,7 @@ echo.
 REM Build JFBMS Slave
 echo [1/2] Building JFBMS Slave...
 echo ----------------------------------------
-set HW_SRC=hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.c
-set HW_HEADER=hwconf/jetfleet/jfbms_slave/hw_jfbms_slave.h
-idf.py -B build_slave build
+idf.py -B build_slave -DIDF_TARGET=esp32c3 -DHW_NAME=JFBMS_SLAVE -DSDKCONFIG=build_slave/sdkconfig build
 if %errorlevel% neq 0 (
     echo.
     echo ERROR: Slave build failed!
@@ -32,9 +30,7 @@ echo.
 REM Build JFBMS Master
 echo [2/2] Building JFBMS Master...
 echo ----------------------------------------
-set HW_SRC=hwconf/jetfleet/jfbms_master/hw_jfbms_master.c
-set HW_HEADER=hwconf/jetfleet/jfbms_master/hw_jfbms_master.h
-idf.py -B build_master build
+idf.py -B build_master -DIDF_TARGET=esp32c3 -DHW_NAME=JFBMS_MASTER -DSDKCONFIG=build_master/sdkconfig build
 if %errorlevel% neq 0 (
     echo.
     echo ERROR: Master build failed!

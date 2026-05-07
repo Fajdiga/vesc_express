@@ -1,0 +1,11 @@
+# Temporary debug defaults. Use only with a separate build directory:
+#   idf.py -B build-debug -DSDKCONFIG=build-debug/sdkconfig -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32c6;sdkconfig.debug" ...
+#
+# The production C6 build keeps USB-Serial-JTAG reserved for VESC packets.
+# This debug build intentionally routes console output there to capture early panics.
+CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y
+CONFIG_BOOTLOADER_LOG_LEVEL=3
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3

@@ -8,7 +8,7 @@
   "idf.espIdfPathWin": "C:\\Users\\mihap\\esp\\v5.5.2\\esp-idf",
   "idf.toolsPathWin": "C:\\Users\\mihap\\.espressif",
   "idf.pythonInstallPath": "C:\\Users\\mihap\\.espressif\\tools\\idf-python\\3.11.2\\python.exe",
-  "idf.currentSetup": "C:\\esp\\v5.5.3\\esp-idf",
+  "idf.currentSetup": "C:\\esp\\v6.0.1\\esp-idf",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32c6"
   },

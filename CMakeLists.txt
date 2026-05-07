@@ -133,6 +133,9 @@ if(DEFINED ENV{USER_GIT_BRANCH_NAME})
 endif()
 
 idf_build_set_property(COMPILE_OPTIONS "-fdiagnostics-color=always" APPEND)
+# ESP-IDF v6.0.1 FatFS trips GCC 15's unused-label warning when fast seek is
+# enabled. Keep this narrow so project warnings still fail normally.
+idf_build_set_property(COMPILE_OPTIONS "-Wno-error=unused-label" APPEND)
 
 add_custom_target(rename_bin ALL
     COMMAND ${CMAKE_COMMAND} -E echo "Running post_build script..."

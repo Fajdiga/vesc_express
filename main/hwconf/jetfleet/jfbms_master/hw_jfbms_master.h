@@ -215,8 +215,8 @@ typedef struct {
 
 // ADC - only available when CAN is on GPIO 6/7 (GPIO 0/1 free for ADC)
 #if !JFBMS_USE_CAN_IO_0_1
-#define HW_ADC_CH0					ADC1_CHANNEL_0 // DIV_CHG
-#define HW_ADC_CH1					ADC1_CHANNEL_1 // DIV_OUT
+#define HW_ADC_CH0					ADC_CHANNEL_0 // DIV_CHG
+#define HW_ADC_CH1					ADC_CHANNEL_1 // DIV_OUT
 #endif
 
 // Parameters
@@ -227,8 +227,8 @@ typedef struct {
 #define HW_GET_VOUT()				(0.0)
 #define HW_GET_VCHG()				(0.0)
 #else
-#define HW_GET_VOUT()				((adc_get_voltage(ADC1_CHANNEL_1) * (300.0e3 + 4.7e3)) / 4.7e3)
-#define HW_GET_VCHG()				((adc_get_voltage(ADC1_CHANNEL_0) * (300.0e3 + 4.7e3)) / 4.7e3)
+#define HW_GET_VOUT()				((adc_get_voltage(ADC_CHANNEL_1) * (300.0e3 + 4.7e3)) / 4.7e3)
+#define HW_GET_VCHG()				((adc_get_voltage(ADC_CHANNEL_0) * (300.0e3 + 4.7e3)) / 4.7e3)
 #endif
 
 // Master slave data storage

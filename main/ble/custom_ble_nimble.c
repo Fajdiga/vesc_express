@@ -50,9 +50,15 @@
 #include "main.h"
 
 #ifndef HW_BLE_PWR_LVL
+#if CONFIG_IDF_TARGET_ESP32C6
+#define HW_BLE_PWR_LVL ESP_PWR_LVL_P9
+#else
 #define HW_BLE_PWR_LVL ESP_PWR_LVL_P18
 #endif
+#endif
 #define ESP_PWR_LVL HW_BLE_PWR_LVL
+
+void ble_store_config_init(void);
 
 /* ---------- internal state (mirrors the Bluedroid version) ---------- */
 
@@ -593,6 +599,7 @@ static custom_ble_result_t gatt_rebuild(void) {
 
 	ble_svc_gap_init();
 	ble_svc_gatt_init();
+	ble_store_config_init();
 	ble_svc_gap_device_name_set(device_name);
 
 	// Mark all service/attr slots as un-initialized; the register cb will

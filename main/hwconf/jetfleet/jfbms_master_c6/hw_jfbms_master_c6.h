@@ -34,7 +34,6 @@
 
 #define PCB_VERSION					1
 
-#define HW_EARLY_LBM_INIT
 #define HW_NO_UART
 #define HW_INIT_HOOK()				hw_init()
 #define HW_SHUTDOWN_HOOK()			hw_shutdown()
@@ -212,13 +211,13 @@ typedef struct {
 // GPIO2 = current sense amp output (1 mΩ shunt, 50× gain, center ~1.65 V)
 // GPIO3 = charger voltage divider (300 kΩ : 4.7 kΩ → 64.83×)
 // GPIO4 = NTC NCP18XH103F03RB (10 k @ 25 °C, B25/85 = 3434), 10 kΩ pull-up to 3.3 V
-#define HW_ADC_CH2					ADC1_CHANNEL_2 // Current sense
-#define HW_ADC_CH3					ADC1_CHANNEL_3 // Charger voltage divider
-#define HW_ADC_CH4					ADC1_CHANNEL_4 // PCB NTC
+#define HW_ADC_CH2					ADC_CHANNEL_2 // Current sense
+#define HW_ADC_CH3					ADC_CHANNEL_3 // Charger voltage divider
+#define HW_ADC_CH4					ADC_CHANNEL_4 // PCB NTC
 
 // VESC charge-detect helper: read divider scaled back to charger voltage.
 // (300 kΩ + 4.7 kΩ) / 4.7 kΩ = 64.83×. Returns -1.0 × 64.83 if ADC unavailable.
-#define HW_GET_VCHG()				((adc_get_voltage(ADC1_CHANNEL_3) * (300.0e3 + 4.7e3)) / 4.7e3)
+#define HW_GET_VCHG()				((adc_get_voltage(ADC_CHANNEL_3) * (300.0e3 + 4.7e3)) / 4.7e3)
 #define HW_GET_VOUT()				(0.0)
 
 // Master slave data storage

@@ -120,12 +120,21 @@ void lispif_init(void) {
 		heap_size *= 2;
 		mem_size = LBM_MEMORY_SIZE_KB(86);
 		bitmap_size = LBM_BITMAP_SIZE_KB(86);
-	} else if (backup.config.wifi_mode == WIFI_MODE_DISABLED ||
+	}
+#if CONFIG_IDF_TARGET_ESP32C6
+	else if (backup.config.ble_mode == BLE_MODE_DISABLED) {
+		heap_size *= 2;
+		mem_size = LBM_MEMORY_SIZE_KB(64);
+		bitmap_size = LBM_BITMAP_SIZE_KB(64);
+	}
+#else
+	else if (backup.config.wifi_mode == WIFI_MODE_DISABLED ||
 			backup.config.ble_mode == BLE_MODE_DISABLED) {
 		heap_size *= 2;
 		mem_size = LBM_MEMORY_SIZE_KB(64);
 		bitmap_size = LBM_BITMAP_SIZE_KB(64);
 	}
+#endif
 
 	heap = memalign(8, heap_size * sizeof(lbm_cons_t));
 	memory_array = heap_caps_malloc(mem_size * sizeof(uint32_t), MALLOC_CAP_DMA);

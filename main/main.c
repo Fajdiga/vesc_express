@@ -86,14 +86,17 @@ void app_main(void) {
 
 	{
 		nvs_handle_t my_handle;
-		nvs_open("vesc", NVS_READONLY, &my_handle);
-		size_t required_size = 0;
-		nvs_get_blob(my_handle, "backup", NULL, &required_size);
-
 		memset((void*)&backup, 0, sizeof(backup));
 
-		if (required_size == sizeof(backup_data)) {
-			nvs_get_blob(my_handle, "backup", (void*)&backup, &required_size);
+		if (nvs_open("vesc", NVS_READONLY, &my_handle) == ESP_OK) {
+			size_t required_size = 0;
+			nvs_get_blob(my_handle, "backup", NULL, &required_size);
+
+			if (required_size == sizeof(backup_data)) {
+				nvs_get_blob(my_handle, "backup", (void*)&backup, &required_size);
+			}
+
+			nvs_close(my_handle);
 		}
 
 		if (backup.controller_id_init_flag != VAR_INIT_CODE) {
@@ -116,8 +119,6 @@ void app_main(void) {
 			backup.config.controller_id = backup.controller_id;
 			backup.config.can_baud_rate = backup.can_baud_rate;
 		}
-
-		nvs_close(my_handle);
 	}
 
 	adc_init();

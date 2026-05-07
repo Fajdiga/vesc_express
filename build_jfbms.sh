@@ -1,28 +1,29 @@
-export TIMESTAMP=$(date -u +"%Y%m%d_%H%MZ")
-mkdir "output/${TIMESTAMP}"
+#!/usr/bin/env sh
+set -e
 
-idf.py fullclean
+TIMESTAMP=$(date -u +"%Y%m%d_%H%MZ")
+OUT_DIR="output/${TIMESTAMP}"
+mkdir -p "${OUT_DIR}"
 
-export HW_HEADER=hw_jf_bms32_v1_shutdown.h && 
-export HW_SRC=hw_jf_bms32.c && 
-export BIN_PREFIX=jf_bms32_v1_shutdown && 
-idf.py build
+build_one() {
+    hw_name="$1"
+    build_dir="$2"
+    bin_prefix="$3"
 
-idf.py clean
+    idf.py -B "${build_dir}" \
+        -DIDF_TARGET=esp32c3 \
+        -DHW_NAME="${hw_name}" \
+        -DSDKCONFIG="${build_dir}/sdkconfig" \
+        build
 
-export HW_HEADER=hw_jf_bms32_v1_noshutdown.h && 
-export HW_SRC=hw_jf_bms32.c && 
-export BIN_PREFIX=jf_bms32_v1_noshutdown && 
-idf.py build
+    cp "${build_dir}/github-code.bin" "${OUT_DIR}/${bin_prefix}.bin"
+}
 
-idf.py clean
+build_one "JFBMS32v1s"  "build_jfbms32_v1s"  "jf_bms32_v1_shutdown"
+build_one "JFBMS32v1ns" "build_jfbms32_v1ns" "jf_bms32_v1_noshutdown"
+build_one "JFBMS32v2"   "build_jfbms32_v2"   "jf_bms32_v2"
 
-export HW_HEADER=hw_jf_bms32_v2.h && 
-export HW_SRC=hw_jf_bms32.c && 
-export BIN_PREFIX=jf_bms32_v2 && 
-idf.py build
+cp "build_jfbms32_v2/partition_table/partition-table.bin" "${OUT_DIR}/partition-table.bin"
+cp "build_jfbms32_v2/bootloader/bootloader.bin" "${OUT_DIR}/bootloader.bin"
 
-cp "build/partition_table/partition-table.bin" "output/${TIMESTAMP}/partition-table.bin"
-cp "build/bootloader/bootloader.bin" "output/${TIMESTAMP}/bootloader.bin"
-
-zip -r -j "output/${TIMESTAMP}.zip" "output/${TIMESTAMP}"
+zip -r -j "output/${TIMESTAMP}.zip" "${OUT_DIR}"

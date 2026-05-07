@@ -142,9 +142,84 @@ def get_hw_configs():
     configs.sort(key=lambda x: (x['target'], x['name']))
     return configs
 
-def build_target(config, output_dir, prev_target=None, idx=0, total=0):
-    build_dir = "build"
-    shell = True if os.name == 'nt' else False
+def safe_name(name):
+    safe = re.sub(r'[^A-Za-z0-9_.-]+', '_', name).strip('_')
+    return safe if safe else "hw"
+
+def idf_command():
+    idf_py = os.environ.get("IDF_PY")
+    if idf_py:
+        return [idf_py]
+
+    idf_path = os.environ.get("IDF_PATH")
+    if idf_path:
+        idf_py = os.path.join(idf_path, "tools", "idf.py")
+        if os.path.exists(idf_py):
+            return [sys.executable, idf_py]
+
+    return ["idf.py"]
+
+def get_idf_version(idf_path):
+    version_header = os.path.join(idf_path, "components", "esp_common", "include", "esp_idf_version.h")
+    try:
+        with open(version_header, "r", encoding="utf-8") as f:
+            content = f.read()
+        major = re.search(r'#define\s+ESP_IDF_VERSION_MAJOR\s+(\d+)', content).group(1)
+        minor = re.search(r'#define\s+ESP_IDF_VERSION_MINOR\s+(\d+)', content).group(1)
+        patch = re.search(r'#define\s+ESP_IDF_VERSION_PATCH\s+(\d+)', content).group(1)
+        return f"{major}.{minor}.{patch}"
+    except Exception:
+        return None
+
+def idf_environment():
+    env = os.environ.copy()
+
+    idf_path = env.get("IDF_PATH")
+    if idf_path:
+        version = get_idf_version(idf_path)
+        if version:
+            env.setdefault("ESP_IDF_VERSION", version)
+
+    python_env_path = os.path.dirname(os.path.dirname(sys.executable))
+    if os.path.exists(os.path.join(python_env_path, "pyvenv.cfg")):
+        env.setdefault("IDF_PYTHON_ENV_PATH", python_env_path)
+
+        tools_path = os.path.abspath(os.path.join(python_env_path, "..", "..", ".."))
+        if os.path.exists(tools_path):
+            env.setdefault("IDF_TOOLS_PATH", tools_path)
+
+            path_dirs = []
+            for pattern in [
+                os.path.join(tools_path, "cmake", "*", "bin"),
+                os.path.join(tools_path, "ninja", "*"),
+                os.path.join(tools_path, "riscv32-esp-elf", "*", "riscv32-esp-elf", "bin"),
+                os.path.join(tools_path, "xtensa-esp-elf", "*", "xtensa-esp-elf", "bin"),
+            ]:
+                path_dirs.extend(sorted(glob.glob(pattern), reverse=True))
+
+            if path_dirs:
+                env["PATH"] = os.pathsep.join(path_dirs + [env.get("PATH", "")])
+
+    return env
+
+def remove_build_dir(build_dir, build_root):
+    abs_build_dir = os.path.abspath(build_dir)
+    abs_build_root = os.path.abspath(build_root)
+    common = os.path.commonpath([abs_build_dir, abs_build_root])
+
+    if common != abs_build_root or abs_build_dir == abs_build_root:
+        raise RuntimeError(f"Refusing to remove unexpected build dir: {abs_build_dir}")
+
+    if os.path.exists(abs_build_dir):
+        shutil.rmtree(abs_build_dir)
+
+def build_target(config, output_dir, fresh=False, idx=0, total=0):
+    build_root = os.path.join(output_dir, "_build_idf6")
+    build_dir = os.path.join(build_root, config['target'], safe_name(config['name']))
+    sdkconfig = os.path.abspath(os.path.join(build_dir, "sdkconfig"))
+    if fresh:
+        remove_build_dir(build_dir, build_root)
+    os.makedirs(build_dir, exist_ok=True)
 
     print_status(f"\n========================================")
     print_status(f"Building: {config['name']} ({config['target']})")
@@ -152,47 +227,39 @@ def build_target(config, output_dir, prev_target=None, idx=0, total=0):
     print_status(f"Dir: {build_dir}")
     print_status(f"========================================")
 
-    cmake_cache = os.path.join(build_dir, "CMakeCache.txt")
-    is_fresh = not os.path.exists(cmake_cache)
+    cmd_base = idf_command() + [
+        "-B", build_dir,
+        f"-DIDF_TARGET={config['target']}",
+        f"-DHW_NAME={config['name']}",
+        f"-DSDKCONFIG={sdkconfig}",
+    ]
 
-    # 1. Handle target configuration
-    # - Fresh build: pass IDF_TARGET as cmake var (avoids set-target's internal fullclean on empty dir)
-    # - Existing build, target changed: use set-target (which handles fullclean properly)
-    # - Existing build, same target: skip, go straight to build
-    if is_fresh:
-        cmd_base = ["idf.py", "-B", build_dir, f"-DIDF_TARGET={config['target']}", f"-DHW_NAME={config['name']}"]
-    else:
-        cmd_base = ["idf.py", "-B", build_dir, f"-DHW_NAME={config['name']}"]
-        if prev_target != config['target']:
-            set_status(f"{idx}/{total} | {config['name']} ({config['target']}) | Setting target")
-            print_status(f"--> Chip target changed ({prev_target} -> {config['target']}), setting target...")
-            res = run_streamed(cmd_base + ["set-target", config['target']], shell=shell)
-            if res.returncode != 0:
-                return False
-
-    # 2. Build
     set_status(f"{idx}/{total} | {config['name']} ({config['target']}) | Building")
     print_status("--> Building...")
-    res = run_streamed(cmd_base + ["build"], shell=shell)
+    res = run_streamed(cmd_base + ["build"], shell=False, env=idf_environment())
 
     if res.returncode == 0:
         print_status(f"SUCCESS: {config['name']}", Colors.OKGREEN)
 
-        # 3. Copy artifacts
         set_status(f"{idx}/{total} | {config['name']} ({config['target']}) | Copying artifacts")
         try:
             target_output_dir = os.path.join(output_dir, config['target'], config['name'])
             os.makedirs(target_output_dir, exist_ok=True)
 
-            # Source paths
-            src_bin = os.path.join(build_dir, "vesc_express.bin")
+            firmware_bins = [
+                p for p in glob.glob(os.path.join(build_dir, "*.bin"))
+                if os.path.isfile(p)
+            ]
+            if not firmware_bins:
+                raise FileNotFoundError(f"Missing firmware artifact in {build_dir}")
+
+            src_bin = max(firmware_bins, key=os.path.getmtime)
             src_boot = os.path.join(build_dir, "bootloader", "bootloader.bin")
             src_pt = os.path.join(build_dir, "partition_table", "partition-table.bin")
 
-            if not os.path.exists(src_bin):
-                raise FileNotFoundError(f"Missing artifact: {src_bin}")
             shutil.copy2(src_bin, os.path.join(target_output_dir, "vesc_express.bin"))
-            print_status(f"--> Copied bin to {target_output_dir}")
+            shutil.copy2(src_bin, os.path.join(target_output_dir, os.path.basename(src_bin)))
+            print_status(f"--> Copied firmware to {target_output_dir}")
 
             if not os.path.exists(src_boot):
                 raise FileNotFoundError(f"Missing artifact: {src_boot}")
@@ -233,26 +300,45 @@ REPLACEABLE_STRING
     # Declare an empty string
     res_string = ""
 
+    configs = get_hw_configs()
+    args = sys.argv[1:]
+    if "--list" in args:
+        for config in configs:
+            print(f"{config['target']}\t{config['name']}\t{config['file']}")
+        sys.exit(0)
+
+    fresh = "--fresh" in args or "--clean" in args
+    args = [arg for arg in args if arg not in ("--fresh", "--clean")]
+
     # Prepare output directory
     output_dir = "build_output"
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
         print_status(f"Created output directory: {output_dir}")
 
-    configs = get_hw_configs()
+    filters = [arg.lower() for arg in args]
+    if filters:
+        configs = [
+            config for config in configs
+            if any(
+                filt == config['target'].lower()
+                or filt in config['name'].lower()
+                or filt in config['file'].lower()
+                for filt in filters
+            )
+        ]
+
     total = len(configs)
     print_status(f"Found {total} hardware configurations.")
 
     success_count = 0
     failed_configs = []
-    prev_target = None
-
     init_status()
 
     try:
         for idx, config in enumerate(configs, start=1):
             set_status(f"{idx}/{total} | {config['name']} ({config['target']}) | Starting")
-            if build_target(config, output_dir, prev_target, idx, total):
+            if build_target(config, output_dir, fresh, idx, total):
                 success_count += 1
 
                 target_res_string = res_firmwares_string.replace("TARGET_DESTINATION_DIRECTORY",
@@ -266,8 +352,6 @@ REPLACEABLE_STRING
                 res_string = res_string + target_res_string
             else:
                 failed_configs.append(config['name'])
-
-            prev_target = config['target']
     except KeyboardInterrupt:
         clear_status()
         print_status("\nBuild interrupted by user.", Colors.WARNING)

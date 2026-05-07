@@ -38,11 +38,20 @@
 
 #define DEFAULT_BLE_MTU         20  // 23 - 3 ATT header
 #define MAX_BLE_PAYLOAD         255
+#define BLE_NOTIFY_MAX_RETRIES  8
+#define BLE_NOTIFY_RETRY_MS     5
+#define BLE_NOTIFY_CHUNK_GAP_MS 3
 
 #ifndef HW_BLE_PWR_LVL
+#if CONFIG_IDF_TARGET_ESP32C6
+#define HW_BLE_PWR_LVL ESP_PWR_LVL_P9
+#else
 #define HW_BLE_PWR_LVL ESP_PWR_LVL_P18
 #endif
+#endif
 #define ESP_PWR_LVL HW_BLE_PWR_LVL
+
+void ble_store_config_init(void);
 
 static bool         is_connected      = false;
 static uint16_t     ble_current_mtu   = DEFAULT_BLE_MTU;
@@ -169,12 +178,12 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg) {
 			return 0;
 
 		case BLE_GAP_EVENT_MTU:
-			if (event->mtu.value == 0) {
+			if (event->mtu.value <= 3) {
 				ble_current_mtu = DEFAULT_BLE_MTU;
-			} else if (event->mtu.value > MAX_BLE_PAYLOAD) {
-				ble_current_mtu = MAX_BLE_PAYLOAD;
 			} else {
-				ble_current_mtu = event->mtu.value - 3; // strip ATT header
+				uint16_t payload_mtu = event->mtu.value - 3; // strip ATT header
+				ble_current_mtu = payload_mtu > MAX_BLE_PAYLOAD ?
+						MAX_BLE_PAYLOAD : payload_mtu;
 			}
 			return 0;
 
@@ -280,19 +289,35 @@ static void send_packet_raw(unsigned char *buffer, unsigned int len) {
 			chunk = ble_current_mtu;
 		}
 
-		struct os_mbuf *om = ble_hs_mbuf_from_flat(buffer + bytes_sent, chunk);
-		if (om == NULL) {
-			return;
+		bool sent = false;
+
+		for (int attempt = 0; attempt <= BLE_NOTIFY_MAX_RETRIES; attempt++) {
+			struct os_mbuf *om = ble_hs_mbuf_from_flat(buffer + bytes_sent, chunk);
+			if (om == NULL) {
+				vTaskDelay(pdMS_TO_TICKS(BLE_NOTIFY_RETRY_MS));
+				continue;
+			}
+
+			int rc = ble_gattc_notify_custom(conn_handle, tx_char_val_handle, om);
+			if (rc == 0) {
+				sent = true;
+				break;
+			}
+
+			// notify_custom consumes the mbuf. Give the host/controller queues
+			// time to drain before retrying long VESC packets such as config XML.
+			vTaskDelay(pdMS_TO_TICKS(BLE_NOTIFY_RETRY_MS));
 		}
 
-		int rc = ble_gattc_notify_custom(conn_handle, tx_char_val_handle, om);
-		if (rc != 0) {
-			// notify_custom takes ownership of om on success; on failure it
-			// has already freed it internally (NimBLE contract).
+		if (!sent) {
 			return;
 		}
 
 		bytes_sent += chunk;
+
+		if (bytes_sent < len) {
+			vTaskDelay(pdMS_TO_TICKS(BLE_NOTIFY_CHUNK_GAP_MS));
+		}
 	}
 }
 
@@ -326,6 +351,7 @@ void comm_ble_init(void) {
 
 	ble_svc_gap_init();
 	ble_svc_gatt_init();
+	ble_store_config_init();
 
 	int rc = ble_gatts_count_cfg(gatt_svcs);
 	if (rc != 0) {
