@@ -21,7 +21,8 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=160
 
-# --- Bluetooth host stack: NimBLE (saves ~250 KB flash vs Bluedroid) ---
+# Bluetooth host stack: NimBLE saves flash vs Bluedroid, which helps keep C6
+# firmware inside the original 1600 KiB OTA slots.
 # C3 builds keep Bluedroid (sdkconfig.defaults). C6 alone uses NimBLE; the
 # CMake selector in main/CMakeLists.txt picks comm_ble_nimble.c +
 # custom_ble_nimble.c when CONFIG_BT_NIMBLE_ENABLED=y.
@@ -38,8 +39,5 @@ CONFIG_BT_NIMBLE_SM_LEGACY=y
 CONFIG_BT_NIMBLE_SM_SC=y
 CONFIG_BT_NIMBLE_DEBUG=n
 
-# Use a C6-specific partition table with larger OTA slots (the C6 firmware
-# image with NimBLE+WiFi is ~1.5 MB, which still doesn't fit C3's 1600 KB
-# OTA slots — and we keep the larger 1856 KB slots for headroom).
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partition_ota_c6.csv"
-CONFIG_PARTITION_TABLE_FILENAME="partition_ota_c6.csv"
+# Keep the common Vedder 4 MB OTA layout for compatibility with devices that
+# already have the original partition table in flash.

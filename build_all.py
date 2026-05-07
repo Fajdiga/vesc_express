@@ -8,6 +8,8 @@ import shutil
 import threading
 import time
 
+ORIGINAL_OTA_SLOT_SIZE = 1600 * 1024
+
 # Color setup
 class Colors:
     HEADER = '\033[95m'
@@ -174,6 +176,12 @@ def get_idf_version(idf_path):
 def idf_environment():
     env = os.environ.copy()
 
+    # The ESP-IDF export shell can leave IDF_TARGET set from a previous build
+    # (for example esp32c6). This script builds mixed targets, so let the
+    # per-target -DIDF_TARGET argument below be the only target selector.
+    for key in ("IDF_TARGET", "IDF_TARGETS", "IDF_TARGET_PATH"):
+        env.pop(key, None)
+
     idf_path = env.get("IDF_PATH")
     if idf_path:
         version = get_idf_version(idf_path)
@@ -254,6 +262,12 @@ def build_target(config, output_dir, fresh=False, idx=0, total=0):
                 raise FileNotFoundError(f"Missing firmware artifact in {build_dir}")
 
             src_bin = max(firmware_bins, key=os.path.getmtime)
+            src_bin_size = os.path.getsize(src_bin)
+            if src_bin_size > ORIGINAL_OTA_SLOT_SIZE:
+                raise RuntimeError(
+                    f"Firmware is {src_bin_size} bytes, larger than the original "
+                    f"1600 KiB OTA slot ({ORIGINAL_OTA_SLOT_SIZE} bytes)"
+                )
             src_boot = os.path.join(build_dir, "bootloader", "bootloader.bin")
             src_pt = os.path.join(build_dir, "partition_table", "partition-table.bin")
 
