@@ -1717,8 +1717,8 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 	bms->temps_adc[3] = -300.0f;                                         // Mosfet N/A
 	bms->temps_adc[4] = -300.0f;                                         // Ambient N/A
 	int temps_count = 5;
-	for (int s = 0; s < MAX_SLAVES; s++) {
-		for (int t = 0; t < TEMPS_PER_SLAVE; t++) {
+	for (int s = 0; s < MAX_SLAVES && temps_count < BMS_MAX_TEMPS; s++) {
+		for (int t = 0; t < TEMPS_PER_SLAVE && temps_count < BMS_MAX_TEMPS; t++) {
 			int16_t raw = m_bms_data.temperatures[s][t];
 			if (raw == 0x7FFF) continue;
 			float temp_c = (float)raw / 10.0f;
