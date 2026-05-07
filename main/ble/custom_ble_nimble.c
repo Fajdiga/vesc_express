@@ -220,6 +220,8 @@ static bool get_service_index(uint16_t service_handle, custom_ble_id_t *idx_out)
 /* ---------- NimBLE service-table builder ----------
 
    We build everything from custom_services[] / custom_attr[] each rebuild.
+   `initialized` only means NimBLE has reported a handle for the entry, so
+   staged entries must still be included while a rebuild is in progress.
    All the heap allocations below are owned by `built_*` and freed at the
    start of the next rebuild (or in custom_ble_init failure paths).
 */
@@ -260,7 +262,6 @@ static int build_service_tables(void) {
 	uint16_t total_chrs = 0;
 	uint16_t total_dscs = 0;
 	for (size_t i = 0; i < custom_attr_len; i++) {
-		if (!custom_attr[i].initialized) continue; // shouldn't happen mid-rebuild
 		if (custom_attr[i].type == CUSTOM_BLE_TYPE_CHR)   total_chrs++;
 		else                                              total_dscs++;
 	}
@@ -303,7 +304,6 @@ static int build_service_tables(void) {
 		size_t svc_chr_count = 0;
 
 		for (size_t a = 0; a < custom_attr_len; a++) {
-			if (!custom_attr[a].initialized) continue;
 			if (custom_attr[a].service_index != s) continue;
 			if (custom_attr[a].type != CUSTOM_BLE_TYPE_CHR) continue;
 
@@ -319,7 +319,6 @@ static int build_service_tables(void) {
 			if (built_dscs) {
 				chr_dscs = &built_dscs[dsc_pool_idx];
 				for (size_t d = a + 1; d < custom_attr_len; d++) {
-					if (!custom_attr[d].initialized) continue;
 					if (custom_attr[d].service_index != s) continue;
 					if (custom_attr[d].type == CUSTOM_BLE_TYPE_CHR) break;
 					// Descriptor of this chr.
