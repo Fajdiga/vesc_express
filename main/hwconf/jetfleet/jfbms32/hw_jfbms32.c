@@ -1691,19 +1691,9 @@ void hw_init(void) {
 	gpio_set_intr_type(PIN_SHUTDOWN, GPIO_INTR_DISABLE); // CHANGE FROM VBMS32 -- ADDED
 	gpio_set_direction(PIN_SHUTDOWN, GPIO_MODE_OUTPUT_OD); // CHANGE FROM VBMS32 -- ADDED
 
-	#if PCB_VERSION == 1 && defined SHUTDOWN_SUPPORT
-		gpio_set_pull_mode(PIN_SHUTDOWN, GPIO_PULLUP_ONLY);
-	#else
-		gpio_set_pull_mode(PIN_SHUTDOWN, GPIO_FLOATING);
-	#endif
+	gpio_set_pull_mode(PIN_SHUTDOWN, GPIO_FLOATING);
 
 	gpio_set_level(PIN_SHUTDOWN, 1); // CHANGE FROM VBMS32 gpio_set_level(PIN_PCHG_EN, 0);
-
-	#if PCB_VERSION == 1 && defined SHUTDOWN_SUPPORT
-		//Make sure we hold SHUTDOWN to 1 so that the DCDC does not turn off, also make enable it during sleep
-		gpio_hold_en(PIN_SHUTDOWN);
-		gpio_deep_sleep_hold_en();
-	#endif
 
 	gpio_set_level(PIN_PSW_EN, 1); // CHANGE FROM VBMS32 gpio_set_level(PIN_PSW_EN, 0);
 	gpio_set_level(PIN_COM_EN, 1);

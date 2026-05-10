@@ -3,9 +3,9 @@
 #include <string.h>
 #include "buffer.h"
 #include "conf_general.h"
-#include "jf_bms32_confparser.h"
+#include "jfbms32_confparser.h"
 
-int32_t jf_bms32_confparser_serialize_main_config_t(uint8_t *buffer, const main_config_t *conf) {
+int32_t jfbms32_confparser_serialize_main_config_t(uint8_t *buffer, const main_config_t *conf) {
 	int32_t ind = 0;
 
 	buffer_append_uint32(buffer, MAIN_CONFIG_T_SIGNATURE, &ind);
@@ -79,7 +79,7 @@ int32_t jf_bms32_confparser_serialize_main_config_t(uint8_t *buffer, const main_
 	return ind;
 }
 
-bool jf_bms32_confparser_deserialize_main_config_t(const uint8_t *buffer, main_config_t *conf) {
+bool jfbms32_confparser_deserialize_main_config_t(const uint8_t *buffer, main_config_t *conf) {
 	int32_t ind = 0;
 
 	uint32_t signature = buffer_get_uint32(buffer, &ind);
@@ -156,7 +156,7 @@ bool jf_bms32_confparser_deserialize_main_config_t(const uint8_t *buffer, main_c
 	return true;
 }
 
-void jf_bms32_confparser_set_defaults_main_config_t(main_config_t *conf) {
+void jfbms32_confparser_set_defaults_main_config_t(main_config_t *conf) {
 	conf->controller_id = HW_DEFAULT_ID;
 	conf->can_baud_rate = CONF_CAN_BAUD_RATE;
 	conf->can_status_rate_hz = CONF_CAN_STATUS_RATE_HZ;

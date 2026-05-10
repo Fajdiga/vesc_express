@@ -138,7 +138,7 @@ set(COMPONENT_ADD_INCLUDEDIRS
 "hwconf/vesc"
 "hwconf/vesc/vbms32"
 "hwconf/jetfleet"
-"hwconf/jetfleet/bms32"
+"hwconf/jetfleet/jfbms32"
 "hwconf/jetfleet/jfbms_slave"
 "hwconf/jetfleet/jfbms_master"
 "hwconf/jetfleet/jfbms_master_c6"

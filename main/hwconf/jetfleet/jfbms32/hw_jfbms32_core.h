@@ -1,5 +1,5 @@
-#ifndef MAIN_HWCONF_JF_BMS32_CORE_H_
-#define MAIN_HWCONF_JF_BMS32_CORE_H_
+#ifndef MAIN_HWCONF_JFBMS32_CORE_H_
+#define MAIN_HWCONF_JFBMS32_CORE_H_
 
 #include "adc.h"
 #include "driver/gpio.h"
@@ -14,14 +14,14 @@
 //#define HW_POST_LISPIF_HOOK()		vTaskDelay(200);
 
 // Configuration overrides
-#define OVR_CONF_PARSER_C			"jf_bms32_confparser.c"
-#define OVR_CONF_PARSER_H			"jf_bms32_confparser.h"
-#define OVR_CONF_XML_C				"jf_bms32_confxml.c"
-#define OVR_CONF_XML_H				"jf_bms32_confxml.h"
-#define OVR_CONF_DEFAULT			"jf_bms32_conf_default.h"
-#define OVR_CONF_SERIALIZE			jf_bms32_confparser_serialize_main_config_t
-#define OVR_CONF_DESERIALIZE		jf_bms32_confparser_deserialize_main_config_t
-#define OVR_CONF_SET_DEFAULTS		jf_bms32_confparser_set_defaults_main_config_t
+#define OVR_CONF_PARSER_C			"jfbms32_confparser.c"
+#define OVR_CONF_PARSER_H			"jfbms32_confparser.h"
+#define OVR_CONF_XML_C				"jfbms32_confxml.c"
+#define OVR_CONF_XML_H				"jfbms32_confxml.h"
+#define OVR_CONF_DEFAULT			"jfbms32_conf_default.h"
+#define OVR_CONF_SERIALIZE			jfbms32_confparser_serialize_main_config_t
+#define OVR_CONF_DESERIALIZE		jfbms32_confparser_deserialize_main_config_t
+#define OVR_CONF_SET_DEFAULTS		jfbms32_confparser_set_defaults_main_config_t
 #define OVR_CONF_MAIN_CONFIG
 #define VAR_INIT_CODE				259763459
 
@@ -205,4 +205,4 @@ typedef struct {
 // Functions
 void hw_init(void);
 
-#endif /* MAIN_HWCONF_JF_BMS32_CORE_H_ */
+#endif /* MAIN_HWCONF_JFBMS32_CORE_H_ */
