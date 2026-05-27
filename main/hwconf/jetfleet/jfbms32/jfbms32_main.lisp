@@ -8,6 +8,7 @@
 (def sleep-unblock-en true) ; Enable automatic sleep unblocking
 (def app-wdt-timeout 120) ; Seconds. Set to 0 to disable the app watchdog.
 (def user-beeps-en true) ; Enable normal user feedback beeps.
+(def critical-beep-duty 0.5) ; Loud duty cycle for critical fault alarms.
 
 ;;;;;;;;; End User Settings ;;;;;;;;;
 
@@ -116,11 +117,11 @@ loopwhile-thd
 (defun bms-current-raw () (* (bms-get-current) -1.0 current-scale))
 (defun bms-current () (- (bms-current-raw) current-zero-offset))
 
-(defun beep (times dt) {
+(defun beep-duty (times dt duty) {
         (mutex-lock buz-mutex)
 
         (loopwhile (> times 0) {
-                (pwm-set-duty 0.01 0)
+                (pwm-set-duty duty 0)
                 (sleep dt)
                 (pwm-set-duty 0.0 0)
                 (sleep dt)
@@ -128,6 +129,14 @@ loopwhile-thd
         })
 
         (mutex-unlock buz-mutex)
+})
+
+(defun beep (times dt) {
+        (beep-duty times dt 0.01)
+})
+
+(defun critical-beep (times dt) {
+        (beep-duty times dt critical-beep-duty)
 })
 
 (defun user-beep (times dt) {
@@ -260,9 +269,9 @@ loopwhile-thd
 
 (defun bq-wake-debug-beep (stage) {
         ; BQ wake/init issue marker: 6 fast beeps, pause, then stage count.
-        (beep 6 0.04)
+        (critical-beep 6 0.04)
         (sleep 0.4)
-        (beep stage 0.18)
+        (critical-beep stage 0.18)
 })
 
 (defun bq-exit-deepsleep-all () {
@@ -586,7 +595,7 @@ loopwhile-thd
     (print "BMS hardware shutdown failed")
     (loopwhile t {
         (fail-close-outputs true)
-        (beep 20 0.05)
+        (critical-beep 20 0.05)
         (sleep 0.5)
     })
 })
