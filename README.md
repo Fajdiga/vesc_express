@@ -21,18 +21,18 @@ At the moment development is done using the stable 6.0.1 release. Note that diff
 
 ## Building
 
-Set the target chip/architecture with 
+Set the target chip/architecture with
 ```bash
 idf.py set-target <target> 
 ```
 
 where target is esp32c3, esp32c6 or esp32s3. You will need to run a fullclean or remove the build directory when changing targets.
 
-Each normal build target uses its own shared base file `sdkconfig.defaults.<target>`.
+The default hardware profile is `JFBMS32v2`. Each normal build target uses its own shared base file `sdkconfig.defaults.<target>`, or a target-suffixed file such as `sdkconfig.defaults.esp32c6_fh8` when the selected hardware defines a flash/PSRAM variant.
 
 Boards that need non-default flash or PSRAM settings can provide `sdkconfig.defaults.<hw_file>` next to the shared target configs in the repository root. Hardware defaults are applied after the shared target defaults, so they only need to contain the board-specific overrides.
 
-For ESP32-C6 builds, use `Devkit C6 8M` for 8 MB flash modules and `Devkit C6 4M` for 4 MB flash modules.
+For ESP32-C6 builds, use `Devkit C6 FH8` for 8 MB flash modules and `Devkit C6 FH4` for 4 MB flash modules.
 
 The private JFBMS master/slave CAN bus uses standard 11-bit CAN IDs. The frame
 layout is documented in [main/hwconf/jetfleet/jfbms_slave/BMS_MASTER_SLAVE_PROTOCOL.md](main/hwconf/jetfleet/jfbms_slave/BMS_MASTER_SLAVE_PROTOCOL.md).

@@ -99,20 +99,108 @@ extern lbm_const_heap_t *lbm_const_heap_state;
 #define LBM_MEMORY_SIZE_KB(kb) LBM_MEMORY_SIZE_64BYTES_TIMES_X((kb * 16))
 #define LBM_BITMAP_SIZE_KB(kb) LBM_MEMORY_BITMAP_SIZE((kb * 16))
 
+#ifdef CONFIG_IDF_TARGET_ESP32P4
+#define LBM_PSRAM_HEAP_BYTES   (4096 * 32)
+#define LBM_PSRAM_MEMORY_KB    2048
+#define LBM_PSRAM_BITMAP_KB    2048
+#else
 #define LBM_PSRAM_HEAP_BYTES   (4096 * 16)
 #define LBM_PSRAM_MEMORY_KB    512
 #define LBM_PSRAM_BITMAP_KB    512
+#endif
+
+static void lispif_free_storage(void) {
+	if (heap) {
+		free(heap);
+		heap = 0;
+	}
+
+	if (memory_array) {
+		heap_caps_free(memory_array);
+		memory_array = 0;
+	}
+
+	if (bitmap_array) {
+		heap_caps_free(bitmap_array);
+		bitmap_array = 0;
+	}
+}
+
+static bool lispif_alloc_internal_storage(size_t preferred_heap_size, int preferred_memory_kb) {
+	size_t heap_candidates[] = {
+		preferred_heap_size,
+		(preferred_heap_size * 3) / 4,
+		preferred_heap_size / 2,
+		1024
+	};
+	int mem_candidates[] = {
+		preferred_memory_kb,
+		(preferred_memory_kb * 3) / 4,
+		preferred_memory_kb / 2,
+		16
+	};
+	size_t last_heap = 0;
+	int last_mem = 0;
+
+	for (size_t i = 0;i < (sizeof(heap_candidates) / sizeof(heap_candidates[0]));i++) {
+		size_t heap_try = heap_candidates[i];
+		int mem_kb_try = mem_candidates[i];
+
+		if (heap_try < 1024) {
+			heap_try = 1024;
+		}
+
+		if (mem_kb_try < 16) {
+			mem_kb_try = 16;
+		}
+
+		if (heap_try == last_heap && mem_kb_try == last_mem) {
+			continue;
+		}
+
+		last_heap = heap_try;
+		last_mem = mem_kb_try;
+		heap_size = heap_try;
+		mem_size = LBM_MEMORY_SIZE_KB(mem_kb_try);
+		bitmap_size = LBM_BITMAP_SIZE_KB(mem_kb_try);
+
+		heap = memalign(8, heap_size * sizeof(lbm_cons_t));
+		memory_array = heap_caps_malloc(mem_size * sizeof(uint32_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+		bitmap_array = heap_caps_malloc(bitmap_size * sizeof(uint32_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+
+		if (heap && memory_array && bitmap_array) {
+			if (heap_try != preferred_heap_size || mem_kb_try != preferred_memory_kb) {
+				commands_printf_lisp("LispBM using reduced memory: heap=%u bytes mem=%d KB free=%u",
+						(unsigned)(heap_size * sizeof(lbm_cons_t)),
+						mem_kb_try,
+						(unsigned)esp_get_free_heap_size());
+			}
+			return true;
+		}
+
+		commands_printf_lisp("LispBM malloc retry: heap=%p mem=%p bmp=%p free=%u",
+				heap, memory_array, bitmap_array,
+				(unsigned)esp_get_free_heap_size());
+		lispif_free_storage();
+	}
+
+	return false;
+}
+
 
 void lispif_init(void) {
+	lbm_mutex = xSemaphoreCreateMutex();
+
 #ifndef CONFIG_SPIRAM
 #ifdef CONFIG_IDF_TARGET_ESP32S3
 	heap_size = (4096 + 512);
-	mem_size = LBM_MEMORY_SIZE_KB(48);
-	bitmap_size = LBM_BITMAP_SIZE_KB(48);
+	int memory_kb = 48;
 #elif CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C6
 	heap_size = (2048 + 512);
-	mem_size = LBM_MEMORY_SIZE_KB(32);
-	bitmap_size = LBM_BITMAP_SIZE_KB(32);
+	int memory_kb = 32;
+#elif CONFIG_IDF_TARGET_ESP32P4
+	heap_size = (4096 + 512);
+	int memory_kb = 32;
 #else
 	#error "Unsupported target"
 #endif
@@ -126,12 +214,16 @@ void lispif_init(void) {
 #endif
 	if (!wifi_active && !ble_active) {
 		heap_size *= 2;
-		mem_size = LBM_MEMORY_SIZE_KB(86);
-		bitmap_size = LBM_BITMAP_SIZE_KB(86);
+		memory_kb = 86;
 	} else if (!wifi_active || !ble_active) {
 		heap_size *= 2;
-		mem_size = LBM_MEMORY_SIZE_KB(64);
-		bitmap_size = LBM_BITMAP_SIZE_KB(64);
+		memory_kb = 64;
+	}
+
+	if (!lispif_alloc_internal_storage(heap_size, memory_kb)) {
+		commands_printf_lisp("LispBM malloc failed after retries (free heap: %u)",
+				(unsigned)esp_get_free_heap_size());
+		return;
 	}
 #endif
 
@@ -142,19 +234,16 @@ void lispif_init(void) {
 	bitmap_size = LBM_BITMAP_SIZE_KB(LBM_PSRAM_BITMAP_KB);
 	memory_array = heap_caps_malloc(mem_size * sizeof(uint32_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 	bitmap_array = heap_caps_malloc(bitmap_size * sizeof(uint32_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-#else
-	heap = memalign(8, heap_size * sizeof(lbm_cons_t));
-	memory_array = heap_caps_malloc(mem_size * sizeof(uint32_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-	bitmap_array = heap_caps_malloc(bitmap_size * sizeof(uint32_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-#endif
 
 	if (!heap || !memory_array || !bitmap_array) {
 		commands_printf_lisp("LispBM malloc failed: heap=%p mem=%p bmp=%p (free heap: %u)",
 				heap, memory_array, bitmap_array,
 				(unsigned)esp_get_free_heap_size());
+		lispif_free_storage();
+		return;
 	}
+#endif
 
-	lbm_mutex = xSemaphoreCreateMutex();
 	lispif_restart(false, true, true);
 
 #ifdef LBM_USE_TIME_QUOTA
@@ -811,6 +900,13 @@ bool lispif_restart(bool print, bool load_code, bool load_imports) {
 
 	restart_cnt++;
 	string_tok_valid = false;
+
+	if (!heap || !memory_array || !bitmap_array) {
+		if (print) {
+			commands_printf_lisp("LispBM is not running: memory allocation failed");
+		}
+		return false;
+	}
 
 	if (prof_running) {
 		prof_running = false;

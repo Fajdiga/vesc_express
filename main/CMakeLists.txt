@@ -154,6 +154,7 @@ if(VESC_ENABLE_DISPLAY)
         "display/disp_axs15231.c"
         "display/disp_gc9a01.c"
         "display/disp_jd9853.c"
+        "display/disp_st7701.c"
     )
 endif()
 
@@ -310,6 +311,10 @@ target_compile_definitions(${COMPONENT_LIB} PUBLIC
     VESC_ENABLE_TOUCH=${VESC_ENABLE_TOUCH}
     VESC_ENABLE_STORAGE=${VESC_ENABLE_STORAGE}
 )
+
+if(CONFIG_COMPILER_OPTIMIZATION_PERF)
+    target_compile_options(${COMPONENT_LIB} PRIVATE -O2)
+endif()
 
 if(VESC_ENABLE_DISPLAY)
     # esp_lcd_axs15231b 1.0.1 still uses the IDF 5 panel config field name.
