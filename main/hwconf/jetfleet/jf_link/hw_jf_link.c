@@ -38,6 +38,7 @@
 #define JFBMS_CAN_BUF_SIZE			128
 #define JFBMS_TASK_PERIOD_MS		50
 #define JFBMS_STATUS_PERIOD_MS		100
+#define JFBMS_CAN_STATUS_QUIET_AFTER_FWD_MS	1500
 #define JFBMS_BAL_KEEPALIVE_MS		1000
 #define JFBMS_BAL_SETTLE_MIN_MS		2000
 #define JFBMS_BAL_SETTLE_TIMEOUT_MS	5000
@@ -1101,7 +1102,8 @@ static void jf_link_task(void *arg) {
 		if (ticks_elapsed(now, last_status_ticks, JFBMS_STATUS_PERIOD_MS)) {
 			check_slave_timeouts(backup.config.slave_timeout_s);
 			update_vesc_bms_values();
-			if (backup.config.can_status_rate_hz != 0) {
+			if (backup.config.can_status_rate_hz != 0 &&
+					!comm_can_send_buffer_recent(JFBMS_CAN_STATUS_QUIET_AFTER_FWD_MS)) {
 				bms_send_status_can();
 			}
 			check_connection_changes();
@@ -1363,7 +1365,55 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 
 	commands_printf_lisp("JF Link CAN buf: head=%d tail=%d overflow=%lu",
 			m_can_rx_head, m_can_rx_tail, (unsigned long)m_can_rx_overflow);
-	commands_printf_lisp("CAN core: rx_recovery=%d", comm_can_get_rx_recovery_cnt());
+
+	comm_can_debug_info_t can_dbg;
+	comm_can_get_debug_info(&can_dbg);
+
+	commands_printf_lisp("JF Link cfg: id=%d baud=%d status-hz=%d slaves=%d",
+			backup.config.controller_id,
+			backup.config.can_baud_rate,
+			backup.config.can_status_rate_hz,
+			cfg_num_slaves());
+	commands_printf_lisp(
+			"CAN core: rx_recovery=%d tx_retry_eid=%lu tx_drain=%lu tx_fail_eid=%lu tx_fail_sid=%lu fwd_fail=%lu drain_fail=%lu",
+			comm_can_get_rx_recovery_cnt(),
+			(unsigned long)can_dbg.tx_eid_retry,
+			(unsigned long)can_dbg.tx_drain_retry,
+			(unsigned long)can_dbg.tx_eid_fail,
+			(unsigned long)can_dbg.tx_sid_fail,
+			(unsigned long)can_dbg.tx_send_buffer_fail,
+			(unsigned long)can_dbg.tx_drain_fail);
+	commands_printf_lisp(
+			"CAN fwd tx: short=%lu fill=%lu fill-long=%lu proc=%lu last dst=%u src=%u send=%u len=%u",
+			(unsigned long)can_dbg.tx_process_short,
+			(unsigned long)can_dbg.tx_fill_rx,
+			(unsigned long)can_dbg.tx_fill_rx_long,
+			(unsigned long)can_dbg.tx_process_rx,
+			can_dbg.last_tx_dst_id,
+			can_dbg.last_tx_src_id,
+			can_dbg.last_tx_send,
+			can_dbg.last_tx_len);
+	commands_printf_lisp(
+			"CAN fwd rx: short=%lu proc=%lu fill=%lu fill-long=%lu reply-s=%lu reply-p=%lu req-s=%lu req-p=%lu last id=%u pkt=%u from=%u send=%u len=%u",
+			(unsigned long)can_dbg.rx_process_short,
+			(unsigned long)can_dbg.rx_process_rx,
+			(unsigned long)can_dbg.rx_fill_rx,
+			(unsigned long)can_dbg.rx_fill_rx_long,
+			(unsigned long)can_dbg.rx_forward_reply_short,
+			(unsigned long)can_dbg.rx_forward_reply_rx,
+			(unsigned long)can_dbg.rx_forward_request_short,
+			(unsigned long)can_dbg.rx_forward_request_rx,
+			can_dbg.last_rx_id,
+			can_dbg.last_rx_packet,
+			can_dbg.last_rx_last_id,
+			can_dbg.last_rx_send,
+			can_dbg.last_rx_len);
+	commands_printf_lisp(
+			"CAN rx err: overflow=%lu no-buf=%lu crc=%lu bad-len=%lu",
+			(unsigned long)can_dbg.rx_overflow,
+			(unsigned long)can_dbg.rx_no_buffer,
+			(unsigned long)can_dbg.rx_crc_fail,
+			(unsigned long)can_dbg.rx_bad_len);
 
 	uint32_t settle_age_ms = m_bal_settle_start_ticks == 0 ? 0 :
 			(now - m_bal_settle_start_ticks) * portTICK_PERIOD_MS;
@@ -1407,6 +1457,15 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 	return ENC_SYM_TRUE;
 }
 
+static lbm_value ext_can_debug_reset(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+
+	comm_can_reset_debug_info();
+	m_can_rx_overflow = 0;
+	return ENC_SYM_TRUE;
+}
+
 static void load_extensions(bool main_found) {
 	(void)main_found;
 
@@ -1435,11 +1494,17 @@ static void load_extensions(bool main_found) {
 	lbm_add_extension("master-send-bms-can", ext_send_bms_status_can);
 
 	lbm_add_extension("can-debug", ext_can_debug);
+	lbm_add_extension("can-debug-reset", ext_can_debug_reset);
 }
 
 void hw_init(void) {
 	m_data_mutex = xSemaphoreCreateMutex();
 	init_slave_data();
+
+	if (backup.config.controller_id != backup.controller_id) {
+		backup.config.controller_id = backup.controller_id;
+		main_store_backup_data();
+	}
 
 	gpio_config_t io_conf = {0};
 	io_conf.intr_type = GPIO_INTR_DISABLE;

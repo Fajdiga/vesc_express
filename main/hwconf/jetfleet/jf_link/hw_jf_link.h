@@ -40,7 +40,7 @@
 #define OVR_CONF_DESERIALIZE		jf_link_confparser_deserialize_main_config_t
 #define OVR_CONF_SET_DEFAULTS		jf_link_confparser_set_defaults_main_config_t
 #define OVR_CONF_MAIN_CONFIG
-#define VAR_INIT_CODE				259763459
+#define VAR_INIT_CODE				259763460
 
 typedef struct {
 	int controller_id;

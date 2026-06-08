@@ -54,8 +54,9 @@ static psw_status psw_stat[CAN_STATUS_MSGS_TO_STORE];
 
 #define RX_BUFFER_NUM				3
 #define RX_BUFFER_SIZE				PACKET_MAX_PL_LEN
-#define RXBUF_LEN					50
+#define RXBUF_LEN					200
 #define TXBUF_LEN					20
+#define TX_RETRY_ATTEMPTS			200
 
 typedef struct {
 	uint32_t identifier;
@@ -68,6 +69,8 @@ typedef struct {
 	twai_node_handle_t node;
 	can_rx_msg_t *rx_buf;
 	volatile int *rx_write;
+	volatile int *rx_read;
+	volatile uint32_t *rx_overflow;
 	int rx_len;
 } can_rx_ctx_t;
 
@@ -104,10 +107,15 @@ static volatile unsigned int rx_buffer_response_type = 1;
 static can_rx_msg_t rx_buf[RXBUF_LEN];
 static volatile int rx_write = 0;
 static volatile int rx_read = 0;
+static volatile uint32_t rx_overflow = 0;
 static volatile bool use_vesc_decoder = true;
+static volatile uint32_t send_buffer_last_ticks = 0;
+static comm_can_debug_info_t debug_info = {0};
 static can_rx_ctx_t can_rx_ctx = {
 	.rx_buf = rx_buf,
 	.rx_write = &rx_write,
+	.rx_read = &rx_read,
+	.rx_overflow = &rx_overflow,
 	.rx_len = RXBUF_LEN,
 };
 
@@ -117,12 +125,15 @@ static volatile bool can2_use_vesc_dec   = true;
 static can_rx_msg_t can2_rx_buf[RXBUF_LEN];
 static volatile int can2_rx_write = 0;
 static volatile int can2_rx_read = 0;
+static volatile uint32_t can2_rx_overflow = 0;
 static volatile int can2_recovery_cnt = 0;
 static can_tx_msg_t can2_tx_buf[TXBUF_LEN];
 static int can2_tx_write = 0;
 static can_rx_ctx_t can2_rx_ctx = {
 	.rx_buf = can2_rx_buf,
 	.rx_write = &can2_rx_write,
+	.rx_read = &can2_rx_read,
+	.rx_overflow = &can2_rx_overflow,
 	.rx_len = RXBUF_LEN,
 };
 #endif
@@ -131,6 +142,7 @@ static volatile int rx_recovery_cnt = 0;
 
 // Private functions
 static void update_baud(CAN_BAUD baudrate);
+static esp_err_t comm_can_transmit_locked(uint32_t id, const uint8_t *data, uint8_t len, bool ext);
 
 static esp_err_t transmit_twai_frame(twai_node_handle_t node, can_tx_msg_t *tx_buf,
 		int *tx_write, uint32_t id, const uint8_t *data, uint8_t len, bool ext) {
@@ -183,17 +195,23 @@ static bool IRAM_ATTR twai_rx_done_callback(twai_node_handle_t handle,
 		}
 
 		int write = *ctx->rx_write;
+		int next_write = write + 1;
+		if (next_write >= ctx->rx_len) {
+			next_write = 0;
+		}
+
+		if (next_write == *ctx->rx_read) {
+			(*ctx->rx_overflow)++;
+			return woken == pdTRUE;
+		}
+
 		can_rx_msg_t *msg = &ctx->rx_buf[write];
 		msg->identifier = frame.header.id;
 		msg->data_length_code = len;
 		msg->extd = frame.header.ide;
 		memcpy(msg->data, data, len);
 
-		write++;
-		if (write >= ctx->rx_len) {
-			write = 0;
-		}
-		*ctx->rx_write = write;
+		*ctx->rx_write = next_write;
 
 		if (proc_sem) {
 			xSemaphoreGiveFromISR(proc_sem, &woken);
@@ -339,9 +357,15 @@ static void decode_msg(uint32_t eid, uint8_t *data8, int len, bool is_replaced) 
 	uint8_t id = eid & 0xFF;
 	CAN_PACKET_ID cmd = eid >> 8;
 
+	debug_info.last_rx_eid = eid;
+	debug_info.last_rx_id = id;
+	debug_info.last_rx_packet = (uint8_t)cmd;
+	debug_info.last_rx_len = len;
+
 	if (id == 255 || id == backup.config.controller_id) {
 		switch (cmd) {
 		case CAN_PACKET_FILL_RX_BUFFER: {
+			debug_info.rx_fill_rx++;
 			int buf_ind = -1;
 			int offset = data8[0];
 			data8++;
@@ -367,6 +391,7 @@ static void decode_msg(uint32_t eid, uint8_t *data8, int len, bool is_replaced) 
 		} break;
 
 		case CAN_PACKET_FILL_RX_BUFFER_LONG: {
+			debug_info.rx_fill_rx_long++;
 			int buf_ind = -1;
 			int offset = (int)data8[0] << 8;
 			offset |= data8[1];
@@ -395,9 +420,18 @@ static void decode_msg(uint32_t eid, uint8_t *data8, int len, bool is_replaced) 
 		} break;
 
 		case CAN_PACKET_PROCESS_RX_BUFFER: {
+			debug_info.rx_process_rx++;
 			ind = 0;
 			unsigned int last_id = data8[ind++];
 			commands_send = data8[ind++];
+			debug_info.last_rx_last_id = last_id;
+			debug_info.last_rx_send = commands_send;
+
+			if (commands_send == 1) {
+				debug_info.rx_forward_reply_rx++;
+			} else if (commands_send == 0 || commands_send == 3) {
+				debug_info.rx_forward_request_rx++;
+			}
 
 			if (commands_send == 0 || commands_send == 3) {
 				rx_buffer_last_id = last_id;
@@ -413,6 +447,7 @@ static void decode_msg(uint32_t eid, uint8_t *data8, int len, bool is_replaced) 
 			rxbuf_len |= (int)data8[ind++];
 
 			if (rxbuf_len > RX_BUFFER_SIZE) {
+				debug_info.rx_bad_len++;
 				break;
 			}
 
@@ -426,6 +461,7 @@ static void decode_msg(uint32_t eid, uint8_t *data8, int len, bool is_replaced) 
 
 			// Something is wrong, reset all buffers
 			if (buf_ind < 0) {
+				debug_info.rx_no_buffer++;
 				for (int i = 0; i < RX_BUFFER_NUM;i++) {
 					rx_buffer_offset[i] = 0;
 				}
@@ -465,13 +501,24 @@ static void decode_msg(uint32_t eid, uint8_t *data8, int len, bool is_replaced) 
 				default:
 					break;
 				}
+			} else {
+				debug_info.rx_crc_fail++;
 			}
 		} break;
 
 		case CAN_PACKET_PROCESS_SHORT_BUFFER:
+			debug_info.rx_process_short++;
 			ind = 0;
 			unsigned int last_id = data8[ind++];
 			commands_send = data8[ind++];
+			debug_info.last_rx_last_id = last_id;
+			debug_info.last_rx_send = commands_send;
+
+			if (commands_send == 1) {
+				debug_info.rx_forward_reply_short++;
+			} else if (commands_send == 0 || commands_send == 3) {
+				debug_info.rx_forward_request_short++;
+			}
 
 			if (commands_send == 0 || commands_send == 3) {
 				rx_buffer_last_id = last_id;
@@ -1039,6 +1086,31 @@ int comm_can_get_rx_recovery_cnt(void) {
 	return rx_recovery_cnt;
 }
 
+void comm_can_get_debug_info(comm_can_debug_info_t *info) {
+	if (info) {
+		*info = debug_info;
+		info->rx_overflow = rx_overflow;
+	}
+}
+
+void comm_can_reset_debug_info(void) {
+	memset(&debug_info, 0, sizeof(debug_info));
+	rx_overflow = 0;
+#ifdef CONFIG_IDF_TARGET_ESP32C6
+	can2_rx_overflow = 0;
+#endif
+}
+
+bool comm_can_send_buffer_recent(int msec) {
+	uint32_t last_ticks = send_buffer_last_ticks;
+	if (last_ticks == 0 || msec <= 0) {
+		return false;
+	}
+
+	uint32_t elapsed_ms = (xTaskGetTickCount() - last_ticks) * portTICK_PERIOD_MS;
+	return elapsed_ms < (uint32_t)msec;
+}
+
 void comm_can_use_vesc_decoder(bool use_vesc_dec) {
 	use_vesc_decoder = use_vesc_dec;
 }
@@ -1123,7 +1195,7 @@ void comm_can_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len) {
 		return;
 	}
 
-	transmit_twai_frame(can_node, can_tx_buf, &can_tx_write, id, data, len, true);
+	comm_can_transmit_locked(id, data, len, true);
 
 	xSemaphoreGive(send_mutex);
 }
@@ -1144,9 +1216,91 @@ void comm_can_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len) {
 		return;
 	}
 
-	transmit_twai_frame(can_node, can_tx_buf, &can_tx_write, id, data, len, false);
+	comm_can_transmit_locked(id, data, len, false);
 
 	xSemaphoreGive(send_mutex);
+}
+
+static esp_err_t comm_can_transmit_locked(uint32_t id, const uint8_t *data, uint8_t len, bool ext) {
+	if (len > 8) {
+		len = 8;
+	}
+
+	if (!init_done || !can_node) {
+		return ESP_ERR_INVALID_STATE;
+	}
+
+	esp_err_t res = ESP_FAIL;
+	for (int attempt = 0;attempt < TX_RETRY_ATTEMPTS;attempt++) {
+		res = transmit_twai_frame(can_node, can_tx_buf, &can_tx_write, id, data, len, ext);
+		if (res == ESP_OK) {
+			break;
+		}
+
+		if (ext) {
+			debug_info.tx_eid_retry++;
+		}
+		vTaskDelay(1);
+	}
+
+	if (res != ESP_OK) {
+		if (ext) {
+			debug_info.tx_eid_fail++;
+		} else {
+			debug_info.tx_sid_fail++;
+		}
+	}
+
+	return res;
+}
+
+static bool comm_can_should_quiet_status(const uint8_t *data, unsigned int len) {
+	if (!data || len == 0) {
+		return false;
+	}
+
+	if (len > 32) {
+		return true;
+	}
+
+	switch ((COMM_PACKET_ID)data[0]) {
+	case COMM_SET_MCCONF:
+	case COMM_GET_MCCONF:
+	case COMM_SET_MCCONF_TEMP:
+	case COMM_SET_MCCONF_TEMP_SETUP:
+	case COMM_GET_MCCONF_TEMP:
+	case COMM_SET_APPCONF:
+	case COMM_GET_APPCONF:
+		return true;
+
+	default:
+		return false;
+	}
+}
+
+static esp_err_t comm_can_wait_tx_done_locked(int timeout_ms) {
+	if (!init_done || !can_node) {
+		return ESP_ERR_INVALID_STATE;
+	}
+
+	esp_err_t res = ESP_FAIL;
+	int timeout_left = timeout_ms;
+	while (timeout_left > 0) {
+		res = twai_node_transmit_wait_all_done(can_node, 5);
+		if (res == ESP_OK || res == ESP_ERR_INVALID_STATE) {
+			break;
+		}
+
+		debug_info.tx_drain_retry++;
+		timeout_left -= 5;
+		vTaskDelay(1);
+	}
+
+	if (res != ESP_OK && res != ESP_ERR_INVALID_STATE) {
+		debug_info.tx_drain_fail++;
+	}
+
+	return res;
 }
 
 /**
@@ -1171,16 +1325,42 @@ void comm_can_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len) {
  * 3: Same as 0, but the reply is processed locally and not sent out on the last interface.
  */
 void comm_can_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send) {
+	if (!init_done) {
+		return;
+	}
+
+	bool quiet_status = comm_can_should_quiet_status(data, len);
+	if (quiet_status) {
+		send_buffer_last_ticks = xTaskGetTickCount();
+	}
+
 	uint8_t send_buffer[8];
 
+	debug_info.last_tx_dst_id = controller_id;
+	debug_info.last_tx_src_id = backup.config.controller_id;
+	debug_info.last_tx_send = send;
+	debug_info.last_tx_len = len;
+
+	xSemaphoreTake(send_mutex, portMAX_DELAY);
+
+	if (!init_done || !can_node) {
+		xSemaphoreGive(send_mutex);
+		return;
+	}
+
 	if (len <= 6) {
+		debug_info.tx_process_short++;
 		uint32_t ind = 0;
 		send_buffer[ind++] = backup.config.controller_id;
 		send_buffer[ind++] = send;
 		memcpy(send_buffer + ind, data, len);
 		ind += len;
-		comm_can_transmit_eid(controller_id |
-				((uint32_t)CAN_PACKET_PROCESS_SHORT_BUFFER << 8), send_buffer, ind);
+		if (comm_can_transmit_locked(controller_id |
+				((uint32_t)CAN_PACKET_PROCESS_SHORT_BUFFER << 8), send_buffer, ind, true) != ESP_OK) {
+			debug_info.tx_send_buffer_fail++;
+			xSemaphoreGive(send_mutex);
+			return;
+		}
 	} else {
 		unsigned int end_a = 0;
 		for (unsigned int i = 0;i < len;i += 7) {
@@ -1200,8 +1380,13 @@ void comm_can_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len
 				memcpy(send_buffer + 1, data + i, send_len);
 			}
 
-			comm_can_transmit_eid(controller_id |
-					((uint32_t)CAN_PACKET_FILL_RX_BUFFER << 8), send_buffer, send_len + 1);
+			debug_info.tx_fill_rx++;
+			if (comm_can_transmit_locked(controller_id |
+					((uint32_t)CAN_PACKET_FILL_RX_BUFFER << 8), send_buffer, send_len + 1, true) != ESP_OK) {
+				debug_info.tx_send_buffer_fail++;
+				xSemaphoreGive(send_mutex);
+				return;
+			}
 		}
 
 		for (unsigned int i = end_a;i < len;i += 6) {
@@ -1216,8 +1401,13 @@ void comm_can_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len
 				memcpy(send_buffer + 2, data + i, send_len);
 			}
 
-			comm_can_transmit_eid(controller_id |
-					((uint32_t)CAN_PACKET_FILL_RX_BUFFER_LONG << 8), send_buffer, send_len + 2);
+			debug_info.tx_fill_rx_long++;
+			if (comm_can_transmit_locked(controller_id |
+					((uint32_t)CAN_PACKET_FILL_RX_BUFFER_LONG << 8), send_buffer, send_len + 2, true) != ESP_OK) {
+				debug_info.tx_send_buffer_fail++;
+				xSemaphoreGive(send_mutex);
+				return;
+			}
 		}
 
 		uint32_t ind = 0;
@@ -1229,9 +1419,20 @@ void comm_can_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len
 		send_buffer[ind++] = (uint8_t)(crc >> 8);
 		send_buffer[ind++] = (uint8_t)(crc & 0xFF);
 
-		comm_can_transmit_eid(controller_id |
-				((uint32_t)CAN_PACKET_PROCESS_RX_BUFFER << 8), send_buffer, ind++);
+		debug_info.tx_process_rx++;
+		if (comm_can_transmit_locked(controller_id |
+				((uint32_t)CAN_PACKET_PROCESS_RX_BUFFER << 8), send_buffer, ind++, true) != ESP_OK) {
+			debug_info.tx_send_buffer_fail++;
+			xSemaphoreGive(send_mutex);
+			return;
+		}
 	}
+
+	if (quiet_status && comm_can_wait_tx_done_locked(250) != ESP_OK) {
+		debug_info.tx_send_buffer_fail++;
+	}
+
+	xSemaphoreGive(send_mutex);
 }
 
 /**

@@ -24,10 +24,48 @@
 
 #define CAN_STATUS_MSGS_TO_STORE	10
 
+typedef struct {
+	uint32_t tx_process_short;
+	uint32_t tx_fill_rx;
+	uint32_t tx_fill_rx_long;
+	uint32_t tx_process_rx;
+	uint32_t tx_eid_retry;
+	uint32_t tx_drain_retry;
+	uint32_t tx_send_buffer_fail;
+	uint32_t tx_eid_fail;
+	uint32_t tx_sid_fail;
+	uint32_t tx_drain_fail;
+	uint32_t rx_fill_rx;
+	uint32_t rx_fill_rx_long;
+	uint32_t rx_process_short;
+	uint32_t rx_process_rx;
+	uint32_t rx_forward_reply_short;
+	uint32_t rx_forward_reply_rx;
+	uint32_t rx_forward_request_short;
+	uint32_t rx_forward_request_rx;
+	uint32_t rx_overflow;
+	uint32_t rx_no_buffer;
+	uint32_t rx_crc_fail;
+	uint32_t rx_bad_len;
+	uint32_t last_rx_eid;
+	uint16_t last_tx_len;
+	uint16_t last_rx_len;
+	uint8_t last_tx_dst_id;
+	uint8_t last_tx_src_id;
+	uint8_t last_tx_send;
+	uint8_t last_rx_id;
+	uint8_t last_rx_packet;
+	uint8_t last_rx_last_id;
+	uint8_t last_rx_send;
+} comm_can_debug_info_t;
+
 // Functions
 void comm_can_start(int pin_tx, int pin_rx);
 void comm_can_stop(void);
 int comm_can_get_rx_recovery_cnt(void);
+void comm_can_get_debug_info(comm_can_debug_info_t *info);
+void comm_can_reset_debug_info(void);
+bool comm_can_send_buffer_recent(int msec);
 void comm_can_use_vesc_decoder(bool use_vesc_dec);
 CAN_BAUD comm_can_kbits_to_baud(int kbits);
 void comm_can_update_baudrate(int delay_msec);
