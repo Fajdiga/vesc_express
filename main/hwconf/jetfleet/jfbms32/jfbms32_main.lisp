@@ -177,7 +177,7 @@ loopwhile-thd
                 (sleep (if (< attempts 5) 1.0 3.0))
         })
 
-        (var st1 (bq-status 1))
+        (var st1 (bq-status-read 1))
         (if (= st1 -1) {
                 (record-bq-wake-debug 5 attempts)
                 (bq-wake-debug-beep last-bq-wake-stage)
@@ -190,7 +190,7 @@ loopwhile-thd
                         (bq-exit-deepsleep-all)
                         (wdt-reset)
                         (sleep 0.05)
-                        (setq st1 (bq-status 1))
+                        (setq st1 (bq-status-read 1))
                         (setq tries (+ tries 1))
                 })
 
@@ -202,7 +202,7 @@ loopwhile-thd
         })
 
         (if (> (bms-get-param 'cells_ic2) 0) {
-                (var st2 (bq-status 2))
+                (var st2 (bq-status-read 2))
                 (if (= st2 -1) {
                         (record-bq-wake-debug 7 attempts)
                         (bq-wake-debug-beep last-bq-wake-stage)
@@ -215,7 +215,7 @@ loopwhile-thd
                                 (bq-exit-deepsleep-all)
                                 (wdt-reset)
                                 (sleep 0.05)
-                                (setq st2 (bq-status 2))
+                                (setq st2 (bq-status-read 2))
                                 (setq tries2 (+ tries2 1))
                         })
 
@@ -283,7 +283,7 @@ loopwhile-thd
         (trap (bms-subcmd-cmdonly 2 0x000e))
 })
 
-(defun bq-status (ic)
+(defun bq-status-read (ic)
         (match (trap (eval `(bms-direct-cmd ,ic 0x00)))
                 ((exit-ok (? a)) a)
                 (_ -1)
@@ -998,8 +998,10 @@ loopwhile-thd
                 (disable-balancing)
         })
 
+        (var vc-len (length v-cells))
+        (set-bms-val 'bms-cell-num vc-len)
         (var cell0-report-offset (bms-cell0-report-offset iout))
-        (looprange i 0 cell-num {
+        (looprange i 0 vc-len {
                 (set-bms-val 'bms-v-cell i
                         (- (ix v-cells i) (if (= i 0) cell0-report-offset 0.0))
                 )
@@ -1243,8 +1245,9 @@ loopwhile-thd
 
             (var v-cells (with-com '(bms-get-vcells)))
 
+            (var vc-len (length v-cells))
             (var cells-sorted (sort (fn (x y) (> (ix x 1) (ix y 1)))
-                (map (fn (x) (list x (ix v-cells x))) (range cell-num)))
+                (map (fn (x) (list x (ix v-cells x))) (range vc-len)))
             )
 
             (var c-min (second (ix cells-sorted -1)))
@@ -1271,7 +1274,7 @@ loopwhile-thd
             (if bal-ok (setq trigger-bal-after-charge false))
 
             (if bal-ok {
-                    (var bal-chs (map (fn (x) 0) (range cell-num)))
+                    (var bal-chs (map (fn (x) 0) (range vc-len)))
                     (var ch-cnt 0)
 
                     (loopforeach c cells-sorted {
@@ -1286,7 +1289,7 @@ loopwhile-thd
                                     ))
                                     ; Do not balance adjacent cells
                                     (or (eq n-cell 0) (= (ix bal-chs (- n-cell 1)) 0))
-                                    (or (eq n-cell (- cell-num 1)) (= (ix bal-chs (+ n-cell 1)) 0))
+                                    (or (eq n-cell (- vc-len 1)) (= (ix bal-chs (+ n-cell 1)) 0))
                                 )
                                 {
                                     (setix bal-chs n-cell 1)
@@ -1296,7 +1299,7 @@ loopwhile-thd
                             (if (>= ch-cnt (bms-get-param 'max_bal_ch)) (break))
                     })
 
-                    (looprange i 0 cell-num (with-com `(bms-set-bal ,i ,(ix bal-chs i))))
+                    (looprange i 0 vc-len (with-com `(bms-set-bal ,i ,(ix bal-chs i))))
 
                     (setq is-balancing (> ch-cnt 0))
             })
