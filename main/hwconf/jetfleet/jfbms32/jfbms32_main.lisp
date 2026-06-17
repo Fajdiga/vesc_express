@@ -330,12 +330,9 @@ loopwhile-thd
 ))
 
 (defun shutdown-reason-beep (reason) {
-        ; User feedback: shutdown accepted. The long-beep count also gives a
-        ; simple reason code if someone is standing next to the pack.
-        (var count (if (> reason 0) reason 5))
-        (user-beep count 0.25)
-        (sleep 0.8)
-        (user-beep 3 0.06)
+        ; Final local warning before power-off. Keep the original rapid
+        ; shutdown pattern, but drive it with the loud critical duty cycle.
+        (critical-beep 30 0.1)
 })
 
 (defun print-shutdown-reason (reason) {
@@ -620,6 +617,8 @@ loopwhile-thd
 
 (defun bms-shutdown-no-save () (bms-shutdown-impl false shutdown-reason-unknown))
 
+; Counter settings are loaded before start-fun, so timer shutdown can save
+; them again before entering hardware shutdown.
 (defun bms-shutdown-timer () (bms-shutdown-impl true shutdown-reason-timer))
 
 (defun bms-shutdown-low-soc-start () (bms-shutdown-impl false shutdown-reason-low-soc-start))
@@ -639,35 +638,46 @@ loopwhile-thd
         (not (can-active))
 ))
 
+(defun shutdown-timer-due () (and
+        (> (bms-get-param 'shutdown) 0)
+        (>= (assoc rtc-val 'sleep-total-time-s) (* (bms-get-param 'shutdown) 86400.0))
+))
+
 (defun process-sleep-time () {
-
-        ;; (print "Sleep enter time:" (assoc rtc-val 'sleep-enter-time-s))
-        ;; (print "Total Sleep time:" (assoc rtc-val 'sleep-total-time-s))
-        ;; (var time-now-s (get-time-of-day-s))
-        ;; (print "Time Now:" time-now-s)
-
         (var source (bms-wakeup-source))
 
         (cond
-                ;((= source 0))
-                ; Woke up on GPIO/RTC IO we reset the sleep time
+                ; Woke up on GPIO/RTC IO: this is external use, so reset the
+                ; shutdown-days counter.
                 ((= source 1) {
                         (setassoc rtc-val 'sleep-total-time-s 0)
                 })
-                ; Woke up on timer
+                ; Woke up on timer. Prefer the RTC wall-clock delta, but if it
+                ; did not advance across deep sleep, a timer wake still means
+                ; one configured sleep interval elapsed.
                 ((= source 2) {
-                        (var time-now-s (get-time-of-day-s))
-                        (if (> (assoc rtc-val 'sleep-enter-time-s) 0 ) {
-                            (var slept-time (- time-now-s (assoc rtc-val 'sleep-enter-time-s)))
-                            (setassoc rtc-val 'sleep-total-time-s (+ (assoc rtc-val 'sleep-total-time-s) slept-time))
+                        (var entered (assoc rtc-val 'sleep-enter-time-s))
+                        (if (> entered 0) {
+                                (var slept-time (- (get-time-of-day-s) entered))
+                                (var total-time (assoc rtc-val 'sleep-total-time-s))
+                                (if (<= slept-time 0.0)
+                                        (setq slept-time (sleep-duration-s))
+                                )
+                                (if (< total-time 0.0)
+                                        (setq total-time 0)
+                                )
+                                (setassoc rtc-val 'sleep-total-time-s
+                                        (+ total-time slept-time))
                         })
-
-                        (if ( >= (assoc rtc-val 'sleep-total-time-s) (* (bms-get-param 'shutdown) 86400)) ; Shutdown is in DAYS, multiply by 86400
-                            (bms-shutdown-timer)
-                        )
                 })
         )
+
+        (setassoc rtc-val 'sleep-enter-time-s 0)
         (save-rtc-val)
+
+        (if (shutdown-timer-due)
+                (bms-shutdown-timer)
+        )
 })
 
 
@@ -1383,6 +1393,20 @@ loopwhile-thd
         (def active-max-charge-current (bms-get-param 'max_charge_current))
         (def cell-num (+ active-cells-ic1 active-cells-ic2))
 
+        ; Timer shutdown can happen inside start-fun, before the normal main
+        ; loop starts. Load counters now so save-settings is always safe.
+        (def settings-valid (not (not-eq (read-setting 'ver-code) settings-version)))
+        (def ah-cnt (read-setting 'ah-cnt))
+        (def wh-cnt (read-setting 'wh-cnt))
+        (def ah-chg-tot (read-setting 'ah-chg-tot))
+        (def wh-chg-tot (read-setting 'wh-chg-tot))
+        (def ah-dis-tot (read-setting 'ah-dis-tot))
+        (def wh-dis-tot (read-setting 'wh-dis-tot))
+        (def ah-cnt-soc (if settings-valid
+                (read-setting 'ah-cnt-soc)
+                (* (assoc rtc-val 'soc) (bms-get-param 'batt_ah))
+        ))
+
         (def t-start-fun (secs-since 0))
 
         (loopwhile t {
@@ -1393,17 +1417,15 @@ loopwhile-thd
                 (sleep 1.0)
         })
 
-        ; Restore settings if version number does not match
-        ; as that probably means something else is in eeprom
-        (if (not-eq (read-setting 'ver-code) settings-version) (restore-settings))
-
-        (def ah-cnt (read-setting 'ah-cnt))
-        (def wh-cnt (read-setting 'wh-cnt))
-        (def ah-chg-tot (read-setting 'ah-chg-tot))
-        (def wh-chg-tot (read-setting 'wh-chg-tot))
-        (def ah-dis-tot (read-setting 'ah-dis-tot))
-        (def wh-dis-tot (read-setting 'wh-dis-tot))
-        (def ah-cnt-soc (read-setting 'ah-cnt-soc))
+        ; If the settings version changed, preserve the accumulated Ah/Wh
+        ; counters. Only re-seed the SOC counter from the measured cell
+        ; voltage and mark the EEPROM as using the current layout.
+        (if (not settings-valid) {
+                (setq ah-cnt-soc (* (calc-soc c-min) (bms-get-param 'batt_ah)))
+                (write-setting 'ah-cnt-soc ah-cnt-soc)
+                (write-setting 'ver-code settings-version)
+                (setq settings-valid true)
+        })
 
         (event-register-handler (spawn event-handler))
         (event-enable 'event-bms-chg-allow)
