@@ -3787,17 +3787,26 @@ static void sleep_deinit_radios(void) {
 #endif
 }
 
+static uint64_t sleep_time_to_us(lbm_value sleep_time_arg) {
+	double sleep_time_s = lbm_dec_as_double(sleep_time_arg);
+	if (sleep_time_s <= 0.0) {
+		return 0;
+	}
+
+	// ESP-IDF takes microseconds. Keep the multiplication in double precision
+	// and convert directly to uint64_t; a 32-bit intermediate wraps after
+	// about 71.6 minutes (12 hours would become about 250 seconds).
+	return (uint64_t)(sleep_time_s * 1000000.0);
+}
+
 static lbm_value ext_sleep_deep(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 
 	sleep_deinit_radios();
 
-	float sleep_time = lbm_dec_as_float(args[0]);
-	if (sleep_time > 0) {
-		// esp_sleep_enable_timer_wakeup takes microseconds. With uint32_t the
-		// limit is ~4294 s (71.6 min); longer sleeps wrap modulo 2^32, so
-		// 2 h becomes ~2905 s (~48.4 min). Use uint64_t for multi-hour sleeps.
-		esp_sleep_enable_timer_wakeup((uint64_t)(sleep_time * 1.0e6));
+	uint64_t sleep_time_us = sleep_time_to_us(args[0]);
+	if (sleep_time_us > 0) {
+		esp_sleep_enable_timer_wakeup(sleep_time_us);
 	}
 
 	esp_deep_sleep_start();
@@ -3813,9 +3822,9 @@ static lbm_value ext_sleep_light(lbm_value *args, lbm_uint argn) {
 	// permanently without BT/WiFi until reboot.
 	sleep_disable_radios();
 
-	float sleep_time = lbm_dec_as_float(args[0]);
-	if (sleep_time > 0) {
-		esp_sleep_enable_timer_wakeup((uint64_t)(sleep_time * 1.0e6));
+	uint64_t sleep_time_us = sleep_time_to_us(args[0]);
+	if (sleep_time_us > 0) {
+		esp_sleep_enable_timer_wakeup(sleep_time_us);
 	}
 
 	esp_light_sleep_start();

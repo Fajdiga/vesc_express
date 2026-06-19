@@ -21,6 +21,7 @@
 #define MAIN_COMM_CAN_H_
 
 #include "datatypes.h"
+#include "esp_err.h"
 
 #define CAN_STATUS_MSGS_TO_STORE	10
 
@@ -58,6 +59,24 @@ typedef struct {
 	uint8_t last_rx_last_id;
 	uint8_t last_rx_send;
 } comm_can_debug_info_t;
+
+typedef struct {
+	uint32_t tx_eid_ok;
+	uint32_t tx_sid_ok;
+	uint32_t tx_eid_fail;
+	uint32_t tx_sid_fail;
+	uint32_t tx_eid_timeout;
+	uint32_t tx_sid_timeout;
+	uint32_t rx_total;
+	uint32_t rx_overflow;
+	uint32_t last_tx_eid;
+	uint32_t last_tx_sid;
+	uint32_t last_rx_id;
+	uint16_t last_tx_len;
+	uint16_t last_rx_len;
+	uint8_t last_rx_ext;
+	esp_err_t last_error;
+} comm_can2_debug_info_t;
 
 // Functions
 void comm_can_start(int pin_tx, int pin_rx);
@@ -121,6 +140,10 @@ void comm_can2_stop(void);
 void comm_can2_use_vesc_decoder(bool use);
 bool comm_can2_is_running(void);
 int  comm_can2_get_rx_recovery_cnt(void);
+void comm_can2_get_debug_info(comm_can2_debug_info_t *info);
+void comm_can2_reset_debug_info(void);
+esp_err_t comm_can2_transmit_eid_result(uint32_t id, const uint8_t *data, uint8_t len);
+esp_err_t comm_can2_transmit_sid_result(uint32_t id, const uint8_t *data, uint8_t len);
 void comm_can2_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len);
 void comm_can2_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len);
 void comm_can2_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send_type);

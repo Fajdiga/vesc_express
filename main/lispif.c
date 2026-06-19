@@ -195,9 +195,12 @@ void lispif_init(void) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
 	heap_size = (4096 + 512);
 	int memory_kb = 48;
-#elif CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C6
+#elif CONFIG_IDF_TARGET_ESP32C3
 	heap_size = (2048 + 512);
 	int memory_kb = 32;
+#elif CONFIG_IDF_TARGET_ESP32C6
+	heap_size = (4096 + 512);
+	int memory_kb = 48;
 #elif CONFIG_IDF_TARGET_ESP32P4
 	heap_size = (4096 + 512);
 	int memory_kb = 32;
@@ -219,6 +222,13 @@ void lispif_init(void) {
 		heap_size *= 2;
 		memory_kb = 64;
 	}
+
+#ifdef HW_LBM_HEAP_CELLS
+	heap_size = HW_LBM_HEAP_CELLS;
+#endif
+#ifdef HW_LBM_MEMORY_KB
+	memory_kb = HW_LBM_MEMORY_KB;
+#endif
 
 	if (!lispif_alloc_internal_storage(heap_size, memory_kb)) {
 		commands_printf_lisp("LispBM malloc failed after retries (free heap: %u)",

@@ -125,10 +125,12 @@ static volatile bool can2_use_vesc_dec   = true;
 static can_rx_msg_t can2_rx_buf[RXBUF_LEN];
 static volatile int can2_rx_write = 0;
 static volatile int can2_rx_read = 0;
+static volatile uint32_t can2_rx_total = 0;
 static volatile uint32_t can2_rx_overflow = 0;
 static volatile int can2_recovery_cnt = 0;
 static can_tx_msg_t can2_tx_buf[TXBUF_LEN];
 static int can2_tx_write = 0;
+static comm_can2_debug_info_t can2_debug_info = {0};
 static can_rx_ctx_t can2_rx_ctx = {
 	.rx_buf = can2_rx_buf,
 	.rx_write = &can2_rx_write,
@@ -887,7 +889,19 @@ static void process_task(void *arg) {
 				can2_rx_read = 0;
 			}
 
+			can2_rx_total++;
+			can2_debug_info.rx_total = can2_rx_total;
+			can2_debug_info.last_rx_id = m->identifier;
+			can2_debug_info.last_rx_len = m->data_length_code;
+			can2_debug_info.last_rx_ext = m->extd ? 1 : 0;
+
 			lispif_process_can2(m->identifier, m->data, m->data_length_code, m->extd);
+
+			// Hardware-specific CAN2 hook (weak symbol, can be overridden)
+			extern void hw_can2_rx_hook(uint32_t id, uint8_t *data, int len, bool is_ext) __attribute__((weak));
+			if (hw_can2_rx_hook) {
+				hw_can2_rx_hook(m->identifier, m->data, m->data_length_code, m->extd);
+			}
 
 			if (can2_use_vesc_dec) {
 				if (!bms_process_can_frame(m->identifier, m->data, m->data_length_code, m->extd)) {
@@ -1098,6 +1112,8 @@ void comm_can_reset_debug_info(void) {
 	rx_overflow = 0;
 #ifdef CONFIG_IDF_TARGET_ESP32C6
 	can2_rx_overflow = 0;
+	can2_rx_total = 0;
+	memset(&can2_debug_info, 0, sizeof(can2_debug_info));
 #endif
 }
 
@@ -1880,11 +1896,14 @@ void comm_can2_start(int pin_tx, int pin_rx, int baud_kbits) {
 
 	can2_bitrate = can2_bitrate_from_kbits(baud_kbits);
 
-	if (create_twai_node(&can2_handle, &can2_rx_ctx, pin_tx, pin_rx, can2_bitrate,
-			false, false) != ESP_OK) {
+	esp_err_t res = create_twai_node(&can2_handle, &can2_rx_ctx, pin_tx, pin_rx, can2_bitrate,
+			false, false);
+	if (res != ESP_OK) {
+		can2_debug_info.last_error = res;
 		return;
 	}
 
+	can2_debug_info.last_error = ESP_OK;
 	can2_stop_threads = false;
 	can2_init_done = true;
 	can2_start_rx_thd();
@@ -1918,46 +1937,97 @@ int comm_can2_get_rx_recovery_cnt(void) {
 	return can2_recovery_cnt;
 }
 
-void comm_can2_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len) {
-	if (!can2_init_done) {
-		return;
+void comm_can2_get_debug_info(comm_can2_debug_info_t *info) {
+	if (info) {
+		*info = can2_debug_info;
+		info->rx_total = can2_rx_total;
+		info->rx_overflow = can2_rx_overflow;
 	}
+}
 
+void comm_can2_reset_debug_info(void) {
+	memset(&can2_debug_info, 0, sizeof(can2_debug_info));
+	can2_rx_total = 0;
+	can2_rx_overflow = 0;
+}
+
+static esp_err_t comm_can2_transmit_result(uint32_t id, const uint8_t *data,
+		uint8_t len, bool ext) {
 	if (len > 8) {
 		len = 8;
 	}
+
+	if (!can2_init_done || !can2_handle) {
+		can2_debug_info.last_error = ESP_ERR_INVALID_STATE;
+		return ESP_ERR_INVALID_STATE;
+	}
+
+	if (ext) {
+		can2_debug_info.last_tx_eid = id;
+	} else {
+		can2_debug_info.last_tx_sid = id;
+	}
+	can2_debug_info.last_tx_len = len;
 
 	xSemaphoreTake(can2_send_mutex, portMAX_DELAY);
 
 	if (!can2_init_done || !can2_handle) {
 		xSemaphoreGive(can2_send_mutex);
-		return;
+		can2_debug_info.last_error = ESP_ERR_INVALID_STATE;
+		return ESP_ERR_INVALID_STATE;
 	}
 
-	transmit_twai_frame(can2_handle, can2_tx_buf, &can2_tx_write, id, data, len, true);
+	esp_err_t res = ESP_FAIL;
+	for (int attempt = 0; attempt < TX_RETRY_ATTEMPTS; attempt++) {
+		res = transmit_twai_frame(can2_handle, can2_tx_buf, &can2_tx_write,
+				id, data, len, ext);
+		if (res == ESP_OK) {
+			break;
+		}
+
+		vTaskDelay(1);
+	}
 
 	xSemaphoreGive(can2_send_mutex);
+
+	can2_debug_info.last_error = res;
+	if (res == ESP_OK) {
+		if (ext) {
+			can2_debug_info.tx_eid_ok++;
+		} else {
+			can2_debug_info.tx_sid_ok++;
+		}
+	} else {
+		if (ext) {
+			can2_debug_info.tx_eid_fail++;
+			if (res == ESP_ERR_TIMEOUT) {
+				can2_debug_info.tx_eid_timeout++;
+			}
+		} else {
+			can2_debug_info.tx_sid_fail++;
+			if (res == ESP_ERR_TIMEOUT) {
+				can2_debug_info.tx_sid_timeout++;
+			}
+		}
+	}
+
+	return res;
+}
+
+esp_err_t comm_can2_transmit_eid_result(uint32_t id, const uint8_t *data, uint8_t len) {
+	return comm_can2_transmit_result(id, data, len, true);
+}
+
+esp_err_t comm_can2_transmit_sid_result(uint32_t id, const uint8_t *data, uint8_t len) {
+	return comm_can2_transmit_result(id, data, len, false);
+}
+
+void comm_can2_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len) {
+	(void)comm_can2_transmit_eid_result(id, data, len);
 }
 
 void comm_can2_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len) {
-	if (!can2_init_done) {
-		return;
-	}
-
-	if (len > 8) {
-		len = 8;
-	}
-
-	xSemaphoreTake(can2_send_mutex, portMAX_DELAY);
-
-	if (!can2_init_done || !can2_handle) {
-		xSemaphoreGive(can2_send_mutex);
-		return;
-	}
-
-	transmit_twai_frame(can2_handle, can2_tx_buf, &can2_tx_write, id, data, len, false);
-
-	xSemaphoreGive(can2_send_mutex);
+	(void)comm_can2_transmit_sid_result(id, data, len);
 }
 
 void comm_can2_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send_type) {
