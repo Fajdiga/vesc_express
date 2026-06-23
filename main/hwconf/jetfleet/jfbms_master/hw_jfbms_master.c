@@ -172,20 +172,41 @@ static bool timestamp_fresh(uint32_t timestamp, uint32_t now, uint32_t timeout) 
 	return timestamp != 0 && (now - timestamp) <= timeout;
 }
 
+static bool slave_cell_counts_valid_locked(int idx) {
+	int cells_ic1 = m_bms_data.cells_ic1[idx];
+	int cells_ic2 = m_bms_data.cells_ic2[idx];
+	return cells_ic1 >= 0 && cells_ic1 <= 16 &&
+			cells_ic2 >= 0 && cells_ic2 <= 16 &&
+			(cells_ic1 + cells_ic2) > 0;
+}
+
+// Cell frames reserve types 0-3 for IC1 and 4-7 for IC2. Convert a compact
+// logical cell index (IC1 cells followed by IC2 cells) to that wire layout.
+static int slave_cell_wire_index(int logical_index, int cells_ic1) {
+	return logical_index < cells_ic1 ? logical_index :
+			16 + (logical_index - cells_ic1);
+}
+
 static bool slave_data_fresh_locked(int idx, uint32_t now, uint32_t timeout) {
 	if (!timestamp_fresh(m_bms_data.status_last_seen_ms[idx], now, timeout) ||
 			!timestamp_fresh(m_bms_data.temp_last_seen_ms[idx], now, timeout)) {
 		return false;
 	}
 
-	int cell_count = m_bms_data.cells_ic1[idx] + m_bms_data.cells_ic2[idx];
-	if (cell_count < 1 || cell_count > CELLS_PER_SLAVE) {
+	if (!slave_cell_counts_valid_locked(idx)) {
 		return false;
 	}
 
-	int cell_frames = (cell_count + 3) / 4;
-	for (int frame = 0; frame < cell_frames; frame++) {
+	int ic1_frames = (m_bms_data.cells_ic1[idx] + 3) / 4;
+	for (int frame = 0; frame < ic1_frames; frame++) {
 		if (!timestamp_fresh(m_bms_data.cell_last_seen_ms[idx][frame], now, timeout)) {
+			return false;
+		}
+	}
+
+	int ic2_frames = (m_bms_data.cells_ic2[idx] + 3) / 4;
+	for (int frame = 0; frame < ic2_frames; frame++) {
+		if (!timestamp_fresh(m_bms_data.cell_last_seen_ms[idx][4 + frame], now, timeout)) {
 			return false;
 		}
 	}
@@ -779,12 +800,17 @@ static lbm_value ext_master_get_slave_cells(lbm_value *args, lbm_uint argn) {
 
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 
-	int num_cells = m_bms_data.cells_ic1[idx] + m_bms_data.cells_ic2[idx];
-	if (num_cells == 0) num_cells = CELLS_PER_SLAVE;
-	if (num_cells > CELLS_PER_SLAVE) num_cells = CELLS_PER_SLAVE;
+	if (!slave_cell_counts_valid_locked(idx)) {
+		xSemaphoreGive(m_data_mutex);
+		return ENC_SYM_NIL;
+	}
+
+	int cells_ic1 = m_bms_data.cells_ic1[idx];
+	int num_cells = cells_ic1 + m_bms_data.cells_ic2[idx];
 
 	for (int i = num_cells - 1; i >= 0; i--) {
-		uint16_t mv = m_bms_data.cell_voltages[idx][i];
+		int wire_index = slave_cell_wire_index(i, cells_ic1);
+		uint16_t mv = m_bms_data.cell_voltages[idx][wire_index];
 		if (mv != 0 && mv != 0xFFFF) {
 			vc_list = lbm_cons(lbm_enc_float((float)mv / 1000.0f), vc_list);
 		}
@@ -1044,20 +1070,19 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 
 	for (int s = 0; s < MAX_SLAVES && total_cells < BMS_MAX_CELLS; s++) {
 		if (!m_bms_data.active[s]) continue;
+		if (!slave_cell_counts_valid_locked(s)) continue;
 
 		int num_cells = m_bms_data.cells_ic1[s] + m_bms_data.cells_ic2[s];
-		if (num_cells == 0) continue;
-		if (num_cells > CELLS_PER_SLAVE) num_cells = CELLS_PER_SLAVE;
 
 		int ic1_cnt = m_bms_data.cells_ic1[s];
 		for (int c = 0; c < num_cells && total_cells < BMS_MAX_CELLS; c++) {
-			uint16_t mv = m_bms_data.cell_voltages[s][c];
+			int wire_index = slave_cell_wire_index(c, ic1_cnt);
+			uint16_t mv = m_bms_data.cell_voltages[s][wire_index];
 			if (mv != 0 && mv != 0xFFFF) {
 				float v = (float)mv / 1000.0f;
 				bms->v_cell[total_cells] = v;
-				// Balance mask is ic1[0:15] | ic2[16:31], map cell index to correct bit
-				int bit = (c < ic1_cnt) ? c : (16 + c - ic1_cnt);
-				bms->bal_state[total_cells] = (m_bms_data.balance_mask[s] >> bit) & 1;
+				bms->bal_state[total_cells] =
+						(m_bms_data.balance_mask[s] >> wire_index) & 1;
 				v_tot += v;
 				if (v < v_min) v_min = v;
 				if (v > v_max) v_max = v;
