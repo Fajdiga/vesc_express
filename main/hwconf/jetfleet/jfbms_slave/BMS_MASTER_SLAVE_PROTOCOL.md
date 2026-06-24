@@ -7,12 +7,17 @@
 **CAN Bus:** 500 kbps
 
 **Key Design Decisions:**
+
 - Uses 11-bit standard CAN IDs (not 29-bit extended like VESC protocol)
 - Slaves broadcast data periodically (no polling)
-- Master sends only balance commands
+- Master sends only balance commands and buzzer notification codes
 - Only sends cell voltage messages needed for configured cells (optimizes CAN bus load)
-- Status message includes cells_ic1 and cells_ic2 so master knows per-IC configuration
+- Status message includes `cells_ic1`, `cells_ic2`, and external NTC enable bits
+- Temperature frame keeps fixed BQ1/BQ2 positions; disabled NTCs use `0x7FFF`
 - Data format matches BQ76952 native format for easy integration
+- The configured topology uses contiguous slave IDs `1..N`. The master applies
+  a TWAI acceptance mask where possible and always applies an exact software
+  check; frames from IDs above `N` are ignored.
 
 ---
 
@@ -32,6 +37,7 @@
 ```
 
 ### Master (JFBMS32)
+
 - Has FETs (charge/discharge control)
 - Has current sensor
 - Makes all balancing decisions
@@ -39,8 +45,9 @@
 - Can work standalone (32 cells) or with slaves
 
 ### Slaves (Dual BQ76952 Boards)
+
 - Dual BQ76952 chips (up to 32 cells, 16 per chip)
-- Measure: cell voltages, 4 temperatures (BQ1 internal, BQ1 TS1, BQ2 internal, BQ2 TS1)
+- Measure: cell voltages, BQ die temperatures, and configured external TS1 NTCs
 - Execute: balance commands from master
 - NO: FETs, current sensor, sleep/shutdown
 - Address: Pre-configured (not auto-discovery)
@@ -59,9 +66,10 @@ Bit:  10  9  8  7 │ 6  5  4 │ 3  2  1  0
 ```
 
 ### Slave ID (Bits 3-0)
+
 | Value | Meaning |
 |-------|---------|
-| 0x0   | Reserved (not used) |
+| 0x0 | Reserved (not used) |
 | 0x1-0x8 | Slave address 1-8 |
 | 0x9-0xF | Reserved |
 
@@ -69,17 +77,17 @@ Bit:  10  9  8  7 │ 6  5  4 │ 3  2  1  0
 
 | Type | Direction | Description |
 |------|-----------|-------------|
-| 0x0  | Slave→Master | Cell voltages 1-4 |
-| 0x1  | Slave→Master | Cell voltages 5-8 |
-| 0x2  | Slave→Master | Cell voltages 9-12 |
-| 0x3  | Slave→Master | Cell voltages 13-16 |
-| 0x4  | Slave→Master | Cell voltages 17-20 |
-| 0x5  | Slave→Master | Cell voltages 21-24 |
-| 0x6  | Slave→Master | Cell voltages 25-28 |
-| 0x7  | Slave→Master | Cell voltages 29-32 |
-| 0x8  | Slave→Master | Temperatures |
-| 0x9  | Slave→Master | Status (balance state + faults + cells per IC) |
-| 0xA  | Master→Slave | Balance command + Buzzer beep code |
+| 0x0 | Slave→Master | Cell voltages 1-4 |
+| 0x1 | Slave→Master | Cell voltages 5-8 |
+| 0x2 | Slave→Master | Cell voltages 9-12 |
+| 0x3 | Slave→Master | Cell voltages 13-16 |
+| 0x4 | Slave→Master | Cell voltages 17-20 |
+| 0x5 | Slave→Master | Cell voltages 21-24 |
+| 0x6 | Slave→Master | Cell voltages 25-28 |
+| 0x7 | Slave→Master | Cell voltages 29-32 |
+| 0x8 | Slave→Master | Temperatures |
+| 0x9 | Slave→Master | Status (balance state + faults + cells per IC + temp enable mask) |
+| 0xA | Master→Slave | Balance command + buzzer beep code |
 | 0xB-0xF | - | Reserved |
 
 ---
@@ -100,28 +108,44 @@ Byte:   0      1      2      3      4      5      6      7
      └──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┘
 ```
 
+**DLC:** 8 bytes
+
 **Encoding:**
+
 - 16-bit unsigned, little-endian
-- Resolution: 1mV per bit (matches BQ76952)
-- Range: 0-65535 mV (0V to 65.535V)
+- Resolution: 1 mV per bit (matches BQ76952)
+- Range: 0-65535 mV (0 V to 65.535 V)
 
 **Special Values:**
+
 | Value | Meaning |
 |-------|---------|
-| 0x0000 | Cell position not populated (no cell connected) |
-| 0xFFFF | BQ chip failed to initialize (all cells on that chip) |
+| `0x0000` | Cell position not populated / unused slot in final frame |
+| `0x0001` through `0xFFFE` | Cell voltage in millivolts |
+| `0xFFFF` | Measurement or BQ communication failure |
 
 **Cell Position Mapping:**
-- Cells 1-16: BQ1 chip (messages sent only if cells configured)
-- Cells 17-32: BQ2 chip (messages sent only if cells_ic2 > 0)
 
-Master infers cell configuration from non-zero voltages. Example with 5s on BQ1, 5s on BQ2:
+- Types 0x0-0x3 always belong to BQ1 cells 1-16
+- Types 0x4-0x7 always belong to BQ2 cells 1-16
+- Master uses `CellsIC1` and `CellsIC2` from the status frame as the authoritative cell counts
+- Zero-filled CAN slots do not define cell count
+
+Example with 5 cells on BQ1 and 5 cells on BQ2:
+
 ```
-Cells:  [3500, 3501, 3499, 3500, 3502, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-         3498, 3500, 3499, 3501, 3500, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+BQ1 wire slots:
+[3500, 3501, 3499, 3500, 3502, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+BQ2 wire slots:
+[3498, 3500, 3499, 3501, 3500, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+Logical master display order:
+BQ1 configured cells first, then BQ2 configured cells.
 ```
 
-**Example:** Cell at 3.500V
+**Example:** Cell at 3.500 V
+
 ```c
 // Sender (slave):
 uint16_t voltage_mv = 3500;
@@ -142,27 +166,41 @@ float voltage_v = voltage_mv / 1000.0f;          // = 3.500 V
 ```
 Byte:   0      1      2      3      4      5      6      7
      ┌──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┐
-     │    T_BQ1    │   T_BQ1_TS1 │    T_BQ2    │   T_BQ2_TS1 │
+     │    T_BQ1    │  T_BQ1_TS1  │    T_BQ2    │  T_BQ2_TS1  │
      │    int16    │    int16    │    int16    │    int16    │
      └──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┘
 ```
 
 **DLC:** 8 bytes
 
-**Temperature Sensors (4 total, dual BQ76952):**
-| Bytes | Field | Description |
+**Temperature Sensors (fixed positional order):**
+
+| Bytes | Field | Requirement |
 |-------|-------|-------------|
-| 0-1 | T_BQ1 | BQ1 internal die temperature |
-| 2-3 | T_BQ1_TS1 | External NTC on BQ1 TS1 pin |
-| 4-5 | T_BQ2 | BQ2 internal die temperature (0x7FFF if single-chip) |
-| 6-7 | T_BQ2_TS1 | External NTC on BQ2 TS1 pin (0x7FFF if single-chip) |
+| 0-1 | T_BQ1 | BQ1 internal die temperature; mandatory |
+| 2-3 | T_BQ1_TS1 | External NTC on BQ1 TS1 pin; enabled by status byte 7 bit 0 |
+| 4-5 | T_BQ2 | BQ2 internal die temperature; mandatory when `CellsIC2 > 0` |
+| 6-7 | T_BQ2_TS1 | External NTC on BQ2 TS1 pin; enabled by status byte 7 bit 1 |
 
 **Encoding:**
-- int16, little-endian, 0.1°C resolution
-- Value in units of 0.1°C (e.g., 253 = 25.3°C, -105 = -10.5°C)
-- Value 0x7FFF (32767) = sensor not present or invalid
 
-**Example:** Temperature 25.3°C
+- int16, little-endian, 0.1 °C resolution
+- Value in units of 0.1 °C (e.g. 253 = 25.3 °C, -105 = -10.5 °C)
+- `0x7FFF` (32767) = not present / intentionally disabled / invalid reading
+
+The slave always keeps all four positions. It must not remove or shift an unused channel. Disabled external NTCs transmit `0x7FFF` in their fixed slot and clear their enable bit in the status frame. When BQ2 is not fitted, both BQ2 temperature positions are `0x7FFF`, and status byte 7 bit 1 is clear.
+
+The master interprets `0x7FFF` according to the status frame:
+
+| Channel | Status bit | Raw value | Master interpretation |
+|---------|------------|-----------|-----------------------|
+| External NTC | enable bit set | valid temperature | Valid sensor reading |
+| External NTC | enable bit set | `0x7FFF` or out-of-range | Sensor fault; block charge/balance |
+| External NTC | enable bit clear | `0x7FFF` | Intentionally unused; ignore only this channel |
+| BQ die temperature | N/A | `0x7FFF` or out-of-range | BQ temperature-data fault |
+
+**Example:** Temperature 25.3 °C
+
 ```c
 int16_t temp = 253;  // 25.3°C × 10
 data[0] = temp & 0xFF;         // 0xFD
@@ -176,42 +214,68 @@ data[1] = (temp >> 8) & 0xFF;  // 0x00
 **CAN ID:** `0x480 | slave_id`
 
 ```
-Byte:   0      1      2      3      4      5      6
-     ┌──────┬──────┬──────┬──────┬──────┬──────┬──────┐
-     │BalMsk│BalMsk│BalMsk│BalMsk│Faults│IC1Cnt│IC2Cnt│
-     │ [7:0]│[15:8]│[23:16]│[31:24]│      │      │      │
-     └──────┴──────┴──────┴──────┴──────┴──────┴──────┘
+Byte:   0      1      2      3      4      5      6      7
+     ┌──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┐
+     │BalMsk│BalMsk│BalMsk│BalMsk│Flags │IC1Cnt│IC2Cnt│TmpMsk│
+     │ [7:0]│[15:8]│[23:16]│[31:24]│      │      │      │      │
+     └──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┘
 ```
 
-**DLC:** 7 bytes (1 byte reserved for future use)
+**DLC:** exactly 8 bytes
 
 **Fields:**
+
 | Bytes | Field | Description |
 |-------|-------|-------------|
-| 0-3 | BalanceMask | 32-bit bitmap, bit N = cell N is currently balancing |
-| 4 | Faults | Fault flags (see below) |
+| 0-3 | BalanceMask | 32-bit bitmap, bit N = cell/channel N is currently balancing |
+| 4 | Runtime flags | Fault and voltage-settled flags |
 | 5 | CellsIC1 | Number of cells on BQ1 (0-16) |
 | 6 | CellsIC2 | Number of cells on BQ2 (0-16, 0 = single chip) |
+| 7 | TempSensorMask | External NTC enable flags |
 
-**Fault/Flags Byte (Byte 4):**
+**Runtime Flags Byte (Byte 4):**
+
 | Bit | Meaning |
 |-----|---------|
-| 0 | BQ1 initialization failed |
-| 1 | BQ2 initialization failed |
-| 2 | Voltage-settled flag (1 = balance FETs off >= 2s, voltages are accurate) |
+| 0 | BQ1 initialization/communication fault |
+| 1 | BQ2 initialization/communication fault |
+| 2 | Voltage-settled flag (1 = balance FETs off >= 2 s, voltages are accurate) |
 | 3-7 | Reserved (set to 0) |
 
+For a single-BQ slave, bit 1 remains clear and `CellsIC2` is zero.
+
+**External Temperature Sensor Mask (Byte 7):**
+
+| Bit | Meaning |
+|-----|---------|
+| 0 | BQ1 external TS1 NTC enabled |
+| 1 | BQ2 external TS1 NTC enabled |
+| 2-7 | Reserved (set to 0) |
+
+Examples:
+
+| TempSensorMask | Meaning |
+|----------------|---------|
+| `0x00` | No external NTCs enabled |
+| `0x01` | BQ1 external NTC enabled |
+| `0x02` | BQ2 external NTC enabled |
+| `0x03` | Both external NTCs enabled |
+
+When `CellsIC2` is zero, bit 1 is always transmitted clear even if the stored BQ2 sensor setting is enabled, because no BQ2 temperature channel exists.
+
 **CellsIC1 / CellsIC2 (Bytes 5-6):**
+
 Tells the master the exact cell configuration per BQ76952 chip. This is critical for:
+
 - Displaying only actual cells in VESC Tool (no zeros for unpopulated positions)
 - Building the correct balance mask (bits 0-15 = IC1, bits 16-31 = IC2)
+- Determining which cell voltage CAN frames are required
+- Determining whether BQ2 die/external temperature slots are expected
 - Applying per-IC balance channel limits and adjacent-cell rules
 
-This message confirms which cells are actually balancing, allowing master to verify balance commands were applied. The fault bits indicate if slave failed to initialize a BQ76952 chip at startup.
+The master accepts the status message only when DLC is exactly 8. Malformed status DLCs are rejected and do not refresh slave status.
 
-**Backwards Compatibility:** Master accepts old 6-byte format (single CellCount byte) and interprets it as: ic1 = min(16, count), ic2 = max(0, count - 16). Master also accepts 5-byte format (no cell count) and assumes 16+16.
-
-**Note:** Single-chip slaves (no BQ2) set CellsIC2 = 0 and cells 17-32 to 0x0000 with fault bit 1 = 0 (not an error, just not present).
+**Note:** Single-chip slaves (no BQ2) set `CellsIC2 = 0`, send BQ2 temperatures as `0x7FFF`, clear TempSensorMask bit 1, and keep runtime fault bit 1 clear.
 
 ---
 
@@ -230,33 +294,32 @@ Byte:   0      1      2      3      4
 **DLC:** 5 bytes
 
 **Fields:**
+
 | Bytes | Field | Description |
 |-------|-------|-------------|
-| 0-3 | BalanceMask | 32-bit bitmap, bit N = balance cell N |
-| 4 | BuzzerCode | Buzzer beep code (see table below) |
+| 0-3 | BalanceMask | 32-bit bitmap, bit N = balance cell/channel N |
+| 4 | BuzzerCode | One-shot buzzer beep code (see table below) |
 
 Master is responsible for respecting BQ chip limits - only set bits for cells that should actually balance.
 
 **Buzzer Beep Codes (Byte 4):**
 
 | Code | Name | Beep Pattern |
-|------|------|-------------|
-| 0x00 | NONE | No beep (stop any active error pattern) |
+|------|------|--------------|
+| 0x00 | NONE | No beep |
 | 0x01 | POWER_ON | 2 short beeps |
 | 0x02 | POWER_OFF | 1 long beep |
 | 0x03 | CHARGE_COMPLETE | 3 short beeps |
 | 0x04 | SHUTDOWN | 4 fast beeps |
-| 0x10 | ERR_OVER_TEMP | 1 beep, pause, repeat |
-| 0x11 | ERR_CELL_HIGH | 2 beeps, pause, repeat |
-| 0x12 | ERR_CELL_LOW | 3 beeps, pause, repeat |
-| 0x13 | ERR_OVERCURRENT | 4 beeps, pause, repeat |
-| 0x14 | ERR_BQ_COMM | 5 beeps, pause, repeat |
+| 0x10 | ERR_OVER_TEMP | 1 beep, pause, repeat while resent |
+| 0x11 | ERR_CELL_HIGH | 2 beeps, pause, repeat while resent |
+| 0x12 | ERR_CELL_LOW | 3 beeps, pause, repeat while resent |
+| 0x13 | ERR_OVERCURRENT | 4 beeps, pause, repeat while resent |
+| 0x14 | ERR_BQ_COMM | 5 beeps, pause, repeat while resent |
 
-All beep codes (0x01-0x14) play once per received command. For error alerts, the master re-sends the beep code with each balance command to sustain the alert.
+All nonzero beep codes play once per received command. For sustained error alerts, the master re-sends the error beep code with each balance command.
 
-**Balance Watchdog:** Slave stops all balancing if no balance command received for **10 seconds**. Master must periodically resend balance command (even if unchanged) to maintain balancing.
-
-**Backwards Compatibility:** Slave accepts both 4-byte (old firmware, no buzzer) and 5-byte (new firmware, with buzzer) balance commands. If byte 4 is missing, slave treats buzzer code as 0x00 (NONE).
+**Balance Watchdog:** Slave stops all balancing if no balance command is received for **10 seconds**. Master must periodically resend the balance command (even if unchanged) to maintain balancing.
 
 ---
 
@@ -264,86 +327,94 @@ All beep codes (0x01-0x14) play once per received command. For error alerts, the
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| Broadcast interval | 100ms | Slaves send all data every 100ms |
+| Broadcast interval | 100 ms | Slaves send all data every 100 ms |
 | Bus access | Automatic | CAN hardware handles arbitration - sends when bus is free |
-| Slave timeout | 500ms | Master marks slave offline if no data |
+| Slave freshness timeout | 1000 ms | A required frame older than this is considered stale |
+| Slave offline debounce | 3 stale checks | Master marks slave offline only after consecutive stale checks |
 | Balance update | As needed | Master sends when balance mask changes |
-| Balance watchdog | 10s | Slave stops balancing if no command received |
+| Balance watchdog | 10 s | Slave stops balancing if no command received |
 
-### Transmission Sequence (per slave, every 100ms)
+### Transmission Sequence (per slave, every 100 ms)
 
 Each slave sends its messages back-to-back as fast as the CAN bus allows:
 
 ```
-Cell voltages 1-4   (if cells >= 1)
-Cell voltages 5-8   (if cells >= 5)
-Cell voltages 9-12  (if cells >= 9)
-Cell voltages 13-16 (if cells >= 13)
-Cell voltages 17-20 (if cells >= 17)
-Cell voltages 21-24 (if cells >= 21)
-Cell voltages 25-28 (if cells >= 25)
-Cell voltages 29-32 (if cells >= 29)
+Cell voltages 1-4   (if BQ1 cells >= 1)
+Cell voltages 5-8   (if BQ1 cells >= 5)
+Cell voltages 9-12  (if BQ1 cells >= 9)
+Cell voltages 13-16 (if BQ1 cells >= 13)
+Cell voltages 17-20 (if BQ2 cells >= 1)
+Cell voltages 21-24 (if BQ2 cells >= 5)
+Cell voltages 25-28 (if BQ2 cells >= 9)
+Cell voltages 29-32 (if BQ2 cells >= 13)
 Temperatures
 Status
 ```
 
 **Message count depends on cell configuration:**
+
 | Cells | Cell Messages | Total Messages | Messages/sec |
 |-------|---------------|----------------|--------------|
-| 12    | 3             | 5              | 50           |
-| 16    | 4             | 6              | 60           |
-| 20    | 5             | 7              | 70           |
-| 32    | 8             | 10             | 100          |
+| 12 | 3 | 5 | 50 |
+| 16 | 4 | 6 | 60 |
+| 20 | 5 | 7 | 70 |
+| 32 | 8 | 10 | 100 |
 
 **No artificial delays needed.** CAN arbitration automatically handles bus access:
+
 - If bus is idle → transmit immediately
 - If bus is busy → wait until idle, then transmit
 - If collision → lower CAN ID wins, other retries immediately when bus is free
 
-Messages from multiple slaves naturally interleave without explicit coordination.
+Normal CAN ACK behavior requires at least one other active CAN node to acknowledge transmitted frames.
 
 ---
 
 ## Balance Settle Synchronization
 
 ### Problem
+
 BQ76952 balancing FETs cause voltage measurement errors while active. The internal balancing resistor draws current through the cell, causing an IR drop that makes the cell appear at a different voltage than its true open-circuit voltage. Using these "dirty" readings for balance decisions causes oscillation or over-balancing.
 
 ### Solution: Master-Driven Settle Cycle
+
 The master coordinates a settle period before reading voltages for balance decisions. This mirrors the approach used by the VBMS32 (Harmony32) firmware.
 
 **Balance cycle (repeated while balancing is active):**
 
 ```
-1. Master sends zero balance mask to ALL slaves     (CAN TX, ~1ms)
-2. Master stops local BQ76952 balancing             (I2C, ~1ms)
-3. All devices settle for 2 seconds                 (FET-induced voltage error dissipates)
-4. Slaves read settled voltages and broadcast them   (automatic, 10Hz continuous)
+1. Master sends zero balance mask to ALL slaves      (CAN TX, ~1 ms)
+2. Master stops local BQ76952 balancing              (I2C, ~1 ms)
+3. All devices settle for 2 seconds                  (FET-induced voltage error dissipates)
+4. Slaves read settled voltages and broadcast them    (automatic, 10 Hz continuous)
 5. Master drains CAN buffer to get latest settled slave voltages
 6. Master reads local BQ76952 voltages (also settled)
 7. Master computes new balance masks from settled data
-8. Master sends new balance commands to slaves       (CAN TX)
-9. Balancing runs until next cycle (~0.2s cadence)
+8. Master sends new balance commands to slaves        (CAN TX)
+9. Balancing runs until next cycle (~0.2 s cadence)
 ```
 
 ### Voltage-Settled Flag (Status Byte Bit 2)
-Slaves track how long balance FETs have been off. After 20 consecutive loops (2 seconds at 10Hz) with zero balance bitmap, the slave sets bit 2 in the status message faults byte. This flag indicates to the master that the voltages being broadcast are accurate (not affected by balancing).
+
+Slaves track how long balance FETs have been off. After 20 consecutive loops (2 seconds at 10 Hz) with zero balance bitmap, the slave sets bit 2 in the status message flags byte. This flag indicates to the master that the voltages being broadcast are accurate (not affected by balancing).
 
 **Flag behavior:**
-| Condition | Settled Flag |
-|-----------|-------------|
-| No balance command ever received (boot) | 1 (settled) |
-| Balance bitmap is zero for >= 2s | 1 (settled) |
-| Balance bitmap is non-zero | 0 (not settled) |
-| Balance just stopped (< 2s ago) | 0 (not settled) |
 
-The master can check this flag via `(master-get-slave-settled? slave-id)` to verify data quality before computing balance masks.
+| Condition | Settled Flag |
+|-----------|--------------|
+| No balance command ever received (boot) | 1 (settled) |
+| Balance bitmap is zero for >= 2 s | 1 (settled) |
+| Balance bitmap is non-zero | 0 (not settled) |
+| Balance just stopped (< 2 s ago) | 0 (not settled) |
+
+The master can check this flag via `(master-get-slave-settled? slave-id)` to verify data quality before computing balance masks. The helper returns true only when the slave is active, strictly fresh, settled, and not reporting BQ communication faults.
 
 ---
 
 ## CAN ID Quick Reference
 
-### Slave→Master (Periodic Broadcasts, every 100ms)
+### Slave→Master (Periodic Broadcasts, every 100 ms)
+
 ```
 Cell Voltages 1-4:   0x001-0x008 (slave 1-8)
 Cell Voltages 5-8:   0x081-0x088
@@ -358,6 +429,7 @@ Status:              0x481-0x488
 ```
 
 ### Master→Slave (Commands)
+
 ```
 Balance (slave 1):   0x501
 Balance (slave 2):   0x502
@@ -367,32 +439,71 @@ Balance (slave 8):   0x508
 
 ---
 
+## Freshness and Activation
+
+At a 100 ms broadcast interval, the master applies a 1000 ms freshness timeout and a 3-check offline debounce.
+
+The master tracks two related states:
+
+- **Fresh:** all required frames for the slave are inside the freshness timeout.
+- **Active:** the slave is considered present. Once active, the master keeps the slave active through short stale gaps and only marks it offline after 3 consecutive stale checks.
+
+A slave is fresh only when all of the following are fresh and valid:
+
+1. Status frame with DLC exactly 8
+2. Temperature frame with DLC 8
+3. Every cell frame required by `CellsIC1` and `CellsIC2`
+4. Cell counts within 0-16 per IC and a nonzero combined count
+5. Temperature frame values consistent with `TempSensorMask`
+
+Receiving unrelated frames does not make a slave fresh if any required frame has timed out.
+
+The master keeps the last valid values visible while a previously active slave is inside the offline debounce window. Safety-critical balance decisions still require fresh, settled slave data.
+
+Each configured slave must have a unique slave ID. Duplicate IDs cannot be reliably separated by CAN arbitration because frames with the same CAN ID are treated as the same message source.
+
+The master exposes CAN RX overflow diagnostics. Any nonzero or increasing overflow counter indicates dropped frames and must be treated as a bus/load/firmware scheduling issue rather than normal arbitration.
+
+---
+
 ## Implementation Notes
 
 ### Master Integration
+
 - Receives slave data via standard CAN RX
-- Aggregates all cell voltages into single array (zeros = not present)
-- Uses cells_ic1/cells_ic2 from Status message to know exact IC configuration
+- Aggregates all cell voltages into single array
+- Uses `cells_ic1` and `cells_ic2` from status message to know exact IC configuration
+- Uses `TempSensorMask` from status message to decide which external NTC slots are required
+- Treats invalid enabled NTC readings as faults
+- Ignores disabled external NTC slots only when they are `0x7FFF`
+- Separates strict freshness from debounced presence so short gaps do not clear last-good display data
 - Global min/max voltage across all slaves for balancing decisions
-- Resends balance commands periodically (<10s) to maintain balancing
-- Retries balance command if Status doesn't match expected
+- Resends balance commands periodically (<10 s) to maintain balancing
+- Retries balance command if status doesn't match expected
 
 ### Slave Implementation
+
 - Initializes BQ76952 chips at startup, sets fault bits if init fails
-- Reads BQ76952 at ~50ms internally
-- Broadcasts only required cell messages every 100ms (optimizes CAN bus load)
-- Sends cells_ic1 and cells_ic2 in Status message so master knows per-IC configuration
-- Listens for balance commands matching its ID (0x501-0x508)
-- Applies balance mask to BQ76952 CB_ACTIVE_CELLS register
+- Reads BQ76952 at ~50 ms internally
+- Broadcasts only required cell messages every 100 ms (optimizes CAN bus load)
+- Sends `cells_ic1`, `cells_ic2`, and `TempSensorMask` in status message
+- Sends disabled external NTC slots as `0x7FFF`
+- Listens for balance commands matching its ID (`0x501`-`0x508`)
+- Applies balance mask to BQ76952 `CB_ACTIVE_CELLS` register
 - Stops balancing if no command received for 10 seconds (watchdog)
 
 ### Error Handling
+
 | Condition | Slave Action | Master Action |
 |-----------|--------------|---------------|
-| BQ1 init failed | Set fault bit 0, send 0xFFFF for cells 1-16 | Detect via fault byte, mark slave faulty |
-| BQ2 init failed | Set fault bit 1, send 0xFFFF for cells 17-32 | Detect via fault byte, mark slave faulty |
-| No balance cmd (10s) | Stop all balancing | N/A (master should resend periodically) |
-| Slave offline | N/A | Mark offline after 500ms timeout |
-| Single-chip slave | Cells 17-32 = 0x0000, fault bit 1 = 0 | Normal operation (not an error) |
+| BQ1 init failed | Set fault bit 0, send `0xFFFF` for BQ1 cells | Detect via flags byte, mark slave faulty |
+| BQ2 init failed | Set fault bit 1, send `0xFFFF` for BQ2 cells | Detect via flags byte, mark slave faulty |
+| Enabled external NTC open/short/invalid | Send `0x7FFF`, keep enable bit set | Set temperature-data fault; block charge/balance |
+| External NTC intentionally absent | Send `0x7FFF`, clear enable bit | Ignore only that disabled external channel |
+| Fitted BQ die temperature invalid | Send `0x7FFF` | Set temperature-data fault; block charge/balance |
+| Malformed status DLC | N/A | Reject frame; do not refresh slave status |
+| No balance cmd (10 s) | Stop all balancing | N/A (master should resend periodically) |
+| Slave offline | N/A | Mark offline after the 1000 ms freshness timeout plus 3 stale checks |
+| Single-chip slave | BQ2 temps = `0x7FFF`, TempSensorMask bit 1 = 0, fault bit 1 = 0 | Normal operation (not an error) |
 
 ---

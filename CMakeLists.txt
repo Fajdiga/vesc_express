@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.22)
 
 # Default build target Logic
 if(NOT DEFINED HW_NAME)
@@ -6,7 +6,7 @@ if(NOT DEFINED HW_NAME)
         if(IDF_TARGET STREQUAL "esp32s3_fh4")
             set(HW_NAME "Devkit S3 FH4")
         elseif(IDF_TARGET STREQUAL "esp32c6_fh4")
-            set(HW_NAME "Devkit C6 FH4")
+            set(HW_NAME "JFBMS_MASTER")
         elseif(IDF_TARGET STREQUAL "esp32c6_fh8")
             set(HW_NAME "Devkit C6 FH8")
         elseif(IDF_TARGET STREQUAL "esp32p4_nrw32n16")
@@ -15,7 +15,7 @@ if(NOT DEFINED HW_NAME)
             set(HW_NAME "JF Link")
         endif()
     else()
-        set(HW_NAME "JF Link")
+        set(HW_NAME "JFBMS_MASTER")
     endif()
 
     set(HW_NAME "${HW_NAME}" CACHE STRING "VESC hardware profile to build")
@@ -84,11 +84,24 @@ if(DEFINED HW_NAME AND DEFINED HW_TARGET AND DEFINED HW_FILE_NAME)
 
     # IMPORTANT: Set IDF_TARGET before including project.cmake
     if(NOT DEFINED IDF_TARGET)
-        SET(IDF_TARGET ${HW_IDF_TARGET})
+        set(IDF_TARGET ${HW_IDF_TARGET} CACHE STRING "ESP-IDF target" FORCE)
     elseif(NOT IDF_TARGET STREQUAL HW_IDF_TARGET)
-        message(WARNING "IDF_TARGET (${IDF_TARGET}) does not match HW_IDF_TARGET (${HW_IDF_TARGET}) derived from HW_TARGET (${HW_TARGET}) for ${HW_NAME}. This may cause build issues.")
+        message(WARNING "IDF_TARGET (${IDF_TARGET}) does not match ${HW_NAME} HW_TARGET (${HW_TARGET}); forcing IDF_TARGET=${HW_IDF_TARGET}.")
+        set(IDF_TARGET ${HW_IDF_TARGET} CACHE STRING "ESP-IDF target" FORCE)
     endif()
-    
+
+    # ESP-IDF checks the environment before the CMake cache. Keep both in
+    # sync so HW_NAME/HW_TARGET remains the authoritative target selection.
+    set(ENV{IDF_TARGET} ${HW_IDF_TARGET})
+
+    # The bootloader is configured later by Ninja as an external project. It
+    # inherits the IDE/build process environment rather than this CMake
+    # process, so a stale VS Code IDF_TARGET can override the correct cache
+    # value. Prefix custom commands with the selected target environment so
+    # the application and bootloader always use the same chip.
+    set_property(GLOBAL PROPERTY RULE_LAUNCH_CUSTOM
+        "${CMAKE_COMMAND} -E env IDF_TARGET=${HW_IDF_TARGET}")
+
     # Pass through hw file paths
     add_compile_definitions(HW_HEADER="${HW_FILE}.h" HW_SOURCE="${HW_FILE}.c")
 
@@ -127,6 +140,13 @@ if(DEFINED HW_NAME AND DEFINED HW_TARGET AND DEFINED HW_FILE_NAME)
         endif()
         set(VESC_ENABLE_WIFI 0)
         set(VESC_ENABLE_BLE 0)
+        set(VESC_ENABLE_GNSS 0)
+        set(VESC_ENABLE_DISPLAY 0)
+        set(VESC_ENABLE_TOUCH 0)
+        set(VESC_ENABLE_STORAGE 0)
+    elseif(HW_NAME STREQUAL "JFBMS_MASTER" AND HW_IDF_TARGET STREQUAL "esp32c6")
+        set(VESC_ENABLE_WIFI 1)
+        set(VESC_ENABLE_BLE 1)
         set(VESC_ENABLE_GNSS 0)
         set(VESC_ENABLE_DISPLAY 0)
         set(VESC_ENABLE_TOUCH 0)
