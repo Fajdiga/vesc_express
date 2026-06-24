@@ -5,7 +5,7 @@
 
 // Slave ID
 #ifndef CONF_SLAVE_ID
-#define CONF_SLAVE_ID 2
+#define CONF_SLAVE_ID 1
 #endif
 
 // CAN Baud Rate
@@ -21,6 +21,16 @@
 // Cells IC2
 #ifndef CONF_CELLS_IC2
 #define CONF_CELLS_IC2 0
+#endif
+
+// BQ1 External Temperature Sensor
+#ifndef CONF_TEMP_BQ1_EN
+#define CONF_TEMP_BQ1_EN 1
+#endif
+
+// BQ2 External Temperature Sensor
+#ifndef CONF_TEMP_BQ2_EN
+#define CONF_TEMP_BQ2_EN 1
 #endif
 
 // NTC Resistance

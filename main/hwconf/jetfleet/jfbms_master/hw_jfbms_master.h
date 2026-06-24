@@ -252,11 +252,16 @@ typedef struct {
 	uint8_t  fault_flags[MAX_SLAVES];
 	uint8_t  cells_ic1[MAX_SLAVES];
 	uint8_t  cells_ic2[MAX_SLAVES];
+	uint8_t  temp_sensor_flags[MAX_SLAVES]; // bit 0: BQ1 ext NTC, bit 1: BQ2 ext NTC
 	uint32_t last_seen_ms[MAX_SLAVES];
 	uint32_t cell_last_seen_ms[MAX_SLAVES][8];
 	uint32_t temp_last_seen_ms[MAX_SLAVES];
 	uint32_t status_last_seen_ms[MAX_SLAVES];
+	uint32_t frame_rx_count[MAX_SLAVES];
+	uint32_t status_rx_count[MAX_SLAVES]; // One status frame completes each broadcast burst
+	bool     fresh[MAX_SLAVES];   // All required frames are inside the configured timeout
 	bool     active[MAX_SLAVES];
+	uint8_t  stale_checks[MAX_SLAVES]; // Consecutive freshness misses before inactive
 	bool     settled[MAX_SLAVES];  // Voltage-settled flag from slave (bit 2 of faults byte)
 } master_bms_data_t;
 

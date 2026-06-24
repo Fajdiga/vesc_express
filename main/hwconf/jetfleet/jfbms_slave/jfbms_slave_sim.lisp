@@ -1,4 +1,4 @@
-; JFBMS Slave Simulator - Sends realistic fake cell/temp data via CAN
+; JFBMS Slave Simulator - Sends realistic fake cell/temp data to local UI/CAN
 ; No BQ76952 hardware required - for testing master CAN protocol
 
 ; ============================================================================
@@ -33,8 +33,8 @@
 ; ============================================================================
 ; Simulated Temperature Base Values (deg C)
 ; ============================================================================
-; T0: BQ1 die ~32, T1: Ext1 NTC ~26, T2: Ext2 NTC ~27, T3: BQ2 die ~33
-(def temp-bases (list 32.0 26.0 27.0 33.0))
+; Protocol order: BQ1 die, BQ1 external NTC, BQ2 die, BQ2 external NTC
+(def temp-bases (list 32.0 26.0 33.0 27.0))
 
 ; ============================================================================
 ; Simple pseudo-random number generator (state in mutable list)
@@ -56,7 +56,6 @@
 (defun process-can-messages () {
     (var expected-bal-id (+ 0x500 slave-id))
     (var rx-count 0)
-    (setix bal-rx-flag 0 0)
     (loopwhile (> (slave-can-available) 0) {
         (var msg (slave-can-read))
         (if msg {
@@ -92,13 +91,15 @@
 })
 
 ; ============================================================================
-; Main Simulation Loop - Broadcast every 100ms
+; Main Simulation Loop - Update every 100ms
 ; ============================================================================
 
 (defun main-thd () {
     (var loop-count 0)
 
     (loopwhile t {
+        (setix bal-rx-flag 0 0)
+
         ; Process incoming CAN messages (balance + buzzer commands from master)
         (process-can-messages)
 
@@ -129,6 +130,10 @@
             (setq temps (append temps (list (+ tb drift))))
         })
 
+        ; Update local VESC BMS display before CAN transmit so USB sees the
+        ; freshest generated sample even while this simulator also uses CAN.
+        (slave-update-vesc-bms cells temps)
+
         ; Check CAN again after temp generation
         (process-can-messages)
 
@@ -149,9 +154,6 @@
         ; Broadcast via CAN
         (bms-broadcast-all slave-id cells temps true true)
 
-        ; Update local VESC BMS display
-        (slave-update-vesc-bms cells temps)
-
         ; 100ms interval (10 Hz, matches protocol spec)
         (sleep 0.1)
     })
@@ -165,6 +167,6 @@
 (print (str-merge "Slave ID: " (str-from-n slave-id "%d")))
 (print (str-merge "Cells IC1: " (str-from-n cells-ic1 "%d") ", IC2: " (str-from-n cells-ic2 "%d")))
 (print (str-merge "Simulated cells: " (str-from-n total-cells "%d")))
-(print "Broadcasting fake data at 10 Hz (100ms)...")
+(print "Updating local display and broadcasting CAN at 10 Hz (100ms)...")
 
 (spawn 150 main-thd)

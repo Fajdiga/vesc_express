@@ -131,6 +131,11 @@ static volatile int can2_recovery_cnt = 0;
 static can_tx_msg_t can2_tx_buf[TXBUF_LEN];
 static int can2_tx_write = 0;
 static comm_can2_debug_info_t can2_debug_info = {0};
+static twai_mask_filter_config_t can2_mask_filter = {
+	.id = 0,
+	.mask = 0,
+	.is_ext = false,
+};
 static can_rx_ctx_t can2_rx_ctx = {
 	.rx_buf = can2_rx_buf,
 	.rx_write = &can2_rx_write,
@@ -238,7 +243,12 @@ static uint32_t can_baud_to_bitrate(CAN_BAUD baudrate, uint32_t old_bitrate) {
 	}
 }
 
-static esp_err_t configure_node_filter(twai_node_handle_t node, bool use_hw_filter) {
+static esp_err_t configure_node_filter(twai_node_handle_t node, bool use_hw_filter,
+		const twai_mask_filter_config_t *custom_filter) {
+	if (custom_filter) {
+		return twai_node_config_mask_filter(node, 0, custom_filter);
+	}
+
 	twai_mask_filter_config_t filter = {
 		.id = 0,
 		.mask = 0,
@@ -254,7 +264,8 @@ static esp_err_t configure_node_filter(twai_node_handle_t node, bool use_hw_filt
 }
 
 static esp_err_t create_twai_node(twai_node_handle_t *node, can_rx_ctx_t *rx_ctx,
-		int pin_tx, int pin_rx, uint32_t bitrate, bool no_ack, bool use_hw_filter) {
+		int pin_tx, int pin_rx, uint32_t bitrate, bool no_ack, bool use_hw_filter,
+		const twai_mask_filter_config_t *custom_filter) {
 	twai_onchip_node_config_t node_config = {
 		.io_cfg = {
 			.tx = pin_tx,
@@ -278,7 +289,7 @@ static esp_err_t create_twai_node(twai_node_handle_t *node, can_rx_ctx_t *rx_ctx
 		return res;
 	}
 
-	res = configure_node_filter(*node, use_hw_filter);
+	res = configure_node_filter(*node, use_hw_filter, custom_filter);
 	if (res != ESP_OK) {
 		twai_node_delete(*node);
 		*node = NULL;
@@ -1064,7 +1075,7 @@ void comm_can_start(int pin_tx, int pin_rx) {
 	can_rx_io = pin_rx;
 
 	if (create_twai_node(&can_node, &can_rx_ctx, can_tx_io, can_rx_io, can_bitrate,
-			HW_CAN_NO_ACK_MODE, true) != ESP_OK) {
+			HW_CAN_NO_ACK_MODE, true, NULL) != ESP_OK) {
 		return;
 	}
 
@@ -1165,7 +1176,7 @@ void comm_can_update_baudrate(int delay_msec) {
 
 	update_baud(backup.config.can_baud_rate);
 	create_twai_node(&can_node, &can_rx_ctx, can_tx_io, can_rx_io, can_bitrate,
-			HW_CAN_NO_ACK_MODE, true);
+			HW_CAN_NO_ACK_MODE, true, NULL);
 
 	start_rx_thd();
 	xSemaphoreGive(send_mutex);
@@ -1189,7 +1200,7 @@ void comm_can_change_pins(int tx, int rx) {
 	can_tx_io = tx;
 	can_rx_io = rx;
 	create_twai_node(&can_node, &can_rx_ctx, can_tx_io, can_rx_io, can_bitrate,
-			HW_CAN_NO_ACK_MODE, true);
+			HW_CAN_NO_ACK_MODE, true, NULL);
 
 	start_rx_thd();
 	xSemaphoreGive(send_mutex);
@@ -1897,7 +1908,7 @@ void comm_can2_start(int pin_tx, int pin_rx, int baud_kbits) {
 	can2_bitrate = can2_bitrate_from_kbits(baud_kbits);
 
 	esp_err_t res = create_twai_node(&can2_handle, &can2_rx_ctx, pin_tx, pin_rx, can2_bitrate,
-			false, false);
+			false, false, &can2_mask_filter);
 	if (res != ESP_OK) {
 		can2_debug_info.last_error = res;
 		return;
@@ -1907,6 +1918,14 @@ void comm_can2_start(int pin_tx, int pin_rx, int baud_kbits) {
 	can2_stop_threads = false;
 	can2_init_done = true;
 	can2_start_rx_thd();
+}
+
+void comm_can2_set_mask_filter(uint32_t id, uint32_t mask, bool is_ext) {
+	// Configure before comm_can2_start(). Filters are installed while the node
+	// is still disabled inside create_twai_node().
+	can2_mask_filter.id = id;
+	can2_mask_filter.mask = mask;
+	can2_mask_filter.is_ext = is_ext;
 }
 
 void comm_can2_stop(void) {

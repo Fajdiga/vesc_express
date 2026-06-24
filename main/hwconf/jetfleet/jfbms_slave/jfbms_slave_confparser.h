@@ -8,8 +8,8 @@
 #include <stdbool.h>
 
 // Constants
-#define MAIN_CONFIG_T_SIGNATURE		3751093655
-#define SERIALIZED_CONFIG_LENGTH	12
+#define MAIN_CONFIG_T_SIGNATURE		2611529019
+#define SERIALIZED_CONFIG_LENGTH	14
 
 // Functions
 int32_t jfbms_slave_confparser_serialize_main_config_t(uint8_t *buffer, const main_config_t *conf);

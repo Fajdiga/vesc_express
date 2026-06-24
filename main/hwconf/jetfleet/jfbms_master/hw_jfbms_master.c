@@ -108,6 +108,16 @@ static bool bms_temp_valid(float temp_c) {
 	return temp_c >= -40.0f && temp_c <= 120.0f;
 }
 
+// The configured topology is deliberately contiguous: slave IDs 1..N.
+// Frames from other IDs are rejected in the receive path and must never leak
+// into pack state or the UI.
+static int configured_slave_count(void) {
+	int count = ((main_config_t *)&backup.config)->num_slaves;
+	if (count < 1) return 1;
+	if (count > MAX_SLAVES) return MAX_SLAVES;
+	return count;
+}
+
 // ============================================================================
 // Section B: Master CAN Protocol
 // ============================================================================
@@ -118,8 +128,13 @@ static bool bms_temp_valid(float temp_c) {
 #define CAN_ID_STATUS(slave_id)       (0x480 | (slave_id))
 #define CAN_ID_BAL_CMD(slave_id)      (0x500 | (slave_id))
 
+// Status frame byte 7 is an external-temperature-sensor enable mask.
+#define STATUS_TEMP_BQ1_ENABLED       (1U << 0)
+#define STATUS_TEMP_BQ2_ENABLED       (1U << 1)
+
 // CAN RX circular buffer for 11-bit messages
 #define CAN_BUF_SIZE 128
+#define SLAVE_INACTIVE_STALE_CHECKS 3
 #define SLAVE_CAN_BUS_ESC      0
 #define SLAVE_CAN_BUS_PRIVATE  1
 #define SLAVE_CAN_BUS_UNKNOWN  0xFF
@@ -138,6 +153,10 @@ static volatile uint32_t can_rx_overflow = 0;
 static volatile uint32_t can_rx_total = 0;
 static volatile uint32_t can_rx_esc_total = 0;
 static volatile uint32_t can_rx_private_total = 0;
+static volatile uint32_t can_rx_filtered_total = 0;
+static volatile uint32_t can_rx_filtered_last_id = 0;
+static uint32_t debug_rate_last_ms = 0;
+static uint32_t debug_status_last[MAX_SLAVES] = {0};
 
 static volatile bool slave_can_running = false;
 static volatile uint32_t slave_can_tx_ok_cnt = 0;
@@ -160,11 +179,16 @@ static void clear_slave_data(int idx) {
 	m_bms_data.fault_flags[idx] = 0;
 	m_bms_data.cells_ic1[idx] = 0;
 	m_bms_data.cells_ic2[idx] = 0;
+	m_bms_data.temp_sensor_flags[idx] = 0;
 	m_bms_data.last_seen_ms[idx] = 0;
 	m_bms_data.temp_last_seen_ms[idx] = 0;
 	m_bms_data.status_last_seen_ms[idx] = 0;
+	m_bms_data.frame_rx_count[idx] = 0;
+	m_bms_data.status_rx_count[idx] = 0;
 	m_bms_data.settled[idx] = false;
+	m_bms_data.fresh[idx] = false;
 	m_bms_data.active[idx] = false;
+	m_bms_data.stale_checks[idx] = 0;
 	slave_can_rx_bus[idx] = SLAVE_CAN_BUS_UNKNOWN;
 }
 
@@ -178,6 +202,20 @@ static bool slave_cell_counts_valid_locked(int idx) {
 	return cells_ic1 >= 0 && cells_ic1 <= 16 &&
 			cells_ic2 >= 0 && cells_ic2 <= 16 &&
 			(cells_ic1 + cells_ic2) > 0;
+}
+
+// Build the narrowest single hardware-mask superset for contiguous IDs 1..N.
+// For N=1 this is exact: ID 1, mask 0x00F. Larger sets are narrowed as far as
+// one TWAI mask permits, with the exact range enforced again in software.
+static void configured_slave_filter(uint32_t *id, uint32_t *mask) {
+	int count = configured_slave_count();
+	uint32_t reference = 1;
+	uint32_t common = 0x0F;
+	for (uint32_t sid = 2; sid <= (uint32_t)count; sid++) {
+		common &= ~(reference ^ sid);
+	}
+	*mask = common & 0x0F;
+	*id = reference & *mask;
 }
 
 // Cell frames reserve types 0-3 for IC1 and 4-7 for IC2. Convert a compact
@@ -242,7 +280,7 @@ static bool valid_slave_msg_len(uint8_t msg_type, int len) {
 		return len == 8;
 	}
 
-	return msg_type == 0x09 && len >= 5 && len <= 7;
+	return msg_type == 0x09 && len == 8;
 }
 
 static void slave_can_buffer_rx(uint32_t id, const uint8_t *data, int len, bool is_ext, uint8_t bus) {
@@ -254,6 +292,12 @@ static void slave_can_buffer_rx(uint32_t id, const uint8_t *data, int len, bool 
 	uint8_t msg_type = 0xFF;
 	if (!decode_slave_can_id(id, &slave_id, &msg_type) ||
 			!valid_slave_msg_len(msg_type, len)) {
+		return;
+	}
+
+	if (slave_id > configured_slave_count()) {
+		can_rx_filtered_total++;
+		can_rx_filtered_last_id = id;
 		return;
 	}
 
@@ -312,6 +356,10 @@ static bool __attribute__((unused)) slave_can_start(void) {
 		return true;
 	}
 
+	uint32_t filter_id = 0;
+	uint32_t filter_mask = 0;
+	configured_slave_filter(&filter_id, &filter_mask);
+	comm_can2_set_mask_filter(filter_id, filter_mask, false);
 	comm_can2_use_vesc_decoder(false);
 	comm_can2_start(JFBMS_SLAVE_CAN_TX_GPIO_NUM, JFBMS_SLAVE_CAN_RX_GPIO_NUM,
 			JFBMS_SLAVE_CAN_BAUD_KBITS);
@@ -392,6 +440,7 @@ static void parse_slave_message(uint32_t id, uint8_t *data, int len, uint8_t bus
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 
 	m_bms_data.last_seen_ms[idx] = xTaskGetTickCount() * portTICK_PERIOD_MS;
+	m_bms_data.frame_rx_count[idx]++;
 	slave_can_rx_bus[idx] = bus;
 
 	if (msg_type <= 0x07) {
@@ -414,8 +463,9 @@ static void parse_slave_message(uint32_t id, uint8_t *data, int len, uint8_t bus
 			m_bms_data.temp_last_seen_ms[idx] = m_bms_data.last_seen_ms[idx];
 		}
 	} else if (msg_type == 0x09) {
-		// Status message: balance mask (4B) + faults (1B) + cells_ic1 (1B) + cells_ic2 (1B)
-		if (len >= 5) {
+		// Status message: balance mask (4B), faults, IC1/IC2 cell counts,
+		// and the external-temperature-sensor enable mask.
+		if (len == 8) {
 			m_bms_data.balance_mask[idx] =
 				(uint32_t)data[0] |
 				((uint32_t)data[1] << 8) |
@@ -423,17 +473,12 @@ static void parse_slave_message(uint32_t id, uint8_t *data, int len, uint8_t bus
 				((uint32_t)data[3] << 24);
 			m_bms_data.fault_flags[idx] = data[4];
 			m_bms_data.settled[idx] = (data[4] & 0x04) != 0;
+			m_bms_data.temp_sensor_flags[idx] = data[7] &
+					(STATUS_TEMP_BQ1_ENABLED | STATUS_TEMP_BQ2_ENABLED);
+			m_bms_data.cells_ic1[idx] = data[5];
+			m_bms_data.cells_ic2[idx] = data[6];
 			m_bms_data.status_last_seen_ms[idx] = m_bms_data.last_seen_ms[idx];
-			if (len >= 7) {
-				// New format: cells_ic1 + cells_ic2 as separate bytes
-				m_bms_data.cells_ic1[idx] = data[5];
-				m_bms_data.cells_ic2[idx] = data[6];
-			} else if (len >= 6) {
-				// Old format: single cell_count byte, assume split at 16
-				uint8_t total = data[5];
-				m_bms_data.cells_ic1[idx] = (total > 16) ? 16 : total;
-				m_bms_data.cells_ic2[idx] = (total > 16) ? (total - 16) : 0;
-			}
+			m_bms_data.status_rx_count[idx]++;
 		}
 	}
 
@@ -821,7 +866,12 @@ static lbm_value ext_master_get_slave_cells(lbm_value *args, lbm_uint argn) {
 	return vc_list;
 }
 
-// (master-get-slave-temps slave-id) - Get list of 4 temperatures in deg C
+// (master-get-slave-temps slave-id)
+// Return positional temperatures in deg C:
+//   single IC: (BQ1-die BQ1-external)
+//   dual IC:   (BQ1-die BQ1-external BQ2-die BQ2-external)
+// Missing/invalid entries are returned as -300 C instead of being removed so
+// Lisp can match each reading to its explicit enable bit.
 static lbm_value ext_master_get_slave_temps(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 
@@ -835,11 +885,16 @@ static lbm_value ext_master_get_slave_temps(lbm_value *args, lbm_uint argn) {
 
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 
-	for (int i = TEMPS_PER_SLAVE - 1; i >= 0; i--) {
+	if (!slave_cell_counts_valid_locked(idx)) {
+		xSemaphoreGive(m_data_mutex);
+		return ENC_SYM_NIL;
+	}
+
+	int temp_count = m_bms_data.cells_ic2[idx] > 0 ? 4 : 2;
+	for (int i = temp_count - 1; i >= 0; i--) {
 		int16_t raw = m_bms_data.temperatures[idx][i];
-		if (raw != 0x7FFF) {
-			ts_list = lbm_cons(lbm_enc_float((float)raw / 10.0f), ts_list);
-		}
+		float temp = raw == 0x7FFF ? -300.0f : (float)raw / 10.0f;
+		ts_list = lbm_cons(lbm_enc_float(temp), ts_list);
 	}
 
 	xSemaphoreGive(m_data_mutex);
@@ -847,7 +902,8 @@ static lbm_value ext_master_get_slave_temps(lbm_value *args, lbm_uint argn) {
 	return ts_list;
 }
 
-// (master-get-slave-status slave-id) - Get (balance-mask faults cells-ic1 cells-ic2)
+// (master-get-slave-status slave-id)
+// Get (balance-mask faults cells-ic1 cells-ic2 temp-sensor-flags).
 static lbm_value ext_master_get_slave_status(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 
@@ -861,6 +917,7 @@ static lbm_value ext_master_get_slave_status(lbm_value *args, lbm_uint argn) {
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 
 	lbm_value res = ENC_SYM_NIL;
+	res = lbm_cons(lbm_enc_i(m_bms_data.temp_sensor_flags[idx]), res);
 	res = lbm_cons(lbm_enc_i(m_bms_data.cells_ic2[idx]), res);
 	res = lbm_cons(lbm_enc_i(m_bms_data.cells_ic1[idx]), res);
 	res = lbm_cons(lbm_enc_i(m_bms_data.fault_flags[idx]), res);
@@ -889,6 +946,24 @@ static lbm_value ext_master_slave_active(lbm_value *args, lbm_uint argn) {
 	return active ? ENC_SYM_TRUE : ENC_SYM_NIL;
 }
 
+// (master-slave-fresh? slave-id) - True only when every required frame is fresh
+static lbm_value ext_master_slave_fresh(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(1);
+
+	int slave_id = lbm_dec_as_i32(args[0]);
+	if (slave_id < 1 || slave_id > MAX_SLAVES) {
+		return ENC_SYM_NIL;
+	}
+
+	int idx = slave_id - 1;
+
+	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
+	bool fresh = m_bms_data.fresh[idx];
+	xSemaphoreGive(m_data_mutex);
+
+	return fresh ? ENC_SYM_TRUE : ENC_SYM_NIL;
+}
+
 // (master-get-slave-settled? slave-id) - Check if slave voltages are settled (balance off >= 2s)
 static lbm_value ext_master_get_slave_settled(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
@@ -902,6 +977,7 @@ static lbm_value ext_master_get_slave_settled(lbm_value *args, lbm_uint argn) {
 
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 	bool settled = m_bms_data.active[idx] &&
+			m_bms_data.fresh[idx] &&
 			m_bms_data.settled[idx] &&
 			(m_bms_data.fault_flags[idx] & 0x03) == 0;
 	xSemaphoreGive(m_data_mutex);
@@ -948,7 +1024,7 @@ static lbm_value ext_master_send_balance(lbm_value *args, lbm_uint argn) {
 	return send_balance_cmd(slave_id, mask, beep_code) ? ENC_SYM_TRUE : ENC_SYM_NIL;
 }
 
-// (master-check-timeouts timeout-ms) - Mark timed-out slaves as inactive
+// (master-check-timeouts timeout-ms) - Update strict freshness and debounced presence
 static lbm_value ext_master_check_timeouts(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 
@@ -958,7 +1034,22 @@ static lbm_value ext_master_check_timeouts(lbm_value *args, lbm_uint argn) {
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 
 	for (int i = 0; i < MAX_SLAVES; i++) {
-		m_bms_data.active[i] = slave_data_fresh_locked(i, now, timeout);
+		bool fresh = slave_data_fresh_locked(i, now, timeout);
+		m_bms_data.fresh[i] = fresh;
+
+		if (fresh) {
+			m_bms_data.active[i] = true;
+			m_bms_data.stale_checks[i] = 0;
+		} else if (m_bms_data.active[i]) {
+			if (m_bms_data.stale_checks[i] < 255) {
+				m_bms_data.stale_checks[i]++;
+			}
+			if (m_bms_data.stale_checks[i] >= SLAVE_INACTIVE_STALE_CHECKS) {
+				m_bms_data.active[i] = false;
+			}
+		} else {
+			m_bms_data.stale_checks[i] = 0;
+		}
 	}
 
 	xSemaphoreGive(m_data_mutex);
@@ -986,6 +1077,10 @@ static lbm_value ext_master_reset_slaves(lbm_value *args, lbm_uint argn) {
 	can_rx_total = 0;
 	can_rx_esc_total = 0;
 	can_rx_private_total = 0;
+	can_rx_filtered_total = 0;
+	can_rx_filtered_last_id = 0;
+	debug_rate_last_ms = 0;
+	memset(debug_status_last, 0, sizeof(debug_status_last));
 
 	return ENC_SYM_TRUE;
 }
@@ -1064,11 +1159,12 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 	float t_cell_max = -300.0f;
 	bool have_ic_temp = false;
 	bool have_cell_temp = false;
+	int expected_slaves = configured_slave_count();
 
 	// Add slave cells
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 
-	for (int s = 0; s < MAX_SLAVES && total_cells < BMS_MAX_CELLS; s++) {
+	for (int s = 0; s < expected_slaves && total_cells < BMS_MAX_CELLS; s++) {
 		if (!m_bms_data.active[s]) continue;
 		if (!slave_cell_counts_valid_locked(s)) continue;
 
@@ -1195,7 +1291,7 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 	bms->temps_adc[3] = m_temp_pcb_valid ? m_temp_pcb : 0.0f;           // Mosfet / PCB NTC
 	bms->temps_adc[4] = 0.0f;                                           // Ambient N/A
 	int temps_count = 5;
-	for (int s = 0; s < MAX_SLAVES && temps_count < BMS_MAX_TEMPS; s++) {
+	for (int s = 0; s < expected_slaves && temps_count < BMS_MAX_TEMPS; s++) {
 		if (!m_bms_data.active[s]) continue;
 		for (int t = 0; t < TEMPS_PER_SLAVE && temps_count < BMS_MAX_TEMPS; t++) {
 			int16_t raw = m_bms_data.temperatures[s][t];
@@ -1335,7 +1431,13 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 #if JFBMS_USE_DEDICATED_SLAVE_TWAI
 	comm_can2_debug_info_t can2_dbg;
 	comm_can2_get_debug_info(&can2_dbg);
+	uint32_t filter_id = 0;
+	uint32_t filter_mask = 0;
+	configured_slave_filter(&filter_id, &filter_mask);
 #endif
+	uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+	uint32_t rate_elapsed_ms = debug_rate_last_ms != 0 ?
+			(now_ms - debug_rate_last_ms) : now_ms;
 
 	commands_printf_lisp(
 		"Primary CAN TWAI0: tx=%d rx=%d recovery=%d tx_retry_eid=%lu tx_drain=%lu tx_fail_eid=%lu tx_fail_sid=%lu fwd_fail=%lu drain_fail=%lu",
@@ -1355,11 +1457,14 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 		(unsigned long)can_dbg.rx_bad_len);
 
 #if JFBMS_USE_DEDICATED_SLAVE_TWAI
-	commands_printf_lisp("Slave CAN TWAI%d: tx=%d rx=%d baud=%d running=%d rx_total=%lu esc_rx=%lu priv_rx=%lu buf_head=%d buf_tail=%d overflow=%lu recovery=%d tx_ok=%lu tx_fail=%lu tx_timeout=%lu last_err=%d",
+	commands_printf_lisp("Slave CAN TWAI%d: tx=%d rx=%d baud=%d running=%d filter_id=0x%03lX filter_mask=0x%03lX rx_total=%lu filtered=%lu filtered_last=0x%03lX esc_rx=%lu priv_rx=%lu buf_head=%d buf_tail=%d overflow=%lu recovery=%d tx_ok=%lu tx_fail=%lu tx_timeout=%lu last_err=%d",
 		JFBMS_SLAVE_CAN_TWAI_ID, JFBMS_SLAVE_CAN_TX_GPIO_NUM, JFBMS_SLAVE_CAN_RX_GPIO_NUM,
 		JFBMS_SLAVE_CAN_BAUD_KBITS,
 		slave_can_running ? 1 : 0,
+		(unsigned long)filter_id, (unsigned long)filter_mask,
 		(unsigned long)can_rx_total,
+		(unsigned long)can_rx_filtered_total,
+		(unsigned long)can_rx_filtered_last_id,
 		(unsigned long)can_rx_esc_total,
 		(unsigned long)can_rx_private_total,
 		can_rx_head, can_rx_tail, (unsigned long)can_rx_overflow,
@@ -1394,17 +1499,31 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 #endif
 
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
-	for (int i = 0; i < MAX_SLAVES; i++) {
-		if (m_bms_data.active[i]) {
-			commands_printf_lisp("Slave %d: active, ic1=%d, ic2=%d, faults=0x%02X, bal=0x%08lX",
-				i + 1, m_bms_data.cells_ic1[i], m_bms_data.cells_ic2[i],
-				m_bms_data.fault_flags[i], (unsigned long)m_bms_data.balance_mask[i]);
-			commands_printf_lisp("Slave %d bus: %s", i + 1,
-				slave_can_rx_bus[i] == SLAVE_CAN_BUS_ESC ? "primary/TWAI0" :
-				(slave_can_rx_bus[i] == SLAVE_CAN_BUS_PRIVATE ? "BMS/TWAI1" : "unknown"));
-		}
+	int expected_slaves = configured_slave_count();
+	for (int i = 0; i < expected_slaves; i++) {
+		uint32_t status_delta = m_bms_data.status_rx_count[i] - debug_status_last[i];
+		float status_hz = rate_elapsed_ms > 0 ?
+				((float)status_delta * 1000.0f / (float)rate_elapsed_ms) : 0.0f;
+		int32_t status_age = m_bms_data.status_last_seen_ms[i] != 0 ?
+				(int32_t)(now_ms - m_bms_data.status_last_seen_ms[i]) : -1;
+		int32_t temp_age = m_bms_data.temp_last_seen_ms[i] != 0 ?
+				(int32_t)(now_ms - m_bms_data.temp_last_seen_ms[i]) : -1;
+
+		commands_printf_lisp("Slave %d: active=%d fresh=%d stale_checks=%u frames=%lu status_frames=%lu status_rate=%.2fHz status_age=%ldms temp_age=%ldms ic1=%d ic2=%d faults=0x%02X bus=%s",
+			i + 1, m_bms_data.active[i] ? 1 : 0,
+			m_bms_data.fresh[i] ? 1 : 0,
+			(unsigned int)m_bms_data.stale_checks[i],
+			(unsigned long)m_bms_data.frame_rx_count[i],
+			(unsigned long)m_bms_data.status_rx_count[i],
+			(double)status_hz, (long)status_age, (long)temp_age,
+			m_bms_data.cells_ic1[i], m_bms_data.cells_ic2[i],
+			m_bms_data.fault_flags[i],
+			slave_can_rx_bus[i] == SLAVE_CAN_BUS_ESC ? "primary/TWAI0" :
+			(slave_can_rx_bus[i] == SLAVE_CAN_BUS_PRIVATE ? "BMS/TWAI1" : "unknown"));
+		debug_status_last[i] = m_bms_data.status_rx_count[i];
 	}
 	xSemaphoreGive(m_data_mutex);
+	debug_rate_last_ms = now_ms;
 
 	return ENC_SYM_TRUE;
 }
@@ -1418,6 +1537,16 @@ static lbm_value ext_can_debug_reset(lbm_value *args, lbm_uint argn) {
 	can_rx_total = 0;
 	can_rx_esc_total = 0;
 	can_rx_private_total = 0;
+	can_rx_filtered_total = 0;
+	can_rx_filtered_last_id = 0;
+	debug_rate_last_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+	memset(debug_status_last, 0, sizeof(debug_status_last));
+	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
+	for (int i = 0; i < MAX_SLAVES; i++) {
+		m_bms_data.frame_rx_count[i] = 0;
+		m_bms_data.status_rx_count[i] = 0;
+	}
+	xSemaphoreGive(m_data_mutex);
 	slave_can_tx_ok_cnt = 0;
 	slave_can_tx_fail_cnt = 0;
 	slave_can_tx_timeout_cnt = 0;
@@ -1484,6 +1613,7 @@ static void load_extensions(bool main_found) {
 	lbm_add_extension("master-get-slave-temps", ext_master_get_slave_temps);
 	lbm_add_extension("master-get-slave-status", ext_master_get_slave_status);
 	lbm_add_extension("master-slave-active?", ext_master_slave_active);
+	lbm_add_extension("master-slave-fresh?", ext_master_slave_fresh);
 	lbm_add_extension("master-get-slave-settled?", ext_master_get_slave_settled);
 	lbm_add_extension("master-get-active-slaves", ext_master_get_active_slaves);
 	lbm_add_extension("master-get-cell-count", ext_master_get_cell_count);

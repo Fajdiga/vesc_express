@@ -67,6 +67,8 @@ typedef struct {
 	CAN_BAUD can_baud_rate; // CAN baud rate (should be 500K per protocol)
 	int cells_ic1;          // Cells on BQ76952 IC1 (3-16)
 	int cells_ic2;          // Cells on BQ76952 IC2 (0-16, 0=single chip)
+	bool temp_bq1_en;       // External NTC fitted on BQ1 TS1
+	bool temp_bq2_en;       // External NTC fitted on BQ2 TS1
 	NTC_RES temp_res;       // NTC resistance value at 25C
 	uint16_t temp_beta;     // NTC B-constant (B25-85 recommended)
 

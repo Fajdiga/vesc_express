@@ -368,7 +368,7 @@ p, li { white-space: pre-wrap; }
             <longName>Number of Slaves</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>Contiguous JFBMS slave IDs to require, starting at 1. Charging and balancing are blocked until all expected slaves are present and valid. Extra active slaves above this count are treated as a configuration fault so cells are not ignored silently.</description>
+            <description>Contiguous JFBMS slave IDs to require, starting at 1. Charging and balancing are blocked until all expected slaves are present and valid. Frames from slave IDs above this count are filtered and ignored.</description>
             <cDefine>CONF_NUM_SLAVES</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>

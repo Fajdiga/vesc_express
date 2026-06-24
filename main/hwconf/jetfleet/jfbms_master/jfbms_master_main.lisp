@@ -13,7 +13,7 @@
 
 ;;;;;;;;;; State ;;;;;;;;;;
 
-(def slave-timeout-ms 500)
+(def slave-timeout-ms 1000)
 (def chg-allowed true)
 (def charge-ok false)
 (def is-charging false)
@@ -40,7 +40,9 @@
 (def soc -1.0)
 (def cell-num 0)
 (def temp-data-ok false)
+(def cell-temp-mon-en false)
 (def pack-data-ok false)
+(def slave-data-fresh false)
 (def init-done false)
 (def i-zero-time 0.0)
 (def bal-off-failed false)
@@ -67,6 +69,7 @@
 
 (def prev-active (list 0 0 0 0 0 0 0 0))
 (def prev-bal-mask (list 0 0 0 0 0 0 0 0))
+(def prev-can-overflow 0)
 
 ; Balancing state. state[0] = 1 if currently balancing, 0 if idle.
 (def bal-state (list 0))
@@ -264,10 +267,12 @@ loopwhile-thd
 (defun display-temp (temp) (if (temp-valid temp) temp 0.0))
 
 (defun all-temps-valid () (and
-    (temp-valid t-min)
-    (temp-valid t-max)
     (temp-valid t-ic)
     (temp-valid t-mos)
+    (or
+        (not cell-temp-mon-en)
+        (and (temp-valid t-min) (temp-valid t-max))
+    )
 ))
 
 ; True when a real communication interface is connected.
@@ -403,37 +408,62 @@ loopwhile-thd
 (defun update-temp-globals () {
     (var max-sid (cfg-num-slaves))
     (var sid 1)
-    (var any-cell-temp false)
     (var temps-ok true)
 
     (setq t-ic -300.0)
     (setq t-min 300.0)
     (setq t-max -300.0)
     (setq t-mos (trap-value '(master-get-temp-pcb) -300.0))
+    (setq cell-temp-mon-en false)
 
     (loopwhile (<= sid max-sid) {
         (if (master-slave-active? sid) {
             ; Slave temp order: BQ1 IC, BQ1 cell, BQ2 IC, BQ2 cell.
+            ; Status field 4 is the two-bit external-sensor enable mask. The
+            ; fallback requires both sensors if the status list is malformed.
+            (var status (master-get-slave-status sid))
+            (var temp-flags (if (and status (>= (length status) 5))
+                (ix status 4)
+                3
+            ))
+            (var bq1-cell-en (!= (bitwise-and temp-flags 0x01) 0))
+            (var bq2-cell-en (!= (bitwise-and temp-flags 0x02) 0))
             (var temps (master-get-slave-temps sid))
             (var expected (if (> (master-get-cells-ic2 sid) 0) 4 2))
 
-            (if (and
-                    temps
-                    (>= (length temps) expected)
-                    (temp-valid (ix temps 0))
-                    (temp-valid (ix temps 1))
-                    (or (= expected 2)
-                        (and (temp-valid (ix temps 2)) (temp-valid (ix temps 3))))
-                ) {
-                (if (> (ix temps 0) t-ic) (setq t-ic (ix temps 0)))
-                (if (< (ix temps 1) t-min) (setq t-min (ix temps 1)))
-                (if (> (ix temps 1) t-max) (setq t-max (ix temps 1)))
-                (setq any-cell-temp true)
+            (if (and temps (>= (length temps) expected)) {
+                ; IC die temperatures are mandatory for every fitted BQ.
+                (if (temp-valid (ix temps 0))
+                    (if (> (ix temps 0) t-ic) (setq t-ic (ix temps 0)))
+                    (setq temps-ok false)
+                )
+
+                ; External NTCs are mandatory only when explicitly enabled.
+                (if bq1-cell-en {
+                    (setq cell-temp-mon-en true)
+                    (if (temp-valid (ix temps 1)) {
+                        (if (< (ix temps 1) t-min) (setq t-min (ix temps 1)))
+                        (if (> (ix temps 1) t-max) (setq t-max (ix temps 1)))
+                    } {
+                        (setq temps-ok false)
+                    })
+                })
 
                 (if (= expected 4) {
-                    (if (> (ix temps 2) t-ic) (setq t-ic (ix temps 2)))
-                    (if (< (ix temps 3) t-min) (setq t-min (ix temps 3)))
-                    (if (> (ix temps 3) t-max) (setq t-max (ix temps 3)))
+                    (if (temp-valid (ix temps 2))
+                        (if (> (ix temps 2) t-ic) (setq t-ic (ix temps 2)))
+                        (setq temps-ok false)
+                    )
+
+                    (if bq2-cell-en {
+                        (setq cell-temp-mon-en true)
+                        (if (temp-valid (ix temps 3)) {
+                            (if (< (ix temps 3) t-min) (setq t-min (ix temps 3)))
+                            (if (> (ix temps 3) t-max) (setq t-max (ix temps 3)))
+                        } {
+                            (setq temps-ok false)
+                        })
+                    })
                 })
             } {
                 (setq temps-ok false)
@@ -443,7 +473,7 @@ loopwhile-thd
         (setq sid (+ sid 1))
     })
 
-    (if (not any-cell-temp) {
+    (if (not cell-temp-mon-en) {
         (setq t-min -300.0)
         (setq t-max -300.0)
     })
@@ -458,7 +488,7 @@ loopwhile-thd
     (var missing false)
     (var slave-fault false)
     (var bad-cell false)
-    (var extra-slave false)
+    (var stale-slave false)
     (var any-cells false)
 
     (setq cell-num 0)
@@ -469,6 +499,8 @@ loopwhile-thd
     (loopwhile (<= sid max-sid) {
         (if (master-slave-active? sid) {
             (setq active-count (+ active-count 1))
+            (if (not (master-slave-fresh? sid))
+                (setq stale-slave true))
 
             (var status (master-get-slave-status sid))
             (var faults (if status (ix status 1) 0))
@@ -503,14 +535,6 @@ loopwhile-thd
         (setq sid (+ sid 1))
     })
 
-    ; Extra active slaves mean num_slaves is too low. Treat that as unsafe so
-    ; charge cannot run while cells are being ignored.
-    (setq sid (+ max-sid 1))
-    (loopwhile (<= sid 8) {
-        (if (master-slave-active? sid) (setq extra-slave true))
-        (setq sid (+ sid 1))
-    })
-
     (if (not any-cells) {
         (setq c-min 0.0)
         (setq c-max 0.0)
@@ -519,19 +543,25 @@ loopwhile-thd
     (setq pack-status
         (cond
             (missing "WAIT_SLAVE")
-            (extra-slave "EXTRA_SLAVE")
             (slave-fault "SLAVE_FAULT")
             (bad-cell "BAD_CELL")
             ((not any-cells) "NO_CELL")
+            (stale-slave "STALE_SLAVE")
             ((not temp-data-ok) "TEMP_NA")
             (true "")
         )
     )
 
+    (setq slave-data-fresh (and
+        any-cells
+        (not missing)
+        (not slave-fault)
+        (not bad-cell)
+        (not stale-slave)
+    ))
     (setq pack-data-ok (and
         any-cells
         (not missing)
-        (not extra-slave)
         (not slave-fault)
         (not bad-cell)
     ))
@@ -546,9 +576,19 @@ loopwhile-thd
     pack-data-ok
 })
 
+(defun check-can-health () {
+    (var overflow (master-can-overflow))
+    (if (> overflow prev-can-overflow) {
+        (print (str-merge "CAN RX overflow: +" (str-from-n (- overflow prev-can-overflow) "%d")
+            " total=" (str-from-n overflow "%d")))
+        (setq prev-can-overflow overflow)
+    })
+})
+
 (defun refresh-pack-data () {
     (master-can-read-all)
     (master-check-timeouts slave-timeout-ms)
+    (check-can-health)
     (master-update-vesc-bms)
 
     (setq vt-vchg (master-get-vchg))
@@ -804,9 +844,14 @@ loopwhile-thd
     (= (param-or 't_charge_mon_en 1) 0)
     (and
         temp-data-ok
-        (< t-max (bms-get-param 't_charge_max))
-        (> t-min (bms-get-param 't_charge_min))
         (< t-mos (bms-get-param 't_charge_max_mos))
+        (or
+            (not cell-temp-mon-en)
+            (and
+                (< t-max (bms-get-param 't_charge_max))
+                (> t-min (bms-get-param 't_charge_min))
+            )
+        )
     )
 ))
 
@@ -1016,9 +1061,26 @@ loopwhile-thd
     (current-data-ok)
     (<= (* (abs iout) (if (= (ix bal-state 0) 1) 0.8 1.0)) (bms-get-param 'balance_max_current))
     (>= c-min (bms-get-param 'vc_balance_min))
-    (<= t-max (bms-get-param 't_bal_max_cell))
+    (or
+        (not cell-temp-mon-en)
+        (<= t-max (bms-get-param 't_bal_max_cell))
+    )
     (<= t-ic (bms-get-param 't_bal_max_ic))
 ))
+
+(defun all-configured-slaves-fresh () {
+    (var all-fresh true)
+    (var sid 1)
+    (var max-sid (cfg-num-slaves))
+
+    (loopwhile (<= sid max-sid) {
+        (if (not (and (master-slave-active? sid) (master-slave-fresh? sid)))
+            (setq all-fresh false))
+        (setq sid (+ sid 1))
+    })
+
+    all-fresh
+})
 
 (defun all-configured-slaves-settled () {
     (var all-settled true)
@@ -1027,7 +1089,7 @@ loopwhile-thd
     (var max-sid (cfg-num-slaves))
 
     (loopwhile (<= sid max-sid) {
-        (if (master-slave-active? sid) {
+        (if (and (master-slave-active? sid) (master-slave-fresh? sid)) {
             (setq active-count (+ active-count 1))
             (if (not (master-get-slave-settled? sid))
                 (setq all-settled false))
@@ -1088,6 +1150,7 @@ loopwhile-thd
             (clear-cached-balancing)
             (send-cached-balance-masks 0)
             (master-can-read-all)
+            (master-check-timeouts slave-timeout-ms)
 
             (var settle-wait 0)
             (var max-settle-wait 50) ; 50 x 100ms = 5s timeout
@@ -1096,6 +1159,7 @@ loopwhile-thd
             (loopwhile (and bal-request (not settled-ready) (< settle-wait max-settle-wait)) {
                 (sleep 0.1)
                 (master-can-read-all)
+                (master-check-timeouts slave-timeout-ms)
                 (setq settle-wait (+ settle-wait 1))
 
                 (if (all-configured-slaves-settled) {
@@ -1118,7 +1182,7 @@ loopwhile-thd
             ; Phase 2: compute balance masks from settled slave cell voltages.
             (refresh-pack-data)
 
-            (if (not (balance-safe-now)) {
+            (if (not (and (balance-safe-now) (all-configured-slaves-fresh))) {
                 (print "BAL: stopped (conditions changed)")
                 (stop-all-balancing)
                 (if trigger-bal-after-charge
@@ -1141,7 +1205,7 @@ loopwhile-thd
             (clear-cached-balancing)
 
             (loopwhile (<= sid max-sid) {
-                (if (master-slave-active? sid) {
+                (if (and (master-slave-active? sid) (master-slave-fresh? sid)) {
                     (var cells (master-get-slave-cells sid))
                     (var ic1-cnt (master-get-cells-ic1 sid))
                     (var ic2-cnt (master-get-cells-ic2 sid))

@@ -112,6 +112,10 @@ bool hw_can_get_filter_config(twai_mask_filter_config_t *cfg) {
 #define CAN_ID_STATUS(slave_id)       (0x480 | (slave_id))
 #define CAN_ID_BAL_CMD(slave_id)      (0x500 | (slave_id))
 
+// Status frame byte 7 is an external-temperature-sensor enable mask.
+#define STATUS_TEMP_BQ1_ENABLED       (1U << 0)
+#define STATUS_TEMP_BQ2_ENABLED       (1U << 1)
+
 // Forward declarations (functions defined later in file)
 static bool subcommands_write16(uint8_t dev_addr, uint16_t command, uint16_t data);
 
@@ -190,16 +194,17 @@ static void can_send_temps(uint8_t slave_id, int16_t *temps) {
 }
 
 /**
- * Send status message (1 CAN message, 7 bytes)
+ * Send status message (1 CAN message, 8 bytes)
  * @param slave_id   Slave ID (1-8)
  * @param bal_mask   32-bit balance bitmap
  * @param faults     Fault byte (bit0 = BQ1 init failed, bit1 = BQ2 init failed)
  * @param cells_ic1  Number of cells on BQ1 (0-16)
  * @param cells_ic2  Number of cells on BQ2 (0-16)
+ * @param temp_sensor_flags External NTC enable bits for BQ1/BQ2
  */
 static void can_send_status(uint8_t slave_id, uint32_t bal_mask, uint8_t faults,
-		uint8_t cells_ic1, uint8_t cells_ic2) {
-	uint8_t buf[7];
+		uint8_t cells_ic1, uint8_t cells_ic2, uint8_t temp_sensor_flags) {
+	uint8_t buf[8];
 
 	// Balance mask, little-endian
 	buf[0] = (bal_mask >> 0) & 0xFF;
@@ -209,8 +214,10 @@ static void can_send_status(uint8_t slave_id, uint32_t bal_mask, uint8_t faults,
 	buf[4] = faults;
 	buf[5] = cells_ic1;
 	buf[6] = cells_ic2;
+	buf[7] = temp_sensor_flags &
+			(STATUS_TEMP_BQ1_ENABLED | STATUS_TEMP_BQ2_ENABLED);
 
-	comm_can_transmit_sid(CAN_ID_STATUS(slave_id), buf, 7);
+	comm_can_transmit_sid(CAN_ID_STATUS(slave_id), buf, 8);
 }
 
 // Get current balancing bitmap from both ICs
@@ -1025,15 +1032,21 @@ static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
 		default:            ntc_res = 10000.0;  break;
 	}
 
-	// Read BQ1 TS1 (cell NTC on BQ1)
-	float v1 = (float)command_read(BQ_ADDR_1, TS1Temperature, &ok) * counts_to_volts;
-	if (!ok) {
-		goto exit_error1;
+	// Read BQ1 TS1 only when an external NTC is configured. A disabled sensor
+	// uses the invalid wire marker; status metadata tells the master that the
+	// absence is intentional rather than a broken enabled sensor.
+	if (cfg->temp_bq1_en) {
+		float v1 = (float)command_read(BQ_ADDR_1, TS1Temperature, &ok) * counts_to_volts;
+		if (!ok) {
+			goto exit_error1;
+		}
+		ts_list = lbm_cons(
+			lbm_enc_float(NAN_TO_INVALID(
+				NTC_TEMP(ntc_measured_res(v1, ntc_pullup_res), ntc_res, ntc_beta))), ts_list
+		);
+	} else {
+		ts_list = lbm_cons(lbm_enc_float(NTC_INVALID_MARKER), ts_list);
 	}
-	ts_list = lbm_cons(
-		lbm_enc_float(NAN_TO_INVALID(
-			NTC_TEMP(ntc_measured_res(v1, ntc_pullup_res), ntc_res, ntc_beta))), ts_list
-	);
 
 	// Read BQ2 internal temperature if present (at address 0x08)
 	if (m_cells_ic2 > 0) {
@@ -1052,7 +1065,7 @@ static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
 	}
 
 	// Read BQ2 TS1 (cell NTC on BQ2) if present
-	if (m_cells_ic2 > 0) {
+	if (m_cells_ic2 > 0 && cfg->temp_bq2_en) {
 		float v2 = (float)command_read(BQ_ADDR_2, TS1Temperature, &ok) * counts_to_volts;
 		if (!ok) {
 			goto exit_error2;
@@ -1239,6 +1252,8 @@ typedef struct {
 	lbm_uint slave_id;
 	lbm_uint cells_ic1;
 	lbm_uint cells_ic2;
+	lbm_uint temp_bq1_en;
+	lbm_uint temp_bq2_en;
 } config_syms;
 
 static config_syms syms_cfg = {0};
@@ -1251,6 +1266,10 @@ static bool compare_symbol(lbm_uint sym, lbm_uint *comp) {
 			lbm_add_symbol_const("cells_ic1", comp);
 		} else if (comp == &syms_cfg.cells_ic2) {
 			lbm_add_symbol_const("cells_ic2", comp);
+		} else if (comp == &syms_cfg.temp_bq1_en) {
+			lbm_add_symbol_const("temp_bq1_en", comp);
+		} else if (comp == &syms_cfg.temp_bq2_en) {
+			lbm_add_symbol_const("temp_bq2_en", comp);
 		}
 	}
 
@@ -1263,6 +1282,15 @@ static lbm_value get_or_set_i(bool set, int *val, lbm_value *lbm_val) {
 		return ENC_SYM_TRUE;
 	} else {
 		return lbm_enc_i(*val);
+	}
+}
+
+static lbm_value get_or_set_bool(bool set, bool *val, lbm_value *lbm_val) {
+	if (set) {
+		*val = lbm_dec_as_i32(*lbm_val) != 0;
+		return ENC_SYM_TRUE;
+	} else {
+		return lbm_enc_i(*val ? 1 : 0);
 	}
 }
 
@@ -1297,6 +1325,10 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 		res = get_or_set_i(set, &cfg->cells_ic1, &set_arg);
 	} else if (compare_symbol(name, &syms_cfg.cells_ic2)) {
 		res = get_or_set_i(set, &cfg->cells_ic2, &set_arg);
+	} else if (compare_symbol(name, &syms_cfg.temp_bq1_en)) {
+		res = get_or_set_bool(set, &cfg->temp_bq1_en, &set_arg);
+	} else if (compare_symbol(name, &syms_cfg.temp_bq2_en)) {
+		res = get_or_set_bool(set, &cfg->temp_bq2_en, &set_arg);
 	}
 
 	return res;
@@ -1521,6 +1553,20 @@ static lbm_value ext_broadcast_all(lbm_value *args, lbm_uint argn) {
 		curr = lbm_cdr(curr);
 	}
 
+	// The enable flags are authoritative. A disabled external NTC always uses
+	// the invalid marker on the wire, even if a caller supplied a plausible
+	// value. IC die temperatures remain mandatory whenever that IC is fitted.
+	main_config_t *cfg = (main_config_t *)&backup.config;
+	if (!cfg->temp_bq1_en) {
+		temps[1] = 0x7FFF;
+	}
+	if (m_cells_ic2 == 0) {
+		temps[2] = 0x7FFF;
+		temps[3] = 0x7FFF;
+	} else if (!cfg->temp_bq2_en) {
+		temps[3] = 0x7FFF;
+	}
+
 	// Get fault flags from optional args or use stored value
 	uint8_t faults = m_fault_flags;
 	if (argn >= 5) {
@@ -1552,12 +1598,18 @@ static lbm_value ext_broadcast_all(lbm_value *args, lbm_uint argn) {
 	if (m_settled_flag) faults |= 0x04;
 	faults &= 0x07;
 
+	uint8_t temp_sensor_flags = 0;
+	if (cfg->temp_bq1_en) temp_sensor_flags |= STATUS_TEMP_BQ1_ENABLED;
+	if (m_cells_ic2 > 0 && cfg->temp_bq2_en) {
+		temp_sensor_flags |= STATUS_TEMP_BQ2_ENABLED;
+	}
+
 	// Send all messages per protocol
 	// TX queue is 20 messages, we send 10, so no delays needed
 	can_send_all_cells(slave_id, cells_mv);
 	can_send_temps(slave_id, temps);
 	can_send_status(slave_id, get_bal_bitmap(), faults,
-			(uint8_t)m_cells_ic1, (uint8_t)m_cells_ic2);
+			(uint8_t)m_cells_ic1, (uint8_t)m_cells_ic2, temp_sensor_flags);
 
 	return ENC_SYM_TRUE;
 }
@@ -1611,11 +1663,17 @@ static lbm_value ext_stop_balancing(lbm_value *args, lbm_uint argn) {
 // Takes two 16-bit masks to avoid LispBM 28-bit integer overflow
 static lbm_value ext_set_bal_bitmap_demo(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(2);
+	main_config_t *cfg = (main_config_t *)&backup.config;
+	if (cfg->cells_ic1 < 3 || cfg->cells_ic1 > 16 ||
+			cfg->cells_ic2 < 0 || cfg->cells_ic2 > 16) {
+		lbm_set_error_reason("Invalid configured demo cell combination");
+		return ENC_SYM_TERROR;
+	}
 
 	m_bal_state_ic1 = (lbm_dec_as_u32(args[0]) & 0xFFFF) &
-			configured_cell_mask(m_cells_ic1);
+			configured_cell_mask((unsigned int)cfg->cells_ic1);
 	m_bal_state_ic2 = (lbm_dec_as_u32(args[1]) & 0xFFFF) &
-			configured_cell_mask(m_cells_ic2);
+			configured_cell_mask((unsigned int)cfg->cells_ic2);
 
 	return ENC_SYM_TRUE;
 }

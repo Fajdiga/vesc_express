@@ -33,7 +33,7 @@ p, li { white-space: pre-wrap; }
 &lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
 p, li { white-space: pre-wrap; }
 &lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Slave ID on the BMS CAN bus (1-8). Each slave must have a unique ID.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Slave ID on the BMS CAN bus (1-8). Each slave must have a unique ID. Master topology is contiguous, so configure slaves as IDs 1 through N without gaps.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_SLAVE_ID</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
@@ -41,7 +41,7 @@ p, li { white-space: pre-wrap; }
             <minInt>1</minInt>
             <showDisplay>0</showDisplay>
             <stepInt>1</stepInt>
-            <valInt>2</valInt>
+            <valInt>1</valInt>
             <suffix></suffix>
             <vTx>4</vTx>
         </slave_id>
@@ -106,6 +106,24 @@ p, li { white-space: pre-wrap; }
             <suffix></suffix>
             <vTx>1</vTx>
         </cells_ic2>
+        <temp_bq1_en>
+            <longName>BQ1 External Temperature Sensor</longName>
+            <type>5</type>
+            <transmittable>1</transmittable>
+            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot;&gt;
+&lt;html&gt;&lt;body&gt;&lt;p&gt;Enable the external NTC connected to BQ1 TS1. When enabled, an invalid or disconnected sensor is reported to the master and blocks temperature-dependent operation. Disable only when the sensor is intentionally not fitted.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_TEMP_BQ1_EN</cDefine>
+            <valInt>1</valInt>
+        </temp_bq1_en>
+        <temp_bq2_en>
+            <longName>BQ2 External Temperature Sensor</longName>
+            <type>5</type>
+            <transmittable>1</transmittable>
+            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot;&gt;
+&lt;html&gt;&lt;body&gt;&lt;p&gt;Enable the external NTC connected to BQ2 TS1. When enabled, an invalid or disconnected sensor is reported to the master and blocks temperature-dependent operation. This setting is ignored when IC2 has no cells. Disable only when the sensor is intentionally not fitted.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_TEMP_BQ2_EN</cDefine>
+            <valInt>1</valInt>
+        </temp_bq2_en>
         <temp_res>
             <longName>NTC Resistance</longName>
             <type>4</type>
@@ -153,6 +171,8 @@ p, li { white-space: pre-wrap; }
         <ser>can_baud_rate</ser>
         <ser>cells_ic1</ser>
         <ser>cells_ic2</ser>
+        <ser>temp_bq1_en</ser>
+        <ser>temp_bq2_en</ser>
         <ser>temp_res</ser>
         <ser>temp_beta</ser>
     </SerOrder>
@@ -176,6 +196,8 @@ p, li { white-space: pre-wrap; }
             <subgroup>
                 <subgroupName>Temperature Sensors</subgroupName>
                 <subgroupParams>
+                    <param>temp_bq1_en</param>
+                    <param>temp_bq2_en</param>
                     <param>temp_res</param>
                     <param>temp_beta</param>
                 </subgroupParams>
