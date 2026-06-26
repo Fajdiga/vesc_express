@@ -5,6 +5,11 @@
 #include "conf_general.h"
 #include "jfbms_slave_confparser.h"
 
+static bool cell_counts_valid(int cells_ic1, int cells_ic2) {
+	return cells_ic1 >= 3 && cells_ic1 <= 16 &&
+			(cells_ic2 == 0 || (cells_ic2 >= 3 && cells_ic2 <= 16));
+}
+
 int32_t jfbms_slave_confparser_serialize_main_config_t(uint8_t *buffer, const main_config_t *conf) {
 	int32_t ind = 0;
 
@@ -34,6 +39,9 @@ bool jfbms_slave_confparser_deserialize_main_config_t(const uint8_t *buffer, mai
 	conf->can_baud_rate = buffer[ind++];
 	conf->cells_ic1 = buffer[ind++];
 	conf->cells_ic2 = buffer[ind++];
+	if (!cell_counts_valid(conf->cells_ic1, conf->cells_ic2)) {
+		return false;
+	}
 	conf->temp_bq1_en = buffer[ind++];
 	conf->temp_bq2_en = buffer[ind++];
 	conf->temp_res = buffer[ind++];

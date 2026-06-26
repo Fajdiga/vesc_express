@@ -55,6 +55,11 @@ static unsigned int m_cells_ic2 = 0;
 static uint16_t m_bal_state_ic1 = 0;
 static uint16_t m_bal_state_ic2 = 0;
 
+static bool cell_counts_valid(unsigned int cells_ic1, unsigned int cells_ic2) {
+	return cells_ic1 >= 3 && cells_ic1 <= 16 &&
+			(cells_ic2 == 0 || (cells_ic2 >= 3 && cells_ic2 <= 16));
+}
+
 // Error messages
 static char *error_comm_bq1 = "BQ1 communication error";
 static char *error_comm_bq2 = "BQ2 communication error";
@@ -746,8 +751,7 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 		cells_ic2 = lbm_dec_as_u32(args[1]);
 	}
 
-	// Validation
-	if (cells_ic1 < 3 || cells_ic1 > 16 || cells_ic2 > 16) {
+	if (!cell_counts_valid(cells_ic1, cells_ic2)) {
 		lbm_set_error_reason("Invalid cell combination");
 		return ENC_SYM_TERROR;
 	}
@@ -1322,8 +1326,16 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 	if (compare_symbol(name, &syms_cfg.slave_id)) {
 		res = get_or_set_i(set, &cfg->slave_id, &set_arg);
 	} else if (compare_symbol(name, &syms_cfg.cells_ic1)) {
+		if (set && !cell_counts_valid(lbm_dec_as_u32(set_arg), cfg->cells_ic2)) {
+			lbm_set_error_reason("Invalid cell combination");
+			return ENC_SYM_EERROR;
+		}
 		res = get_or_set_i(set, &cfg->cells_ic1, &set_arg);
 	} else if (compare_symbol(name, &syms_cfg.cells_ic2)) {
+		if (set && !cell_counts_valid(cfg->cells_ic1, lbm_dec_as_u32(set_arg))) {
+			lbm_set_error_reason("Invalid cell combination");
+			return ENC_SYM_EERROR;
+		}
 		res = get_or_set_i(set, &cfg->cells_ic2, &set_arg);
 	} else if (compare_symbol(name, &syms_cfg.temp_bq1_en)) {
 		res = get_or_set_bool(set, &cfg->temp_bq1_en, &set_arg);
@@ -1664,8 +1676,7 @@ static lbm_value ext_stop_balancing(lbm_value *args, lbm_uint argn) {
 static lbm_value ext_set_bal_bitmap_demo(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(2);
 	main_config_t *cfg = (main_config_t *)&backup.config;
-	if (cfg->cells_ic1 < 3 || cfg->cells_ic1 > 16 ||
-			cfg->cells_ic2 < 0 || cfg->cells_ic2 > 16) {
+	if (!cell_counts_valid((unsigned int)cfg->cells_ic1, (unsigned int)cfg->cells_ic2)) {
 		lbm_set_error_reason("Invalid configured demo cell combination");
 		return ENC_SYM_TERROR;
 	}

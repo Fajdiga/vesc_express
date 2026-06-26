@@ -15,7 +15,7 @@ if(NOT DEFINED HW_NAME)
             set(HW_NAME "JF Link")
         endif()
     else()
-        set(HW_NAME "JFBMS_MASTER")
+        set(HW_NAME "JFBMS32v2")
     endif()
 
     set(HW_NAME "${HW_NAME}" CACHE STRING "VESC hardware profile to build")

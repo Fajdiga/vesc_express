@@ -9,6 +9,7 @@
 (def app-wdt-timeout 120) ; Seconds. Set to 0 to disable the app watchdog.
 (def user-beeps-en true) ; Enable normal user feedback beeps.
 (def critical-beep-duty 0.5) ; Loud duty cycle for critical fault alarms.
+(def bq-wake-alarm-period 3) ; Failed init attempts between BQ wake alarms. Set to 1 for every attempt.
 
 ;;;;;;;;; End User Settings ;;;;;;;;;
 
@@ -158,6 +159,13 @@ loopwhile-thd
 ; Exit deepsleep
 ; (bms-subcmd-cmdonly 1 0x000e)
 
+(defun bq-wake-report-due (attempts)
+        (or
+                (= attempts 1)
+                (and (> bq-wake-alarm-period 0) (= (mod attempts bq-wake-alarm-period) 0))
+        )
+)
+
 (defun init-hw () {
         (var attempts 0)
 
@@ -168,7 +176,7 @@ loopwhile-thd
                 ; Fault alarm: 6 fast marker beeps, then a stage code.
                 ; Rate-limit it so a missing BQ warns loudly without wasting
                 ; more pack energy on a continuous buzzer.
-                (if (or (= attempts 1) (= (mod attempts 10) 0))
+                (if (bq-wake-report-due attempts)
                         (bq-wake-debug-beep last-bq-wake-stage)
                 )
 
@@ -304,7 +312,7 @@ loopwhile-thd
         (setassoc rtc-val 'last-bq-wake-time-s last-bq-wake-time-s)
         (save-rtc-val)
 
-        (if (or (= attempts 1) (= (mod attempts 10) 0)) {
+        (if (bq-wake-report-due attempts) {
                 (print "BQ wake:" (bq-wake-stage-name last-bq-wake-stage)
                         "attempts" attempts
                         "0x08" last-bq-detect-08
@@ -313,11 +321,11 @@ loopwhile-thd
 })
 
 (defun sync-bq-wake-debug-globals () {
-        (setq last-bq-init-attempts (rtc-get 'last-bq-init-attempts 0))
-        (setq last-bq-detect-08 (rtc-get 'last-bq-detect-08 0))
-        (setq last-bq-detect-10 (rtc-get 'last-bq-detect-10 0))
-        (setq last-bq-wake-stage (rtc-get 'last-bq-wake-stage 0))
-        (setq last-bq-wake-time-s (rtc-get 'last-bq-wake-time-s 0))
+        (setq last-bq-init-attempts (rtc-number 'last-bq-init-attempts 0))
+        (setq last-bq-detect-08 (rtc-number 'last-bq-detect-08 0))
+        (setq last-bq-detect-10 (rtc-number 'last-bq-detect-10 0))
+        (setq last-bq-wake-stage (rtc-number 'last-bq-wake-stage 0))
+        (setq last-bq-wake-time-s (rtc-number 'last-bq-wake-time-s 0))
 })
 
 (defun shutdown-reason-name (reason)
@@ -375,7 +383,16 @@ loopwhile-thd
 )))
 
 ; SOC from battery voltage
-(defun calc-soc (v-cell) (truncate (/ (- v-cell (bms-get-param 'vc_empty)) (- (bms-get-param 'vc_full) (bms-get-param 'vc_empty))) 0.0 1.0))
+(defun calc-soc (v-cell) {
+        (var empty (bms-get-param 'vc_empty))
+        (var full (bms-get-param 'vc_full))
+        (var den (- full empty))
+
+        (if (= den 0.0)
+                0.0
+                (truncate (/ (- v-cell empty) den) 0.0 1.0)
+        )
+})
 
 (defun valid-pack-reading () (and
         init-done
@@ -414,7 +431,16 @@ loopwhile-thd
 
         (loopforeach d devs {
                 (var res (can-msg-age d 4))
-                (if (and res (< res 0.1)) (setq i-sum (+ i-sum (canget-current-in d))))
+                (if (and res (< res 0.1)) {
+                        (var cur (canget-current-in d))
+                        (if (number? cur)
+                                (setq i-sum (+ i-sum cur))
+                                {
+                                        (print "CAN current invalid for id" d)
+                                        (exit-error 0)
+                                }
+                        )
+                })
         })
 
         i-sum
@@ -640,7 +666,7 @@ loopwhile-thd
 
 (defun shutdown-timer-due () (and
         (> (bms-get-param 'shutdown) 0)
-        (>= (assoc rtc-val 'sleep-total-time-s) (* (bms-get-param 'shutdown) 86400.0))
+        (>= (rtc-number 'sleep-total-time-s 0) (* (bms-get-param 'shutdown) 86400.0))
 ))
 
 (defun process-sleep-time () {
@@ -656,10 +682,10 @@ loopwhile-thd
                 ; did not advance across deep sleep, a timer wake still means
                 ; one configured sleep interval elapsed.
                 ((= source 2) {
-                        (var entered (assoc rtc-val 'sleep-enter-time-s))
+                        (var entered (rtc-number 'sleep-enter-time-s 0))
                         (if (> entered 0) {
                                 (var slept-time (- (get-time-of-day-s) entered))
-                                (var total-time (assoc rtc-val 'sleep-total-time-s))
+                                (var total-time (rtc-number 'sleep-total-time-s 0))
                                 (if (<= slept-time 0.0)
                                         (setq slept-time (sleep-duration-s))
                                 )
@@ -682,7 +708,7 @@ loopwhile-thd
 
 
 (defun start-fun () {
-        (setassoc rtc-val 'wakeup-cnt (+ (assoc rtc-val 'wakeup-cnt) 1))
+        (setassoc rtc-val 'wakeup-cnt (+ (rtc-number 'wakeup-cnt 0) 1))
 
         (var do-sleep true)
 
@@ -840,6 +866,29 @@ loopwhile-thd
             ((eq type 'f) (eeprom-store-f addr val))
             ((eq type 'b) (eeprom-store-i addr (if val 1 0)))
 )))
+
+(defun number-or (value fallback)
+    (if (number? value) value fallback)
+)
+
+(defun rtc-number (name fallback)
+        (number-or (rtc-get name fallback) fallback)
+)
+
+(defun sanitize-rtc-val () {
+        (setassoc rtc-val 'wakeup-cnt (rtc-number 'wakeup-cnt 0))
+        (setassoc rtc-val 'sleep-enter-time-s (rtc-number 'sleep-enter-time-s 0))
+        (setassoc rtc-val 'sleep-total-time-s (rtc-number 'sleep-total-time-s 0))
+        (setassoc rtc-val 'c-min (rtc-number 'c-min 3.5))
+        (setassoc rtc-val 'c-max (rtc-number 'c-max 3.5))
+        (setassoc rtc-val 'v-tot (rtc-number 'v-tot 50.0))
+        (setassoc rtc-val 'soc (truncate (rtc-number 'soc 0.5) 0.0 1.0))
+        (setassoc rtc-val 'last-bq-init-attempts (rtc-number 'last-bq-init-attempts 0))
+        (setassoc rtc-val 'last-bq-detect-08 (rtc-number 'last-bq-detect-08 0))
+        (setassoc rtc-val 'last-bq-detect-10 (rtc-number 'last-bq-detect-10 0))
+        (setassoc rtc-val 'last-bq-wake-stage (rtc-number 'last-bq-wake-stage 0))
+        (setassoc rtc-val 'last-bq-wake-time-s (rtc-number 'last-bq-wake-time-s 0))
+})
 
 (defun restore-settings () {
         (write-setting 'ah-cnt 0.0)
@@ -1032,10 +1081,15 @@ loopwhile-thd
         (set-bms-val 'bms-v-cell-min c-min)
         (set-bms-val 'bms-v-cell-max c-max)
 
-        (if (= (bms-get-param 'soc_use_ah) 1)
+        (var batt-ah (bms-get-param 'batt_ah))
+        (if (> batt-ah 0.0)
+                (setq ah-cnt-soc (truncate ah-cnt-soc 0.0 batt-ah))
+        )
+
+        (if (and (= (bms-get-param 'soc_use_ah) 1) (> batt-ah 0.0))
         {
                 ; Coulomb counting
-                (setq soc (/ ah-cnt-soc (bms-get-param 'batt_ah)))
+                (setq soc (/ ah-cnt-soc batt-ah))
         }
         {
                 (if (>= soc 0.0)
@@ -1050,7 +1104,9 @@ loopwhile-thd
         (var t-chg (mod (/ (systime) 1000 60) 255))
 
         (var ah (* iout (/ dt 3600.0)))
-        (setq ah-cnt-soc (truncate (- ah-cnt-soc ah) 0.0 (bms-get-param 'batt_ah)))
+        (if (> batt-ah 0.0)
+                (setq ah-cnt-soc (truncate (- ah-cnt-soc ah) 0.0 batt-ah))
+        )
 
         ; Ah and Wh cnt
         (if (> (abs iout) (bms-get-param 'min_current_ah_wh_cnt)) {
@@ -1384,6 +1440,7 @@ loopwhile-thd
                 (var tmp (unflatten (rtc-data)))
                 (if tmp (setq rtc-val tmp))
         })
+        (sanitize-rtc-val)
         (sync-bq-wake-debug-globals)
 
         (def active-cells-ic1 (bms-get-param 'cells_ic1))
@@ -1396,15 +1453,15 @@ loopwhile-thd
         ; Timer shutdown can happen inside start-fun, before the normal main
         ; loop starts. Load counters now so save-settings is always safe.
         (def settings-valid (not (not-eq (read-setting 'ver-code) settings-version)))
-        (def ah-cnt (read-setting 'ah-cnt))
-        (def wh-cnt (read-setting 'wh-cnt))
-        (def ah-chg-tot (read-setting 'ah-chg-tot))
-        (def wh-chg-tot (read-setting 'wh-chg-tot))
-        (def ah-dis-tot (read-setting 'ah-dis-tot))
-        (def wh-dis-tot (read-setting 'wh-dis-tot))
+        (def ah-cnt (number-or (read-setting 'ah-cnt) 0.0))
+        (def wh-cnt (number-or (read-setting 'wh-cnt) 0.0))
+        (def ah-chg-tot (number-or (read-setting 'ah-chg-tot) 0.0))
+        (def wh-chg-tot (number-or (read-setting 'wh-chg-tot) 0.0))
+        (def ah-dis-tot (number-or (read-setting 'ah-dis-tot) 0.0))
+        (def wh-dis-tot (number-or (read-setting 'wh-dis-tot) 0.0))
         (def ah-cnt-soc (if settings-valid
-                (read-setting 'ah-cnt-soc)
-                (* (assoc rtc-val 'soc) (bms-get-param 'batt_ah))
+                (number-or (read-setting 'ah-cnt-soc) -1.0)
+                (* (rtc-number 'soc 0.5) (bms-get-param 'batt_ah))
         ))
 
         (def t-start-fun (secs-since 0))

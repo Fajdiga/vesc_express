@@ -5,6 +5,11 @@
 #include "conf_general.h"
 #include "jfbms32_confparser.h"
 
+static bool cell_counts_valid(int cells_ic1, int cells_ic2) {
+	return cells_ic1 >= 3 && cells_ic1 <= 16 &&
+			(cells_ic2 == 0 || (cells_ic2 >= 3 && cells_ic2 <= 16));
+}
+
 int32_t jfbms32_confparser_serialize_main_config_t(uint8_t *buffer, const main_config_t *conf) {
 	int32_t ind = 0;
 
@@ -110,6 +115,9 @@ bool jfbms32_confparser_deserialize_main_config_t(const uint8_t *buffer, main_co
 	conf->max_bal_ch = buffer_get_int16(buffer, &ind);
 	conf->cells_ic1 = buffer[ind++];
 	conf->cells_ic2 = buffer[ind++];
+	if (!cell_counts_valid(conf->cells_ic1, conf->cells_ic2)) {
+		return false;
+	}
 	conf->temp_num = buffer[ind++];
 	conf->batt_ah = buffer_get_float32_auto(buffer, &ind);
 	conf->soc_use_ah = buffer[ind++];

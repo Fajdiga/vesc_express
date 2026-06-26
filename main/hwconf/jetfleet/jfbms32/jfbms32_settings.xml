@@ -377,7 +377,7 @@ p, li { white-space: pre-wrap; }
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
             <maxInt>16</maxInt>
-            <minInt>0</minInt>
+            <minInt>3</minInt>
             <showDisplay>0</showDisplay>
             <stepInt>1</stepInt>
             <valInt>16</valInt>

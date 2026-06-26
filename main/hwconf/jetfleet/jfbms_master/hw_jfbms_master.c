@@ -52,6 +52,11 @@
 #define ISENSE_SCALE   (1.0f / (ISENSE_GAIN * ISENSE_RSHUNT))   // 10 A/V
 #define ISENSE_ADC_SAMPLES 16
 #define ISENSE_ZERO_DEADBAND_A 0.06f
+#define ISENSE_OFFSET_SETTLE_DELTA_V 0.006f
+#define ISENSE_OFFSET_SETTLE_SAMPLES 8
+#define ISENSE_OFFSET_CHECK_PERIOD_MS 100
+#define ISENSE_OFFSET_BOOT_TIMEOUT_MS 5000
+#define ISENSE_OFFSET_LOG_PERIOD_MS 2000
 
 static float m_current_offset = 1.65f;     // Calibrated at startup, default 1.65 V
 static float m_current_filtered = 0.0f;    // EMA-filtered current (updated 10 Hz)
@@ -59,6 +64,18 @@ static bool  m_current_filter_init = false;
 static bool  m_current_valid = false;
 static volatile bool m_calibrate_request = false;
 #define ISENSE_EMA_ALPHA  0.85f            // Calm BMS current display/counters at 10 Hz
+
+typedef struct {
+	bool active;
+	float last_v;
+	float sum_v;
+	int stable_samples;
+	uint32_t start_ms;
+	uint32_t last_log_ms;
+} isense_settle_state_t;
+
+static bool m_calibrate_pending = false;
+static isense_settle_state_t m_calibrate_settle;
 
 static float isense_read_voltage(void) {
 	float sum = 0.0f;
@@ -73,6 +90,64 @@ static float isense_read_voltage(void) {
 	}
 
 	return samples > 0 ? (sum / (float)samples) : -1.0f;
+}
+
+static void isense_settle_begin(isense_settle_state_t *state, uint32_t now_ms) {
+	state->active = true;
+	state->last_v = -1.0f;
+	state->sum_v = 0.0f;
+	state->stable_samples = 0;
+	state->start_ms = now_ms;
+	state->last_log_ms = now_ms;
+}
+
+static bool isense_settle_update(isense_settle_state_t *state, float v, float *settled_v) {
+	if (v < 0.0f || !isfinite(v)) {
+		state->last_v = -1.0f;
+		state->sum_v = 0.0f;
+		state->stable_samples = 0;
+		return false;
+	}
+
+	if (state->last_v < 0.0f || fabsf(v - state->last_v) > ISENSE_OFFSET_SETTLE_DELTA_V) {
+		state->sum_v = v;
+		state->stable_samples = 1;
+	} else {
+		state->sum_v += v;
+		state->stable_samples++;
+	}
+
+	state->last_v = v;
+
+	if (state->stable_samples >= ISENSE_OFFSET_SETTLE_SAMPLES) {
+		*settled_v = state->sum_v / (float)state->stable_samples;
+		state->active = false;
+		return true;
+	}
+
+	return false;
+}
+
+static void isense_apply_offset(float offset_v) {
+	m_current_offset      = offset_v;
+	m_current_filtered    = 0.0f;
+	m_current_filter_init = false;
+}
+
+static bool isense_wait_for_settled_offset(float *offset_v, uint32_t timeout_ms) {
+	isense_settle_state_t state;
+	uint32_t start_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+	isense_settle_begin(&state, start_ms);
+
+	while ((xTaskGetTickCount() * portTICK_PERIOD_MS) - start_ms <= timeout_ms) {
+		float v = isense_read_voltage();
+		if (isense_settle_update(&state, v, offset_v)) {
+			return true;
+		}
+		vTaskDelay(pdMS_TO_TICKS(ISENSE_OFFSET_CHECK_PERIOD_MS));
+	}
+
+	return false;
 }
 
 // ============================================================================
@@ -199,9 +274,8 @@ static bool timestamp_fresh(uint32_t timestamp, uint32_t now, uint32_t timeout) 
 static bool slave_cell_counts_valid_locked(int idx) {
 	int cells_ic1 = m_bms_data.cells_ic1[idx];
 	int cells_ic2 = m_bms_data.cells_ic2[idx];
-	return cells_ic1 >= 0 && cells_ic1 <= 16 &&
-			cells_ic2 >= 0 && cells_ic2 <= 16 &&
-			(cells_ic1 + cells_ic2) > 0;
+	return cells_ic1 >= 3 && cells_ic1 <= 16 &&
+			(cells_ic2 == 0 || (cells_ic2 >= 3 && cells_ic2 <= 16));
 }
 
 // Build the narrowest single hardware-mask superset for contiguous IDs 1..N.
@@ -1237,12 +1311,28 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 		m_current_valid = v >= 0.0f && isfinite(v);
 		if (m_current_valid) {
 			if (m_calibrate_request) {
-				m_current_offset      = v;
-				m_current_filtered    = 0.0f;
-				m_current_filter_init = false;
-				m_calibrate_request   = false;
-				commands_printf_lisp("Current calibrated: offset=%.4f V (range +-%.1f A)",
-					m_current_offset, 1.65f * ISENSE_SCALE);
+				uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+				m_calibrate_request = false;
+				m_calibrate_pending = true;
+				isense_settle_begin(&m_calibrate_settle, now_ms);
+			}
+			if (m_calibrate_pending) {
+				float offset_v = 0.0f;
+				if (isense_settle_update(&m_calibrate_settle, v, &offset_v)) {
+					uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+					uint32_t elapsed_ms = now_ms - m_calibrate_settle.start_ms;
+					isense_apply_offset(offset_v);
+					m_calibrate_pending = false;
+					commands_printf_lisp("Current calibrated: offset=%.4f V after %u ms (range +-%.1f A)",
+						(double)m_current_offset, (unsigned)elapsed_ms, (double)(1.65f * ISENSE_SCALE));
+				} else {
+					uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+					if ((now_ms - m_calibrate_settle.last_log_ms) >= ISENSE_OFFSET_LOG_PERIOD_MS) {
+						m_calibrate_settle.last_log_ms = now_ms;
+						commands_printf_lisp("Current calibration waiting for stable reference: %.4f V",
+							(double)v);
+					}
+				}
 			}
 			float raw_a = (v - m_current_offset) * ISENSE_SCALE;
 			if (!m_current_filter_init) {
@@ -1328,13 +1418,13 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 // ============================================================================
 
 // (master-calibrate-current) — request zero-current calibration.
-// Sets a flag consumed by master-update-vesc-bms on its next ADC read (within ~100 ms).
+// Sets a flag consumed by master-update-vesc-bms once the sense reference is stable.
 // Returns true immediately; calibration confirmation is printed by the update loop.
 static lbm_value ext_master_calibrate_current(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 	m_calibrate_request = true;
-	commands_printf_lisp("Current calibration requested — will apply on next ADC update");
+	commands_printf_lisp("Current calibration requested - waiting for stable reference");
 	return ENC_SYM_TRUE;
 }
 
@@ -1381,6 +1471,33 @@ static lbm_value ext_master_get_enable(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 	return lbm_enc_i(gpio_get_level(PIN_ENABLE) == 0 ? 0 : 1);
+}
+
+static void master_set_enable_wakeup_state(int state) {
+	gpio_set_direction(PIN_ENABLE, GPIO_MODE_INPUT);
+
+	switch (state) {
+	case 0:
+		esp_sleep_enable_gpio_wakeup_on_hp_periph_powerdown(
+				1ULL << PIN_ENABLE, ESP_GPIO_WAKEUP_GPIO_LOW);
+		break;
+
+	case 1:
+		esp_sleep_enable_gpio_wakeup_on_hp_periph_powerdown(
+				1ULL << PIN_ENABLE, ESP_GPIO_WAKEUP_GPIO_HIGH);
+		break;
+
+	default:
+		gpio_wakeup_disable_on_hp_periph_powerdown_sleep(PIN_ENABLE);
+		break;
+	}
+}
+
+static lbm_value ext_master_set_enable_wakeup_state(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(1);
+
+	master_set_enable_wakeup_state(lbm_dec_as_i32(args[0]));
+	return ENC_SYM_TRUE;
 }
 
 static lbm_value ext_master_get_time_of_day_s(lbm_value *args, lbm_uint argn) {
@@ -1636,6 +1753,7 @@ static void load_extensions(bool main_found) {
 	lbm_add_extension("master-local-sensors-valid?", ext_master_local_sensors_valid);
 	lbm_add_extension("master-local-sensor-status", ext_master_local_sensor_status);
 	lbm_add_extension("master-get-enable", ext_master_get_enable);
+	lbm_add_extension("master-set-enable-wakeup-state", ext_master_set_enable_wakeup_state);
 	lbm_add_extension("master-get-time-of-day-s", ext_master_get_time_of_day_s);
 	lbm_add_extension("master-wakeup-source", ext_master_wakeup_source);
 	lbm_add_extension("master-fail-close-local", ext_master_fail_close_local);
@@ -1703,11 +1821,17 @@ void hw_init(void) {
 			terminal_shutdown);
 
 	// CHG_EN is held low during boot, so the hardware current path is off and
-	// the shunt current is guaranteed to be zero while calibrating.
-	vTaskDelay(pdMS_TO_TICKS(500));
+	// the shunt current is guaranteed to be zero while calibrating. The REF node
+	// is RC-filtered, so wait for measured stability instead of a fixed delay.
 	{
-		float v = isense_read_voltage();
-		if (v >= 0.0f) m_current_offset = v;
+		float offset_v = 0.0f;
+		if (isense_wait_for_settled_offset(&offset_v, ISENSE_OFFSET_BOOT_TIMEOUT_MS)) {
+			isense_apply_offset(offset_v);
+			commands_printf("JFBMS current offset calibrated: %.4f V", (double)m_current_offset);
+		} else {
+			commands_printf("JFBMS current offset not settled after %u ms; using %.4f V",
+				(unsigned)ISENSE_OFFSET_BOOT_TIMEOUT_MS, (double)m_current_offset);
+		}
 	}
 
 #if JFBMS_USE_DEDICATED_SLAVE_TWAI

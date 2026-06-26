@@ -480,6 +480,11 @@ static uint8_t clamp_u8_i(int value, int min, int max) {
 	return (uint8_t)value;
 }
 
+static bool cell_counts_valid(unsigned int cells_ic1, unsigned int cells_ic2) {
+	return cells_ic1 >= 3 && cells_ic1 <= 16 &&
+			(cells_ic2 == 0 || (cells_ic2 >= 3 && cells_ic2 <= 16));
+}
+
 static uint8_t overcurrent_threshold_from_a(float current) {
 	// BQ76952 OCC/OCD thresholds are shunt voltage in 2 mV steps.
 	float shunt_mv = current * HW_R_SHUNT * 1000.0f;
@@ -695,8 +700,7 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 		cells_ic2 = lbm_dec_as_u32(args[1]);
 	}
 
-	if (cells_ic1 < 3 || cells_ic1 > 16 || cells_ic2 > 16 || cells_ic2 == 1
-		|| cells_ic2 == 2) {
+	if (!cell_counts_valid(cells_ic1, cells_ic2)) {
 		lbm_set_error_reason("Invalid cell combination");
 		return ENC_SYM_TERROR;
 	}
@@ -1691,8 +1695,16 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 	main_config_t *cfg = (main_config_t *)&backup.config;
 
 	if (compare_symbol(name, &syms_vesc.cells_ic1)) {
+		if (set && !cell_counts_valid(lbm_dec_as_u32(set_arg), cfg->cells_ic2)) {
+			lbm_set_error_reason("Invalid cell combination");
+			return ENC_SYM_EERROR;
+		}
 		res = get_or_set_i(set, &cfg->cells_ic1, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.cells_ic2)) {
+		if (set && !cell_counts_valid(cfg->cells_ic1, lbm_dec_as_u32(set_arg))) {
+			lbm_set_error_reason("Invalid cell combination");
+			return ENC_SYM_EERROR;
+		}
 		res = get_or_set_i(set, &cfg->cells_ic2, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.temp_num)) {
 		res = get_or_set_i(set, &cfg->temp_num, &set_arg);

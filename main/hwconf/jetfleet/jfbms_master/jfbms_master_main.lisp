@@ -129,10 +129,7 @@ loopwhile-thd
         (var tmp (unflatten (rtc-data)))
         (if tmp {
             (setq rtc-val tmp)
-            ; Older images stored this counter as a float. Keep accumulated
-            ; time while migrating to exact integer seconds.
-            (setassoc rtc-val 'sleep-total-time-s
-                (to-i (assoc rtc-val 'sleep-total-time-s)))
+            (sanitize-rtc-val)
         })
     })
 })
@@ -207,6 +204,21 @@ loopwhile-thd
             ((eq type 'b) (eeprom-store-i addr (if val 1 0)))
 )))
 
+(defun number-or (value fallback)
+    (if (number? value) value fallback)
+)
+
+(defun rtc-number (name fallback)
+    (number-or (assoc rtc-val name) fallback)
+)
+
+(defun sanitize-rtc-val () {
+    (setassoc rtc-val 'sleep-enter-time-s (rtc-number 'sleep-enter-time-s 0))
+    ; Older images stored this counter as a float. Keep accumulated time while
+    ; migrating to exact integer seconds.
+    (setassoc rtc-val 'sleep-total-time-s (to-i (rtc-number 'sleep-total-time-s 0)))
+})
+
 (defun restore-settings () {
     (setq ah-cnt 0.0)
     (setq wh-cnt 0.0)
@@ -234,13 +246,13 @@ loopwhile-thd
         (restore-settings)
     )
 
-    (setq ah-cnt (read-setting 'ah-cnt))
-    (setq wh-cnt (read-setting 'wh-cnt))
-    (setq ah-chg-tot (read-setting 'ah-chg-tot))
-    (setq wh-chg-tot (read-setting 'wh-chg-tot))
-    (setq ah-dis-tot (read-setting 'ah-dis-tot))
-    (setq wh-dis-tot (read-setting 'wh-dis-tot))
-    (setq ah-cnt-soc (read-setting 'ah-cnt-soc))
+    (setq ah-cnt (number-or (read-setting 'ah-cnt) 0.0))
+    (setq wh-cnt (number-or (read-setting 'wh-cnt) 0.0))
+    (setq ah-chg-tot (number-or (read-setting 'ah-chg-tot) 0.0))
+    (setq wh-chg-tot (number-or (read-setting 'wh-chg-tot) 0.0))
+    (setq ah-dis-tot (number-or (read-setting 'ah-dis-tot) 0.0))
+    (setq wh-dis-tot (number-or (read-setting 'wh-dis-tot) 0.0))
+    (setq ah-cnt-soc (number-or (read-setting 'ah-cnt-soc) -1.0))
 })
 
 (defun save-settings () {
@@ -284,6 +296,11 @@ loopwhile-thd
 (defun external-wake-active () (= (master-get-enable) 1))
 
 (defun external-wake-inactive () (= (master-get-enable) 0))
+
+(defun prepare-external-wakeup () {
+    ; JFBMS master wakes from external requests on ENABLE.
+    (master-set-enable-wakeup-state 1)
+})
 
 (defun local-sensor-status () (master-local-sensor-status))
 
@@ -691,11 +708,11 @@ loopwhile-thd
         })
         ; Count actual timer sleep, not the requested duration.
         ((= source 2) {
-            (var entered (assoc rtc-val 'sleep-enter-time-s))
+            (var entered (rtc-number 'sleep-enter-time-s 0))
             (var now (master-get-time-of-day-s))
             (if (and entered (> entered 0) (> now entered)) {
                 (setassoc rtc-val 'sleep-total-time-s
-                    (+ (assoc rtc-val 'sleep-total-time-s) (- now entered)))
+                    (+ (rtc-number 'sleep-total-time-s 0) (- now entered)))
             })
         })
     )
@@ -715,7 +732,7 @@ loopwhile-thd
         (if (and
                 (charger-data-ok)
                 (> (bms-get-param 'shutdown) 0)
-                (>= (assoc rtc-val 'sleep-total-time-s) (* (bms-get-param 'shutdown) 86400))
+                (>= (rtc-number 'sleep-total-time-s 0) (* (bms-get-param 'shutdown) 86400))
             )
             (bms-shutdown-impl shutdown-reason-timer)
         )
@@ -730,14 +747,14 @@ loopwhile-thd
             (is-comm-connected)
             (can-active)
         ) {
-        (if (> (assoc rtc-val 'sleep-total-time-s) 0)
+        (if (> (rtc-number 'sleep-total-time-s 0) 0)
             (reset-sleep-total-time)
         )
     } {
         (if (and
                 (charger-data-ok)
                 (> (bms-get-param 'shutdown) 0)
-                (>= (assoc rtc-val 'sleep-total-time-s) (* (bms-get-param 'shutdown) 86400))
+                (>= (rtc-number 'sleep-total-time-s 0) (* (bms-get-param 'shutdown) 86400))
             )
             (bms-shutdown-impl shutdown-reason-timer)
         )
@@ -750,6 +767,7 @@ loopwhile-thd
     (charger-data-ok)
     (external-wake-inactive)
     (not is-charging)
+    (not trigger-bal-after-charge)
     (not bal-request)
     (= (ix bal-state 0) 0)
     (not (test-chg 1))
@@ -773,7 +791,7 @@ loopwhile-thd
             (gpio-write 6 1) ; COM off, active low.
             (gpio-hold 6 1)
             (gpio-hold-deepsleep 1)
-            (sleep-config-wakeup-pin 7 1) ; ENABLE wakes from deep sleep on high.
+            (prepare-external-wakeup)
             (sleep 0.05)
 
             ; Do not enter deep sleep if ENABLE changed during preparation.
@@ -1059,6 +1077,7 @@ loopwhile-thd
     pack-data-ok
     temp-data-ok
     (current-data-ok)
+    (not is-charging)
     (<= (* (abs iout) (if (= (ix bal-state 0) 1) 0.8 1.0)) (bms-get-param 'balance_max_current))
     (>= c-min (bms-get-param 'vc_balance_min))
     (or
@@ -1102,9 +1121,61 @@ loopwhile-thd
     (and (> active-count 0) all-settled)
 })
 
+(defun balance-needed-now () {
+    (var max-ch (bms-get-param 'max_bal_ch))
+    (var threshold (bms-get-param 'vc_balance_start))
+    (var needed false)
+    (var sid 1)
+    (var max-sid (cfg-num-slaves))
+
+    (loopwhile (<= sid max-sid) {
+        (if (and (master-slave-active? sid) (master-slave-fresh? sid)) {
+            (var cells (master-get-slave-cells sid))
+            (var ic1-cnt (master-get-cells-ic1 sid))
+            (var ic2-cnt (master-get-cells-ic2 sid))
+            (var cnt (+ ic1-cnt ic2-cnt))
+
+            (if (and cells (> cnt 0) (= (length cells) cnt)) {
+                (var ic1-volts (map (fn (i) (ix cells i)) (range ic1-cnt)))
+                (var ic2-volts (if (> ic2-cnt 0)
+                    (map (fn (i) (ix cells (+ ic1-cnt i))) (range ic2-cnt))
+                    '()
+                ))
+                (var ic1-mask (balance-ic-group ic1-volts c-min threshold max-ch))
+                (var ic2-mask (if (> ic2-cnt 0)
+                    (balance-ic-group ic2-volts c-min threshold max-ch)
+                    0
+                ))
+
+                (if (or (> ic1-mask 0) (> ic2-mask 0))
+                    (setq needed true)
+                )
+            })
+        })
+        (setq sid (+ sid 1))
+    })
+
+    needed
+})
+
 (defun start-balance-request () {
     (setq bal-request true)
     (setix bal-keepalive-kick 0 1)
+})
+
+(defun try-manual-balance-request () {
+    (refresh-pack-data)
+    (if (and
+            (balance-safe-now)
+            (all-configured-slaves-fresh)
+            (all-configured-slaves-settled)
+            (balance-needed-now)
+        ) {
+        (start-balance-request)
+        true
+    } {
+        false
+    })
 })
 
 (defun clear-balance-request () {
@@ -1115,6 +1186,14 @@ loopwhile-thd
 (defun defer-auto-balance-request () {
     (setq bal-request false)
     (setq bal-auto-retry-ts (systime))
+})
+
+(defun fail-close-active-balance () {
+    (if (= (ix bal-state 0) 1) {
+        (master-fail-close-local)
+        (setq is-charging false)
+        (setq charge-ok false)
+    })
 })
 
 (defun balance-thd () (loopwhile t {
@@ -1137,6 +1216,7 @@ loopwhile-thd
 
         (if (not (balance-safe-now)) {
             (print "BAL: blocked by pack conditions")
+            (fail-close-active-balance)
             (stop-all-balancing)
             (if trigger-bal-after-charge
                 (defer-auto-balance-request)
@@ -1184,6 +1264,7 @@ loopwhile-thd
 
             (if (not (and (balance-safe-now) (all-configured-slaves-fresh))) {
                 (print "BAL: stopped (conditions changed)")
+                (fail-close-active-balance)
                 (stop-all-balancing)
                 (if trigger-bal-after-charge
                     (defer-auto-balance-request)
@@ -1269,8 +1350,10 @@ loopwhile-thd
         (recv
             ((event-bms-force-bal (? v)) {
                 (if (= v 1) {
-                    (start-balance-request)
-                    (print "BAL CMD: start")
+                    (if (try-manual-balance-request)
+                        (print "BAL CMD: start")
+                        (print "BAL CMD: ignored")
+                    )
                 } {
                     (print "BAL CMD: stop")
                     (clear-balance-request)
