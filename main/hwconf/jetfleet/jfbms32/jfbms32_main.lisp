@@ -15,6 +15,7 @@
 
 ; State
 (def trigger-bal-after-charge false)
+(def charge-session-valid false)
 (def bal-ok false)
 (def is-balancing false)
 (def is-charging false)
@@ -535,6 +536,7 @@ loopwhile-thd
 
         (setq is-charging false)
         (setq charge-ok false)
+        (setq charge-session-valid false)
         (if clear-bal-trigger (setq trigger-bal-after-charge false))
 
         (if close-ok
@@ -787,7 +789,7 @@ loopwhile-thd
                         (setq ichg (- (bms-current)))
                         (if (> ichg (bms-get-param 'min_charge_current)) {
                                 (setq do-sleep false)
-                                (setq trigger-bal-after-charge true)
+                                (setq charge-session-valid true)
                                 (break)
                         })
                 })
@@ -956,7 +958,7 @@ loopwhile-thd
         (if (bq-scd-fault-active) {
                 (setq bq-scd-latched true)
                 (setq bq-scd-recovery-armed false)
-                (set-chg nil)
+                (set-chg false)
         })
 
         ; A charger-side short can also pull Vchg to zero, so absence only arms
@@ -988,12 +990,18 @@ loopwhile-thd
                 (setq is-charging true)
             }
             {
-                ; Trigger balancing when charging ends and the charge
-                ; has been ongoing for at least 10 seconds.
-                (if (and is-charging (> (secs-since charge-ts) 10.0)) {
+                ; Trigger balancing only when a real, fault-free charge session
+                ; ends. Voltage alone must not arm balancing.
+                (if (and
+                        is-charging
+                        charge-session-valid
+                        (not (assoc rtc-val 'charge-fault))
+                        (not bq-scd-latched)
+                    ) {
                         (setq trigger-bal-after-charge true)
                 })
 
+                (setq charge-session-valid false)
                 (bms-set-chg 0)
                 (setq is-charging false)
             }
@@ -1051,6 +1059,10 @@ loopwhile-thd
         (setq vout (with-com '(bms-get-vout)))
         (setq vt-vchg (bms-get-vchg))
         (setq iout (+ (with-com '(bms-current)) (can-sum-current)))
+
+        (if (and is-charging (> (- iout) (bms-get-param 'min_charge_current))) {
+                (setq charge-session-valid true)
+        })
 
         (if (and is-balancing (not (balance-safe-now))) {
                 (setq bal-ok false)
@@ -1151,7 +1163,6 @@ loopwhile-thd
         (if (and is-charging (>= c-max (bms-get-param 'vc_charge_end))) {
                 (setq charge-complete true)
                 (setq charge-complete-msg true)
-                (setq trigger-bal-after-charge true)
         })
 
         (setq charge-ok (and
@@ -1241,12 +1252,11 @@ loopwhile-thd
                 )
         }
         {
-                (set-chg nil)
+                (set-chg false)
 
                 ; Reset coulomb counter when battery is full
                 (if (>= c-max (bms-get-param 'vc_charge_start)) {
                         (setq ah-cnt-soc (bms-get-param 'batt_ah))
-                        (setq trigger-bal-after-charge true)
                 })
         }
         )
@@ -1321,8 +1331,15 @@ loopwhile-thd
 
             (if trigger-bal-after-charge (setq bal-ok true))
 
+            (if is-charging {
+                    (setq bal-ok false)
+            })
+
             (if (> (* (abs iout) (if is-balancing 0.8 1.0)) (bms-get-param 'balance_max_current)) {
                     (setq bal-ok false)
+                    (if (> iout (bms-get-param 'balance_max_current)) {
+                            (setq trigger-bal-after-charge false)
+                    })
             })
 
             (if (< c-min (bms-get-param 'vc_balance_min)) {
@@ -1336,8 +1353,6 @@ loopwhile-thd
             (if (> t-ic (bms-get-param 't_bal_max_ic)) {
                     (setq bal-ok false)
             })
-
-            (if bal-ok (setq trigger-bal-after-charge false))
 
             (if bal-ok {
                     (var bal-chs (map (fn (x) 0) (range vc-len)))
@@ -1365,9 +1380,14 @@ loopwhile-thd
                             (if (>= ch-cnt (bms-get-param 'max_bal_ch)) (break))
                     })
 
-                    (looprange i 0 vc-len (with-com `(bms-set-bal ,i ,(ix bal-chs i))))
-
-                    (setq is-balancing (> ch-cnt 0))
+                    (if (> ch-cnt 0) {
+                            (setq trigger-bal-after-charge false)
+                            (looprange i 0 vc-len (with-com `(bms-set-bal ,i ,(ix bal-chs i))))
+                            (setq is-balancing true)
+                    } {
+                            (setq bal-ok false)
+                            (setq trigger-bal-after-charge false)
+                    })
             })
 
             (if (not bal-ok) {
