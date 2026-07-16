@@ -25,6 +25,7 @@
 // from slaves over CAN. On-board: shunt + amp current sense, NTC PCB temp,
 // charger voltage divider, charge FET drive, buzzer, COM_EN, shutdown.
 
+#include "hal/adc_types.h"
 #include "adc.h"
 #include "driver/gpio.h"
 #include "datatypes.h"
@@ -36,6 +37,7 @@
 
 #define HW_NO_UART
 #define HW_EARLY_LBM_INIT
+#define HW_ADC_CUSTOM_DRIVER
 #define HW_INIT_HOOK()				hw_init()
 #define HW_SHUTDOWN_HOOK()			hw_shutdown()
 #define USER_EXTENSION_STORAGE_SIZE	50
@@ -234,6 +236,13 @@ typedef struct {
 #define HW_ADC_CH2					ADC_CHANNEL_2 // Current sense
 #define HW_ADC_CH3					ADC_CHANNEL_3 // Charger voltage divider
 #define HW_ADC_CH4					ADC_CHANNEL_4 // PCB NTC
+
+// Fast hardware protection uses the existing max_charge_current setting plus
+// a fixed margin. The threshold is capped below the ADC full-scale current.
+#define JFBMS_FAST_OC_MARGIN_A		1.0f
+#define JFBMS_FAST_OC_MAX_A		16.0f
+
+float hw_adc_get_voltage(adc_channel_t channel);
 
 // VESC charge-detect helper: read divider scaled back to charger voltage.
 // (300 kΩ + 4.7 kΩ) / 4.7 kΩ = 64.83×. Returns -1.0 × 64.83 if ADC unavailable.

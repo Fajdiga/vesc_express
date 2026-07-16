@@ -21,10 +21,12 @@
     */
 
 #include "hw_jfbms_master.h"
+#include "jfbms_master_fast_adc.h"
 
 #include "main.h"
 #include "driver/gpio.h"
 #include "esp_sleep.h"
+#include "esp_timer.h"
 #include "lispif.h"
 #include "lispbm.h"
 #include "commands.h"
@@ -74,7 +76,7 @@ typedef struct {
 	uint32_t last_log_ms;
 } isense_settle_state_t;
 
-static bool m_calibrate_pending = false;
+static volatile bool m_calibrate_pending = false;
 static isense_settle_state_t m_calibrate_settle;
 
 static float isense_read_voltage(void) {
@@ -128,10 +130,15 @@ static bool isense_settle_update(isense_settle_state_t *state, float v, float *s
 	return false;
 }
 
-static void isense_apply_offset(float offset_v) {
+static bool isense_apply_offset(float offset_v) {
 	m_current_offset      = offset_v;
 	m_current_filtered    = 0.0f;
 	m_current_filter_init = false;
+	if (!jfbms_fast_adc_set_current_offset(offset_v)) {
+		gpio_set_level(PIN_CHG_EN, 0);
+		return false;
+	}
+	return true;
 }
 
 static bool isense_wait_for_settled_offset(float *offset_v, uint32_t timeout_ms) {
@@ -182,6 +189,10 @@ static bool  m_temp_pcb_valid = false;
 static bool bms_temp_valid(float temp_c) {
 	return temp_c >= -40.0f && temp_c <= 120.0f;
 }
+
+// Keep ADC1 ownership and the fast CHG_EN monitor private to this hardware
+// profile. The shared adc.c wrapper delegates to hw_adc_get_voltage().
+#include "jfbms_master_fast_adc.c"
 
 // The configured topology is deliberately contiguous: slave IDs 1..N.
 // Frames from other IDs are rejected in the receive path and must never leak
@@ -288,6 +299,10 @@ static volatile bool m_balance_inhibit;
 static volatile bool m_balance_requested;
 static uint32_t m_balance_stop_ms;
 static uint32_t m_pack_generation;
+static volatile uint32_t m_slave_complete_ms[MAX_SLAVES];
+static volatile bool m_slave_snapshot_safe[MAX_SLAVES];
+static esp_timer_handle_t m_pack_safety_timer;
+static volatile bool m_pack_watchdog_ready;
 
 static bool slave_cell_counts_valid_values(int cells_ic1, int cells_ic2) {
 	return cells_ic1 >= 3 && cells_ic1 <= 16 &&
@@ -451,6 +466,70 @@ static bool slave_data_fresh_locked(int idx, uint32_t now, uint32_t timeout) {
 	}
 
 	return true;
+}
+
+static bool slave_snapshot_values_safe_locked(int idx) {
+	if (!slave_cell_counts_valid_locked(idx) ||
+			(m_bms_data.fault_flags[idx] & 0x03) != 0) {
+		return false;
+	}
+
+	int cells_ic1 = m_bms_data.cells_ic1[idx];
+	int cell_count = cells_ic1 + m_bms_data.cells_ic2[idx];
+	for (int cell = 0; cell < cell_count; cell++) {
+		int wire = slave_cell_wire_index(cell, cells_ic1);
+		uint16_t mv = m_bms_data.cell_voltages[idx][wire];
+		if (mv < 1000 || mv > 5000) return false;
+	}
+
+	bool temp_required[TEMPS_PER_SLAVE] = {
+		true,
+		(m_bms_data.temp_sensor_flags[idx] & STATUS_TEMP_BQ1_ENABLED) != 0,
+		m_bms_data.cells_ic2[idx] > 0,
+		m_bms_data.cells_ic2[idx] > 0 &&
+				(m_bms_data.temp_sensor_flags[idx] & STATUS_TEMP_BQ2_ENABLED) != 0,
+	};
+	for (int i = 0; i < TEMPS_PER_SLAVE; i++) {
+		if (!temp_required[i]) continue;
+		int16_t raw = m_bms_data.temperatures[idx][i];
+		if (raw == 0x7FFF || raw < -400 || raw > 1200) return false;
+	}
+	return true;
+}
+
+static bool pack_safety_ready_locked(uint32_t now_ms) {
+	int count = configured_slave_count();
+	for (int idx = 0; idx < count; idx++) {
+		bool fresh = slave_data_fresh_locked(idx, now_ms,
+				SLAVE_SAFETY_FRESHNESS_TIMEOUT_MS);
+		m_bms_data.fresh[idx] = fresh;
+		if (!fresh || !slave_snapshot_values_safe_locked(idx)) return false;
+	}
+	return true;
+}
+
+static bool pack_safety_ready(void) {
+	uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
+	bool ready = pack_safety_ready_locked(now_ms);
+	xSemaphoreGive(m_data_mutex);
+	return ready;
+}
+
+// A 1 ms independent watchdog forces CHG_EN low if a configured slave has no
+// complete safe snapshot within the 300 ms safety window.
+static void pack_safety_timer_cb(void *arg) {
+	(void)arg;
+	uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+	int count = configured_slave_count();
+	for (int idx = 0; idx < count; idx++) {
+		uint32_t commit_ms = m_slave_complete_ms[idx];
+		if (commit_ms == 0 || (now_ms - commit_ms) > SLAVE_SAFETY_FRESHNESS_TIMEOUT_MS ||
+				!m_slave_snapshot_safe[idx]) {
+			GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
+			return;
+		}
+	}
 }
 
 
@@ -836,6 +915,8 @@ static void parse_slave_message(uint32_t id, uint8_t *data, int len, uint8_t bus
 		stage->complete_count++;
 		stage->generation++;
 		m_pack_generation++;
+		m_slave_complete_ms[idx] = now_ms;
+		m_slave_snapshot_safe[idx] = slave_snapshot_values_safe_locked(idx);
 		if (stage->balance_mask != 0 &&
 				(m_balance_stop_ms == 0 ||
 				(int32_t)(stage->start_ms - m_balance_stop_ms) >= 0)) {
@@ -1480,8 +1561,9 @@ static lbm_value ext_master_balance_inhibited(lbm_value *args, lbm_uint argn) {
 	return inhibited ? ENC_SYM_TRUE : ENC_SYM_NIL;
 }
 
-// (master-set-chg enable) -- the only permitted charge-enable path. Fast
-// overcurrent gating is added in item 4; item 2 enforces balance interlocks.
+// (master-set-chg enable) -- the only permitted charge-enable path. Charge is
+// fail-closed until the continuous ADC monitor and pack freshness watchdog are
+// both armed, and the fast overcurrent latch has been cleared.
 static lbm_value ext_master_set_chg(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 	bool enable = lbm_dec_as_i32(args[0]) != 0;
@@ -1490,8 +1572,18 @@ static lbm_value ext_master_set_chg(lbm_value *args, lbm_uint argn) {
 		return ENC_SYM_TRUE;
 	}
 
+	if (!jfbms_fast_adc_ready() || jfbms_fast_oc_latched() ||
+			m_calibrate_request || m_calibrate_pending ||
+			!m_pack_watchdog_ready || !pack_safety_ready()) {
+		gpio_set_level(PIN_CHG_EN, 0);
+		return ENC_SYM_NIL;
+	}
+
 	xSemaphoreTake(m_balance_tx_mutex, portMAX_DELAY);
-	if (m_balance_inhibit || m_balance_requested) {
+	if (m_balance_inhibit || m_balance_requested ||
+			!jfbms_fast_adc_ready() || jfbms_fast_oc_latched() ||
+			m_calibrate_request || m_calibrate_pending ||
+			!m_pack_watchdog_ready) {
 		gpio_set_level(PIN_CHG_EN, 0);
 		xSemaphoreGive(m_balance_tx_mutex);
 		return ENC_SYM_NIL;
@@ -1553,6 +1645,8 @@ static lbm_value ext_master_reset_slaves(lbm_value *args, lbm_uint argn) {
 
 	for (int s = 0; s < MAX_SLAVES; s++) {
 		clear_slave_data(s);
+		m_slave_complete_ms[s] = 0;
+		m_slave_snapshot_safe[s] = false;
 	}
 	m_pack_generation = 0;
 
@@ -1757,10 +1851,11 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 				if (isense_settle_update(&m_calibrate_settle, v, &offset_v)) {
 					uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
 					uint32_t elapsed_ms = now_ms - m_calibrate_settle.start_ms;
-					isense_apply_offset(offset_v);
+					bool protection_armed = isense_apply_offset(offset_v);
 					m_calibrate_pending = false;
-					commands_printf_lisp("Current calibrated: offset=%.4f V after %u ms (range +-%.1f A)",
-						(double)m_current_offset, (unsigned)elapsed_ms, (double)(1.65f * ISENSE_SCALE));
+					commands_printf_lisp("Current calibrated: offset=%.4f V after %u ms (range +-%.1f A) protection=%s",
+						(double)m_current_offset, (unsigned)elapsed_ms,
+						(double)(1.65f * ISENSE_SCALE), protection_armed ? "armed" : "OFF");
 				} else {
 					uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
 					if ((now_ms - m_calibrate_settle.last_log_ms) >= ISENSE_OFFSET_LOG_PERIOD_MS) {
@@ -1857,9 +1952,47 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 static lbm_value ext_master_calibrate_current(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
+	// Calibration is only valid at zero current; force the charge output low
+	// before the task begins waiting for a settled reference.
+	gpio_set_level(PIN_CHG_EN, 0);
 	m_calibrate_request = true;
 	commands_printf_lisp("Current calibration requested - waiting for stable reference");
 	return ENC_SYM_TRUE;
+}
+
+// (master-clear-fast-oc) -- clear the persistent hardware overcurrent latch
+// only after the charger has been absent continuously and current is near zero.
+static lbm_value ext_master_clear_fast_oc(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+
+	jfbms_fast_oc_status_t status;
+	jfbms_fast_oc_get_status(&status);
+	if (!status.latched) return ENC_SYM_TRUE;
+
+	float charger_detect_v = ((main_config_t *)&backup.config)->v_charge_detect;
+	if (!jfbms_fast_oc_clear_allowed(charger_detect_v) ||
+			!jfbms_fast_oc_clear_if_unchanged(status.trip_count)) {
+		return ENC_SYM_NIL;
+	}
+	return ENC_SYM_TRUE;
+}
+
+// (master-fast-oc-status) -- (latched armed trip-count raw current trip-time-s)
+static lbm_value ext_master_fast_oc_status(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+
+	jfbms_fast_oc_status_t status;
+	jfbms_fast_oc_get_status(&status);
+	lbm_value result = ENC_SYM_NIL;
+	result = lbm_cons(lbm_enc_float((float)status.trip_time_us / 1000000.0f), result);
+	result = lbm_cons(lbm_enc_float(status.last_current_a), result);
+	result = lbm_cons(lbm_enc_u32(status.last_raw), result);
+	result = lbm_cons(lbm_enc_u32(status.trip_count), result);
+	result = lbm_cons(status.armed ? ENC_SYM_TRUE : ENC_SYM_NIL, result);
+	result = lbm_cons(status.latched ? ENC_SYM_TRUE : ENC_SYM_NIL, result);
+	return result;
 }
 
 // (master-get-current) — returns EMA-filtered current (A); updated by master-update-vesc-bms
@@ -1976,6 +2109,16 @@ static lbm_value ext_master_fail_close_local(lbm_value *args, lbm_uint argn) {
 static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
+	jfbms_fast_oc_status_t fast_oc;
+	jfbms_fast_oc_get_status(&fast_oc);
+	commands_printf_lisp("Fast OC: armed=%d latched=%d trips=%lu raw=%lu current=%.2fA trip_time_ms=%ld pack_watchdog=%d",
+			fast_oc.armed ? 1 : 0,
+			fast_oc.latched ? 1 : 0,
+			(unsigned long)fast_oc.trip_count,
+			(unsigned long)fast_oc.last_raw,
+			(double)fast_oc.last_current_a,
+			(long)(fast_oc.trip_time_us / 1000),
+			m_pack_watchdog_ready ? 1 : 0);
 
 	comm_can_debug_info_t can_dbg;
 	comm_can_get_debug_info(&can_dbg);
@@ -2211,6 +2354,8 @@ static void load_extensions(bool main_found) {
 
 	// Current sense
 	lbm_add_extension("master-calibrate-current", ext_master_calibrate_current);
+	lbm_add_extension("master-clear-fast-oc", ext_master_clear_fast_oc);
+	lbm_add_extension("master-fast-oc-status", ext_master_fast_oc_status);
 	lbm_add_extension("master-set-chg", ext_master_set_chg);
 	lbm_add_extension("master-get-current", ext_master_get_current);
 	lbm_add_extension("master-get-vchg", ext_master_get_vchg);
@@ -2239,8 +2384,11 @@ void hw_init(void) {
 	// Initialize master slave data
 	memset(&m_bms_data, 0, sizeof(m_bms_data));
 	m_pack_generation = 0;
+	m_pack_watchdog_ready = false;
 	for (int s = 0; s < MAX_SLAVES; s++) {
 		clear_slave_data(s);
+		m_slave_complete_ms[s] = 0;
+		m_slave_snapshot_safe[s] = false;
 	}
 
 	// GPIO setup
@@ -2288,16 +2436,25 @@ void hw_init(void) {
 			terminal_shutdown);
 
 	// CHG_EN is held low during boot, so the hardware current path is off and
-	// the shunt current is guaranteed to be zero while calibrating. The REF node
-	// is RC-filtered, so wait for measured stability instead of a fixed delay.
+	// the shunt current is guaranteed to be zero while calibrating. Start the
+	// continuous ADC owner before reading the REF node; the shared adc.c
+	// oneshot driver must never claim ADC1 for this hardware profile.
 	{
+		bool adc_ok = jfbms_fast_adc_init();
+		if (!adc_ok) {
+			commands_printf("JFBMS continuous ADC failed; CHG_EN locked off");
+		}
+
 		float offset_v = 0.0f;
-		if (isense_wait_for_settled_offset(&offset_v, ISENSE_OFFSET_BOOT_TIMEOUT_MS)) {
-			isense_apply_offset(offset_v);
+		bool protection_armed = adc_ok &&
+				isense_wait_for_settled_offset(&offset_v, ISENSE_OFFSET_BOOT_TIMEOUT_MS) &&
+				isense_apply_offset(offset_v);
+		if (protection_armed) {
 			commands_printf("JFBMS current offset calibrated: %.4f V", (double)m_current_offset);
-		} else {
+		} else if (adc_ok) {
 			commands_printf("JFBMS current offset not settled after %u ms; using %.4f V",
 				(unsigned)ISENSE_OFFSET_BOOT_TIMEOUT_MS, (double)m_current_offset);
+			commands_printf("JFBMS current protection not armed; CHG_EN locked off");
 		}
 	}
 
@@ -2314,6 +2471,21 @@ void hw_init(void) {
 			CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM,
 			JFBMS_DEDICATED_SLAVE_TWAI_PIN_COLLISION);
 #endif
+
+	esp_timer_create_args_t safety_timer_args = {
+		.callback = pack_safety_timer_cb,
+		.arg = NULL,
+		.dispatch_method = ESP_TIMER_TASK,
+		.name = "jfbms-pack-safe",
+		.skip_unhandled_events = true,
+	};
+	if (esp_timer_create(&safety_timer_args, &m_pack_safety_timer) != ESP_OK ||
+			esp_timer_start_periodic(m_pack_safety_timer, 1000) != ESP_OK) {
+		gpio_set_level(PIN_CHG_EN, 0);
+		commands_printf("JFBMS pack safety watchdog failed; CHG_EN locked off");
+	} else {
+		m_pack_watchdog_ready = true;
+	}
 
 	lispif_add_ext_load_callback(load_extensions);
 }

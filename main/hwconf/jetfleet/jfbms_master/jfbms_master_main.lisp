@@ -181,6 +181,30 @@ loopwhile-thd
     (= charge-state charge-state-balance-pending)
 ))
 
+; Hardware-owned fast overcurrent status. Missing or malformed extensions fail
+; closed: charging remains disabled until the ADC monitor reports armed.
+(defun fast-oc-status ()
+    (trap-value '(master-fast-oc-status) '(true nil 0 0.0 0))
+)
+
+(defun fast-oc-latched () {
+    (var status (fast-oc-status))
+    (or
+        (eq status nil)
+        (< (length status) 2)
+        (not (eq (ix status 0) nil))
+    )
+})
+
+(defun fast-oc-armed () {
+    (var status (fast-oc-status))
+    (and
+        status
+        (>= (length status) 2)
+        (not (eq (ix status 1) nil))
+    )
+})
+
 (defun c-balance-inhibited ()
     (trap-value '(master-balance-inhibited?) false)
 )
@@ -476,6 +500,9 @@ loopwhile-thd
 
     ; Charging has priority. A charge request first performs the checked
     ; three-pass zero-mask handoff; CHG_EN cannot rise while STOPPING fails.
+    (if (and requested (fast-oc-latched))
+        (setq allowed false)
+    )
     (if (and requested (balance-in-progress))
         (setq allowed (stop-all-balancing))
     )
@@ -1099,6 +1126,13 @@ loopwhile-thd
             (setq charger-absence-elapsed 0.0)
         )
 
+        ; The hardware latch owns its own five-second valid-absence timer.
+        ; Poll it throughout the absence window so clearing is not delayed by
+        ; the Lisp charge-fault debounce timer.
+        (if (fast-oc-latched)
+            (trap (master-clear-fast-oc))
+        )
+
         (if (>= charger-absence-elapsed 5.0) {
             (setq charge-state charge-state-idle)
             (if (assoc rtc-val 'charge-fault) {
@@ -1126,6 +1160,8 @@ loopwhile-thd
         (> c-min (bms-get-param 'vc_charge_min))
         (charge-temp-ok)
         chg-allowed
+        (fast-oc-armed)
+        (not (fast-oc-latched))
         (not (assoc rtc-val 'charge-fault))
         (not (charge-completion-latched))
     ))
@@ -1208,6 +1244,8 @@ loopwhile-thd
 
     (setq chg-status
         (cond
+            ((fast-oc-latched) "FLT_CHG_FAST_OC")
+            ((not (fast-oc-armed)) "FLT_FAST_ADC")
             ((assoc rtc-val 'charge-fault) "FLT_CHG_OC")
             ((charge-completion-latched) "CHG_DONE")
             ((= charge-state charge-state-confirmed) "CHARGING_OK")

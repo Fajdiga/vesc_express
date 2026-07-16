@@ -27,7 +27,13 @@
 
 #include <math.h>
 
-// Private variables
+#ifdef HW_ADC_CUSTOM_DRIVER
+float hw_adc_get_voltage(adc_channel_t ch);
+#endif
+
+// Private variables. A hardware profile that owns ADC1 with a continuous
+// driver must not create a second oneshot unit on the same peripheral.
+#ifndef HW_ADC_CUSTOM_DRIVER
 static adc_oneshot_unit_handle_t adc1_handle = NULL;
 static adc_cali_handle_t adc1_cali_handle = NULL;
 static bool cal_ok = false;
@@ -43,8 +49,12 @@ static void adc_config_channel_if_present(adc_channel_t ch) {
 	};
 	adc_oneshot_config_channel(adc1_handle, ch, &cfg);
 }
+#endif
 
 void adc_init(void) {
+#ifdef HW_ADC_CUSTOM_DRIVER
+	return;
+#else
 	adc_oneshot_unit_init_cfg_t init_cfg = {
 		.unit_id = ADC_UNIT_1,
 		.ulp_mode = ADC_ULP_MODE_DISABLE,
@@ -80,9 +90,13 @@ void adc_init(void) {
 	if (adc_cali_create_scheme_curve_fitting(&cali_config, &adc1_cali_handle) == ESP_OK) {
 		cal_ok = true;
 	}
+#endif
 }
 
 float adc_get_voltage(adc_channel_t ch) {
+#ifdef HW_ADC_CUSTOM_DRIVER
+	return hw_adc_get_voltage(ch);
+#else
 	if (!adc1_handle) {
 		return -1.0f;
 	}
@@ -100,4 +114,5 @@ float adc_get_voltage(adc_channel_t ch) {
 	}
 
 	return (float)raw * (3.3f / 4095.0f);
+#endif
 }
