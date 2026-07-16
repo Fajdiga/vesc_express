@@ -283,6 +283,10 @@ typedef struct {
 static master_bms_data_t m_bms_data;
 static slave_broadcast_stage_t m_slave_stage[MAX_SLAVES];
 static SemaphoreHandle_t m_data_mutex;
+static SemaphoreHandle_t m_balance_tx_mutex;
+static volatile bool m_balance_inhibit;
+static volatile bool m_balance_requested;
+static uint32_t m_balance_stop_ms;
 
 static bool slave_cell_counts_valid_values(int cells_ic1, int cells_ic2) {
 	return cells_ic1 >= 3 && cells_ic1 <= 16 &&
@@ -585,7 +589,13 @@ static bool slave_can_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len
 	}
 
 #if !JFBMS_USE_DEDICATED_SLAVE_TWAI
-	comm_can_transmit_sid(id, data, len);
+	esp_err_t res = comm_can_transmit_sid_sync(id, data, len, 10);
+	if (res != ESP_OK) {
+		slave_can_last_error = res;
+		slave_can_tx_fail_cnt++;
+		if (res == ESP_ERR_TIMEOUT) slave_can_tx_timeout_cnt++;
+		return false;
+	}
 	slave_can_last_error = ESP_OK;
 	slave_can_tx_ok_cnt++;
 	return true;
@@ -598,7 +608,13 @@ static bool slave_can_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len
 	}
 
 	if (bus == SLAVE_CAN_BUS_ESC) {
-		comm_can_transmit_sid(id, data, len);
+		esp_err_t res = comm_can_transmit_sid_sync(id, data, len, 10);
+		if (res != ESP_OK) {
+			slave_can_last_error = res;
+			slave_can_tx_fail_cnt++;
+			if (res == ESP_ERR_TIMEOUT) slave_can_tx_timeout_cnt++;
+			return false;
+		}
 		slave_can_last_error = ESP_OK;
 		slave_can_tx_ok_cnt++;
 		return true;
@@ -610,7 +626,7 @@ static bool slave_can_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len
 		return false;
 	}
 
-	esp_err_t res = comm_can2_transmit_sid_result(id, data, len);
+	esp_err_t res = comm_can2_transmit_sid_sync(id, data, len, 10);
 	if (res != ESP_OK) {
 		slave_can_last_error = res;
 		slave_can_tx_fail_cnt++;
@@ -624,6 +640,49 @@ static bool slave_can_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len
 	slave_can_tx_ok_cnt++;
 	return true;
 #endif
+}
+
+// Checked standard-ID transmit used by the balance stop handoff. Success means
+// the frame completed on the physical TWAI bus, not merely that it entered a
+// software queue.
+static bool slave_can_transmit_sid_sync(uint32_t id, const uint8_t *data,
+		uint8_t len, int timeout_ms) {
+	if (len > 8) len = 8;
+	if (timeout_ms <= 0) {
+		slave_can_last_error = ESP_ERR_TIMEOUT;
+		slave_can_tx_fail_cnt++;
+		slave_can_tx_timeout_cnt++;
+		return false;
+	}
+
+	esp_err_t res = ESP_ERR_INVALID_STATE;
+#if !JFBMS_USE_DEDICATED_SLAVE_TWAI
+	res = comm_can_transmit_sid_sync(id, data, len, timeout_ms);
+#else
+#if JFBMS_ALLOW_SHARED_SLAVE_CAN_FALLBACK
+	uint8_t slave_id = id & 0x0F;
+	if (slave_id >= 1 && slave_id <= MAX_SLAVES &&
+			slave_can_rx_bus[slave_id - 1] == SLAVE_CAN_BUS_ESC) {
+		res = comm_can_transmit_sid_sync(id, data, len, timeout_ms);
+	} else
+#endif
+	{
+		if (!comm_can2_is_running() && !slave_can_start()) {
+			slave_can_tx_fail_cnt++;
+			return false;
+		}
+		res = comm_can2_transmit_sid_sync(id, data, len, timeout_ms);
+	}
+#endif
+
+	slave_can_last_error = res;
+	if (res == ESP_OK) {
+		slave_can_tx_ok_cnt++;
+		return true;
+	}
+	slave_can_tx_fail_cnt++;
+	if (res == ESP_ERR_TIMEOUT) slave_can_tx_timeout_cnt++;
+	return false;
 }
 
 // Parse a single CAN message from a slave. Cell frame 0 starts a candidate;
@@ -640,6 +699,7 @@ static void parse_slave_message(uint32_t id, uint8_t *data, int len, uint8_t bus
 
 	uint8_t idx = slave_id - 1;  // 0-based index
 	uint32_t now_ms = rx_ms;
+	bool force_balance_inhibit = false;
 
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 
@@ -774,10 +834,22 @@ static void parse_slave_message(uint32_t id, uint8_t *data, int len, uint8_t bus
 		stage->last_complete_ms = now_ms;
 		stage->complete_count++;
 		stage->generation++;
+		if (stage->balance_mask != 0 &&
+				(m_balance_stop_ms == 0 ||
+				(int32_t)(stage->start_ms - m_balance_stop_ms) >= 0)) {
+			force_balance_inhibit = true;
+		}
 		clear_slave_stage_state_locked(idx);
 	}
 
 	xSemaphoreGive(m_data_mutex);
+	if (force_balance_inhibit) {
+		xSemaphoreTake(m_balance_tx_mutex, portMAX_DELAY);
+		m_balance_inhibit = true;
+		m_balance_requested = true;
+		gpio_set_level(PIN_CHG_EN, 0);
+		xSemaphoreGive(m_balance_tx_mutex);
+	}
 }
 
 // Send balance command with buzzer beep code to slave
@@ -788,6 +860,10 @@ static bool send_balance_cmd(uint8_t slave_id, uint32_t mask, uint8_t beep_code)
 	buf[2] = (mask >> 16) & 0xFF;
 	buf[3] = (mask >> 24) & 0xFF;
 	buf[4] = beep_code;
+	if (mask != 0) {
+		m_balance_inhibit = true;
+		gpio_set_level(PIN_CHG_EN, 0);
+	}
 	return slave_can_transmit_sid(CAN_ID_BAL_CMD(slave_id), buf, 5);
 }
 
@@ -1318,7 +1394,115 @@ static lbm_value ext_master_send_balance(lbm_value *args, lbm_uint argn) {
 	}
 
 	uint32_t mask = ic1_mask | (ic2_mask << 16);
-	return send_balance_cmd(slave_id, mask, beep_code) ? ENC_SYM_TRUE : ENC_SYM_NIL;
+	xSemaphoreTake(m_balance_tx_mutex, portMAX_DELAY);
+	bool sent = send_balance_cmd(slave_id, mask, beep_code);
+	xSemaphoreGive(m_balance_tx_mutex);
+	return sent ? ENC_SYM_TRUE : ENC_SYM_NIL;
+}
+
+// (master-stop-balance-sync)
+// Send three complete zero-mask passes to every configured slave. The 20 ms
+// deadline covers the whole handoff; a failed transmission leaves the C
+// inhibit asserted and CHG_EN low so Lisp can retry safely.
+static lbm_value ext_master_stop_balance_sync(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+
+	uint8_t zero_cmd[5] = {0, 0, 0, 0, 0};
+	const uint32_t timeout_ms = 20U;
+	uint32_t start_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+	bool success = true;
+
+	m_balance_inhibit = true;
+	gpio_set_level(PIN_CHG_EN, 0);
+	TickType_t handoff_wait = pdMS_TO_TICKS(timeout_ms);
+	if (handoff_wait == 0) handoff_wait = 1;
+	if (xSemaphoreTake(m_balance_tx_mutex, handoff_wait) != pdTRUE) {
+		return ENC_SYM_NIL;
+	}
+
+	for (int pass = 0; pass < 3 && success; pass++) {
+		for (int slave = 1; slave <= configured_slave_count(); slave++) {
+			uint32_t elapsed_ms = xTaskGetTickCount() * portTICK_PERIOD_MS - start_ms;
+			if (elapsed_ms >= timeout_ms ||
+					!slave_can_transmit_sid_sync(CAN_ID_BAL_CMD(slave), zero_cmd,
+							sizeof(zero_cmd), (int)(timeout_ms - elapsed_ms))) {
+				success = false;
+				break;
+			}
+		}
+	}
+
+	if (success) {
+		m_balance_stop_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+		m_balance_inhibit = false;
+	} else {
+		gpio_set_level(PIN_CHG_EN, 0);
+	}
+	xSemaphoreGive(m_balance_tx_mutex);
+	return success ? ENC_SYM_TRUE : ENC_SYM_NIL;
+}
+
+// (master-balance-request enable)
+// The C request latch closes the scheduling window between Lisp state checks
+// and a charge-enable attempt.
+static lbm_value ext_master_balance_request(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(1);
+	bool enable = lbm_dec_as_i32(args[0]) != 0;
+	xSemaphoreTake(m_balance_tx_mutex, portMAX_DELAY);
+	if (enable) {
+		m_balance_requested = true;
+		gpio_set_level(PIN_CHG_EN, 0);
+		xSemaphoreGive(m_balance_tx_mutex);
+		return ENC_SYM_TRUE;
+	}
+	if (m_balance_inhibit) {
+		gpio_set_level(PIN_CHG_EN, 0);
+		xSemaphoreGive(m_balance_tx_mutex);
+		return ENC_SYM_NIL;
+	}
+	m_balance_requested = false;
+	xSemaphoreGive(m_balance_tx_mutex);
+	return ENC_SYM_TRUE;
+}
+
+// (master-balance-inhibited?) - True while a C-side balance request or
+// inhibit latch requires the Lisp controller to remain fail-closed.
+static lbm_value ext_master_balance_inhibited(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+
+	xSemaphoreTake(m_balance_tx_mutex, portMAX_DELAY);
+	bool inhibited = m_balance_inhibit || m_balance_requested;
+	xSemaphoreGive(m_balance_tx_mutex);
+	return inhibited ? ENC_SYM_TRUE : ENC_SYM_NIL;
+}
+
+// (master-set-chg enable) -- the only permitted charge-enable path. Fast
+// overcurrent gating is added in item 4; item 2 enforces balance interlocks.
+static lbm_value ext_master_set_chg(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(1);
+	bool enable = lbm_dec_as_i32(args[0]) != 0;
+	if (!enable) {
+		gpio_set_level(PIN_CHG_EN, 0);
+		return ENC_SYM_TRUE;
+	}
+
+	xSemaphoreTake(m_balance_tx_mutex, portMAX_DELAY);
+	if (m_balance_inhibit || m_balance_requested) {
+		gpio_set_level(PIN_CHG_EN, 0);
+		xSemaphoreGive(m_balance_tx_mutex);
+		return ENC_SYM_NIL;
+	}
+
+	gpio_set_level(PIN_CHG_EN, 1);
+	if (m_balance_inhibit || m_balance_requested) {
+		gpio_set_level(PIN_CHG_EN, 0);
+		xSemaphoreGive(m_balance_tx_mutex);
+		return ENC_SYM_NIL;
+	}
+	xSemaphoreGive(m_balance_tx_mutex);
+	return ENC_SYM_TRUE;
 }
 
 // (master-check-timeouts timeout-ms) - Update strict freshness and debounced presence
@@ -1370,6 +1554,12 @@ static lbm_value ext_master_reset_slaves(lbm_value *args, lbm_uint argn) {
 	}
 
 	xSemaphoreGive(m_data_mutex);
+	xSemaphoreTake(m_balance_tx_mutex, portMAX_DELAY);
+	m_balance_requested = false;
+	m_balance_inhibit = false;
+	m_balance_stop_ms = 0;
+	gpio_set_level(PIN_CHG_EN, 0);
+	xSemaphoreGive(m_balance_tx_mutex);
 
 	// Also reset CAN buffer
 	can_rx_head = 0;
@@ -1995,6 +2185,9 @@ static void load_extensions(bool main_found) {
 
 	// Slave control
 	lbm_add_extension("master-send-balance", ext_master_send_balance);
+	lbm_add_extension("master-stop-balance-sync", ext_master_stop_balance_sync);
+	lbm_add_extension("master-balance-request", ext_master_balance_request);
+	lbm_add_extension("master-balance-inhibited?", ext_master_balance_inhibited);
 	lbm_add_extension("master-check-timeouts", ext_master_check_timeouts);
 	lbm_add_extension("master-reset-slaves", ext_master_reset_slaves);
 
@@ -2003,6 +2196,7 @@ static void load_extensions(bool main_found) {
 
 	// Current sense
 	lbm_add_extension("master-calibrate-current", ext_master_calibrate_current);
+	lbm_add_extension("master-set-chg", ext_master_set_chg);
 	lbm_add_extension("master-get-current", ext_master_get_current);
 	lbm_add_extension("master-get-vchg", ext_master_get_vchg);
 	lbm_add_extension("master-get-temp-pcb", ext_master_get_temp_pcb);
@@ -2022,6 +2216,10 @@ static void load_extensions(bool main_found) {
 
 void hw_init(void) {
 	m_data_mutex = xSemaphoreCreateMutex();
+	m_balance_tx_mutex = xSemaphoreCreateMutex();
+	m_balance_inhibit = false;
+	m_balance_requested = false;
+	m_balance_stop_ms = 0;
 
 	// Initialize master slave data
 	memset(&m_bms_data, 0, sizeof(m_bms_data));

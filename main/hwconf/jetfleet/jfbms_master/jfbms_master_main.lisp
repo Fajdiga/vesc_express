@@ -22,7 +22,6 @@
 (def charger-detected-prev false)
 (def trigger-bal-after-charge false)
 
-(def bal-request false)
 (def bal-auto-retry-ts (systime))
 (def bal-status "")
 (def chg-status "")
@@ -71,11 +70,14 @@
 (def prev-bal-mask (list 0 0 0 0 0 0 0 0))
 (def prev-can-overflow 0)
 
-; Balancing state. state[0] = 1 if currently balancing, 0 if idle.
-(def bal-state (list 0))
+; Balancing state. Only IDLE may permit CHG_EN to rise.
+(def bal-state-idle 0)
+(def bal-state-requested 1)
+(def bal-state-active 2)
+(def bal-state-stopping 3)
+(def bal-state (list bal-state-idle))
 (def slave-bal-mask-ic1 (list 0 0 0 0 0 0 0 0))
 (def slave-bal-mask-ic2 (list 0 0 0 0 0 0 0 0))
-(def bal-keepalive-kick (list 0))
 
 (def shutdown-reason-unknown 0)
 (def shutdown-reason-timer 1)
@@ -152,6 +154,22 @@ loopwhile-thd
 (defun cfg-num-slaves () (truncate (param-or 'num_slaves 1) 1 8))
 
 (defun bool-int (v) (if v 1 0))
+
+(defun balance-state-is (state) (= (ix bal-state 0) state))
+
+(defun c-balance-inhibited ()
+    (trap-value '(master-balance-inhibited?) false)
+)
+
+(defun balance-in-progress () (or
+    (not (balance-state-is bal-state-idle))
+    (c-balance-inhibited)
+))
+
+; Keep the balance request visible in C before Lisp exposes REQUESTED state.
+(defun set-c-balance-request (requested) {
+    (trap-value (list 'master-balance-request (bool-int requested)) false)
+})
 
 (defun lpf (val sample tc)
     (- val (* tc (- val sample)))
@@ -387,22 +405,35 @@ loopwhile-thd
 })
 
 (defun set-chg (chg) {
-    (if chg
-        {
-            (if (not is-charging) (setq charge-ts (systime)))
-            (gpio-write 5 1)
-            (setq is-charging true)
-        }
-        {
-            ; Trigger balancing when charging ends after a real charge session.
-            (if (and is-charging (> (secs-since charge-ts) 10.0))
-                (setq trigger-bal-after-charge true)
-            )
+    (var requested (if chg true false))
+    (var allowed true)
 
-            (master-fail-close-local)
-            (setq is-charging false)
-        }
+    (if (and (not requested) is-charging (> (secs-since charge-ts) 10.0))
+        (setq trigger-bal-after-charge true)
     )
+
+    ; Charging has priority. A charge request first performs the checked
+    ; three-pass zero-mask handoff; CHG_EN cannot rise while STOPPING fails.
+    (if (and requested (balance-in-progress))
+        (setq allowed (stop-all-balancing))
+    )
+
+    (var ok false)
+    (if allowed {
+        (match (trap (master-set-chg (bool-int requested)))
+            ((exit-ok (? result)) (setq ok result))
+            (_ (setq ok false))
+        )
+    })
+
+    (if (and requested ok) {
+        (setq is-charging true)
+    } {
+        (if requested (trap (master-set-chg 0)))
+        (setq is-charging false)
+    })
+
+    ok
 })
 
 (defun send-slave-beep (code) {
@@ -768,8 +799,7 @@ loopwhile-thd
     (external-wake-inactive)
     (not is-charging)
     (not trigger-bal-after-charge)
-    (not bal-request)
-    (= (ix bal-state 0) 0)
+    (balance-state-is bal-state-idle)
     (not (test-chg 1))
     (not (is-connected))
     (not (can-active))
@@ -1047,38 +1077,59 @@ loopwhile-thd
 })
 
 (defun send-zero-balance-all () {
-    (var all-ok true)
-
-    ; Send several copies and include temporarily inactive configured slaves.
-    ; Their local 10-second watchdog is the final fallback if CAN is unavailable.
-    (looprange attempt 0 3 {
-        (looprange sid 1 (+ (cfg-num-slaves) 1) {
-            (if (not (master-send-balance sid 0 0 0))
-                (setq all-ok false)
-            )
-        })
-        (sleep 0.02)
-    })
-
-    all-ok
+    (trap-value '(master-stop-balance-sync) false)
 })
 
 (defun stop-all-balancing () {
+    (setix bal-state 0 bal-state-stopping)
     (clear-cached-balancing)
-    (var bal-off-ok (send-zero-balance-all))
-    (setix bal-keepalive-kick 0 0)
-    (setix bal-state 0 0)
-    (setq bal-status "")
+    ; C reports success only after all three physical zero-mask passes finish.
+    (var zero-ok (send-zero-balance-all))
+    (var release-ok (if zero-ok (set-c-balance-request false) false))
+    (var bal-off-ok (and zero-ok release-ok))
+    (if bal-off-ok {
+        (setix bal-state 0 bal-state-idle)
+        (setq bal-status "")
+    } {
+        ; STOPPING keeps CHG_EN low and is retried by the balance supervisor.
+        (setq bal-status "BAL_STOP")
+    })
     (setq bal-off-failed (not bal-off-ok))
     bal-off-ok
 })
 
+(defun zero-balancing-preserve-request () {
+    (clear-cached-balancing)
+    (var request-ok (set-c-balance-request true))
+    (var zero-ok (and request-ok (send-zero-balance-all)))
+    (if zero-ok {
+        (setix bal-state 0 bal-state-requested)
+        (setq bal-off-failed false)
+    } {
+        (setix bal-state 0 bal-state-stopping)
+        (setq bal-status "BAL_STOP")
+        (setq bal-off-failed true)
+    })
+    zero-ok
+})
+
 (defun balance-safe-now () (and
     pack-data-ok
+    slave-data-fresh
     temp-data-ok
     (current-data-ok)
     (not is-charging)
-    (<= (* (abs iout) (if (= (ix bal-state 0) 1) 0.8 1.0)) (bms-get-param 'balance_max_current))
+    ; A connected charger may only coexist with balancing after the existing
+    ; completion trigger is set and charge current has tapered below the
+    ; configured minimum. Full charge-session confirmation is item 3.
+    (or
+        (<= vt-vchg (bms-get-param 'v_charge_detect))
+        (and
+            trigger-bal-after-charge
+            (<= (abs iout) (bms-get-param 'min_charge_current))
+        )
+    )
+    (<= (abs iout) (bms-get-param 'balance_max_current))
     (>= c-min (bms-get-param 'vc_balance_min))
     (or
         (not cell-temp-mon-en)
@@ -1099,26 +1150,6 @@ loopwhile-thd
     })
 
     all-fresh
-})
-
-(defun all-configured-slaves-settled () {
-    (var all-settled true)
-    (var active-count 0)
-    (var sid 1)
-    (var max-sid (cfg-num-slaves))
-
-    (loopwhile (<= sid max-sid) {
-        (if (and (master-slave-active? sid) (master-slave-fresh? sid)) {
-            (setq active-count (+ active-count 1))
-            (if (not (master-get-slave-settled? sid))
-                (setq all-settled false))
-        } {
-            (setq all-settled false)
-        })
-        (setq sid (+ sid 1))
-    })
-
-    (and (> active-count 0) all-settled)
 })
 
 (defun balance-needed-now () {
@@ -1159,8 +1190,19 @@ loopwhile-thd
 })
 
 (defun start-balance-request () {
-    (setq bal-request true)
-    (setix bal-keepalive-kick 0 1)
+    (if (and (balance-state-is bal-state-idle) (not (c-balance-inhibited))) {
+        (if (set-c-balance-request true) {
+            (setix bal-state 0 bal-state-requested)
+            (setq bal-status "BAL_REQ")
+            true
+        } {
+            (setq bal-status "BAL_STOP")
+            (setix bal-state 0 bal-state-stopping)
+            false
+        })
+    } {
+        false
+    })
 })
 
 (defun try-manual-balance-request () {
@@ -1168,7 +1210,6 @@ loopwhile-thd
     (if (and
             (balance-safe-now)
             (all-configured-slaves-fresh)
-            (all-configured-slaves-settled)
             (balance-needed-now)
         ) {
         (start-balance-request)
@@ -1179,169 +1220,160 @@ loopwhile-thd
 })
 
 (defun clear-balance-request () {
-    (setq bal-request false)
     (setq trigger-bal-after-charge false)
+    (if (balance-in-progress) (stop-all-balancing))
 })
 
 (defun defer-auto-balance-request () {
-    (setq bal-request false)
     (setq bal-auto-retry-ts (systime))
 })
 
 (defun fail-close-active-balance () {
-    (if (= (ix bal-state 0) 1) {
-        (master-fail-close-local)
+    (if (balance-in-progress) {
+        (master-set-chg 0)
         (setq is-charging false)
         (setq charge-ok false)
     })
 })
 
-(defun balance-thd () (loopwhile t {
-    (if (and
-            trigger-bal-after-charge
-            (not is-charging)
-            (> (secs-since bal-auto-retry-ts) 5.0)
-        )
-        (start-balance-request)
-    )
+(defun update-balance-masks (threshold) {
+    (var max-ch (bms-get-param 'max_bal_ch))
+    (var any-bal false)
+    (var sid 1)
+    (var max-sid (cfg-num-slaves))
 
-    (if (not bal-request) {
-        (if (= (ix bal-state 0) 1) {
-            (print "BAL: stopped")
-            (stop-all-balancing)
-        })
-        (sleep 0.2)
-    } {
-        (refresh-pack-data)
+    (clear-cached-balancing)
+    (loopwhile (<= sid max-sid) {
+        (if (and (master-slave-active? sid) (master-slave-fresh? sid)) {
+            (var cells (master-get-slave-cells sid))
+            (var ic1-cnt (master-get-cells-ic1 sid))
+            (var ic2-cnt (master-get-cells-ic2 sid))
+            (var cnt (+ ic1-cnt ic2-cnt))
 
-        (if (not (balance-safe-now)) {
-            (print "BAL: blocked by pack conditions")
-            (fail-close-active-balance)
-            (stop-all-balancing)
-            (if trigger-bal-after-charge
-                (defer-auto-balance-request)
-                (clear-balance-request)
-            )
-        })
+            (if (and cells (> cnt 0) (= (length cells) cnt)) {
+                (var ic1-volts (map (fn (i) (ix cells i)) (range ic1-cnt)))
+                (var ic2-volts (if (> ic2-cnt 0)
+                    (map (fn (i) (ix cells (+ ic1-cnt i))) (range ic2-cnt))
+                    '()
+                ))
+                (var ic1-mask (balance-ic-group ic1-volts c-min threshold max-ch))
+                (var ic2-mask (if (> ic2-cnt 0)
+                    (balance-ic-group ic2-volts c-min threshold max-ch)
+                    0
+                ))
 
-        (if bal-request {
-            ; Phase 1: stop balancing and wait only while slaves report
-            ; unsettled data. If they are already settled, respond immediately.
-            (clear-cached-balancing)
-            (send-cached-balance-masks 0)
-            (master-can-read-all)
-            (master-check-timeouts slave-timeout-ms)
-
-            (var settle-wait 0)
-            (var max-settle-wait 50) ; 50 x 100ms = 5s timeout
-            (var settled-ready (all-configured-slaves-settled))
-
-            (loopwhile (and bal-request (not settled-ready) (< settle-wait max-settle-wait)) {
-                (sleep 0.1)
-                (master-can-read-all)
-                (master-check-timeouts slave-timeout-ms)
-                (setq settle-wait (+ settle-wait 1))
-
-                (if (all-configured-slaves-settled) {
-                    (setq settled-ready true)
-                    (break)
+                (if (or (> ic1-mask 0) (> ic2-mask 0)) {
+                    (setq any-bal true)
+                    (print (str-merge "BAL S" (str-from-n sid "%d")
+                        " IC1:" (mask-to-bin ic1-mask ic1-cnt)
+                        " IC2:" (mask-to-bin ic2-mask ic2-cnt)
+                        " min=" (str-from-n c-min "%.3f")))
                 })
-            })
 
-            (if (not settled-ready) {
-                (print "BAL: stopped (slaves not settled)")
-                (stop-all-balancing)
-                (if trigger-bal-after-charge
-                    (defer-auto-balance-request)
-                    (clear-balance-request)
-                )
+                (setix slave-bal-mask-ic1 (- sid 1) ic1-mask)
+                (setix slave-bal-mask-ic2 (- sid 1) ic2-mask)
             })
         })
-
-        (if bal-request {
-            ; Phase 2: compute balance masks from settled slave cell voltages.
-            (refresh-pack-data)
-
-            (if (not (and (balance-safe-now) (all-configured-slaves-fresh))) {
-                (print "BAL: stopped (conditions changed)")
-                (fail-close-active-balance)
-                (stop-all-balancing)
-                (if trigger-bal-after-charge
-                    (defer-auto-balance-request)
-                    (clear-balance-request)
-                )
-            })
-        })
-
-        (if bal-request {
-            (var max-ch (bms-get-param 'max_bal_ch))
-            (var threshold (if (= (ix bal-state 0) 1)
-                (bms-get-param 'vc_balance_end)
-                (bms-get-param 'vc_balance_start)
-            ))
-            (var any-bal false)
-            (var sid 1)
-            (var max-sid (cfg-num-slaves))
-
-            (clear-cached-balancing)
-
-            (loopwhile (<= sid max-sid) {
-                (if (and (master-slave-active? sid) (master-slave-fresh? sid)) {
-                    (var cells (master-get-slave-cells sid))
-                    (var ic1-cnt (master-get-cells-ic1 sid))
-                    (var ic2-cnt (master-get-cells-ic2 sid))
-                    (var cnt (+ ic1-cnt ic2-cnt))
-
-                    (if (and cells (> cnt 0) (= (length cells) cnt)) {
-                        (var ic1-volts (map (fn (i) (ix cells i)) (range ic1-cnt)))
-                        (var ic2-volts (if (> ic2-cnt 0)
-                            (map (fn (i) (ix cells (+ ic1-cnt i))) (range ic2-cnt))
-                            '()
-                        ))
-                        (var ic1-mask (balance-ic-group ic1-volts c-min threshold max-ch))
-                        (var ic2-mask (if (> ic2-cnt 0)
-                            (balance-ic-group ic2-volts c-min threshold max-ch)
-                            0
-                        ))
-
-                        (if (or (> ic1-mask 0) (> ic2-mask 0)) {
-                            (setq any-bal true)
-                            (print (str-merge "BAL S" (str-from-n sid "%d")
-                                " IC1:" (mask-to-bin ic1-mask ic1-cnt)
-                                " IC2:" (mask-to-bin ic2-mask ic2-cnt)
-                                " min=" (str-from-n c-min "%.3f")))
-                        })
-
-                        (setix slave-bal-mask-ic1 (- sid 1) ic1-mask)
-                        (setix slave-bal-mask-ic2 (- sid 1) ic2-mask)
-                    })
-                })
-                (setq sid (+ sid 1))
-            })
-
-            (if any-bal {
-                (setix bal-state 0 1)
-                (setq bal-status "BAL")
-                (setix bal-keepalive-kick 0 1)
-
-                ; Phase 3: hold for about 30 s. Main loop sends keepalive.
-                (var hold-cnt 0)
-                (loopwhile (and bal-request (< hold-cnt 30)) {
-                    (sleep 1.0)
-                    (setq hold-cnt (+ hold-cnt 1))
-                })
-            } {
-                (print "BAL: target reached")
-                (stop-all-balancing)
-                (clear-balance-request)
-            })
-        })
+        (setq sid (+ sid 1))
     })
 
-    (if (and (not bal-request) (= (ix bal-state 0) 1))
-        (stop-all-balancing)
+    any-bal
+})
+
+(defun balance-cycle-failed (message) {
+    (print message)
+    (fail-close-active-balance)
+    (stop-all-balancing)
+    (if trigger-bal-after-charge
+        (defer-auto-balance-request)
+        (setq trigger-bal-after-charge false)
     )
-}))
+})
+
+; Balance supervision runs at 20 Hz. Charge requests are handled by set-chg,
+; while every nonzero keepalive is gated by fresh pack safety conditions.
+(defun balance-thd () {
+    (var keepalive-cnt 0)
+
+    (loopwhile t {
+        ; A late nonzero complete broadcast after a stop reasserts the C
+        ; inhibit. Convert that asynchronous condition back into STOPPING so
+        ; the zero-mask transaction is retried instead of blocking charging.
+        (if (and (balance-state-is bal-state-idle) (c-balance-inhibited)) {
+            (setix bal-state 0 bal-state-stopping)
+            (setq bal-status "BAL_STOP")
+        })
+
+        (if (balance-state-is bal-state-stopping)
+            (stop-all-balancing)
+        )
+
+        (if (and
+                (balance-state-is bal-state-idle)
+                trigger-bal-after-charge
+                (not is-charging)
+                (> (secs-since bal-auto-retry-ts) 5.0)
+            )
+            (start-balance-request)
+        )
+
+        (if (balance-state-is bal-state-requested) {
+            (refresh-pack-data)
+            (if (not (and (balance-safe-now) (all-configured-slaves-fresh))) {
+                (balance-cycle-failed "BAL: blocked by pack conditions")
+            } {
+                ; The C request latch is held while the physical zero handoff
+                ; completes. No slave status acknowledgement is required.
+                (if (not (zero-balancing-preserve-request)) {
+                    (balance-cycle-failed "BAL: zero-mask handoff failed")
+                } {
+                    (refresh-pack-data)
+                    (if (not (and (balance-safe-now) (all-configured-slaves-fresh))) {
+                        (balance-cycle-failed "BAL: data changed during handoff")
+                    } {
+                        (if (update-balance-masks (bms-get-param 'vc_balance_start)) {
+                            (if (send-cached-balance-masks 0) {
+                                (setix bal-state 0 bal-state-active)
+                                (setq bal-status "BAL")
+                                (setq keepalive-cnt 0)
+                            } {
+                                (balance-cycle-failed "BAL: initial transmit failed")
+                            })
+                        } {
+                            (print "BAL: target reached")
+                            (clear-balance-request)
+                        })
+                    })
+                })
+            })
+        })
+
+        (if (balance-state-is bal-state-active) {
+            (setq keepalive-cnt (+ keepalive-cnt 1))
+            (refresh-pack-data)
+            (if (not (and (balance-safe-now) (all-configured-slaves-fresh))) {
+                (balance-cycle-failed "BAL: safety condition failed")
+                (setq keepalive-cnt 0)
+            } {
+                (if (>= keepalive-cnt 20) {
+                    (setq keepalive-cnt 0)
+                    (if (update-balance-masks (bms-get-param 'vc_balance_end)) {
+                        (if (not (send-cached-balance-masks 0))
+                            (balance-cycle-failed "BAL: keepalive transmit failed")
+                        )
+                    } {
+                        (print "BAL: target reached")
+                        (clear-balance-request)
+                    })
+                })
+            })
+        } {
+            (setq keepalive-cnt 0)
+        })
+
+        (sleep 0.05)
+    })
+})
 
 ;;;;;;;;;; Events and status ;;;;;;;;;;
 
@@ -1546,18 +1578,6 @@ loopwhile-thd
 
         (update-charge-control)
         (update-sleep-shutdown-timer)
-
-        ; Balance keepalive to slaves at 1 Hz while balancing is active.
-        (if (and bal-request
-                 (= (ix bal-state 0) 1)
-                 (or (= (mod loop-cnt 20) 0) (= (ix bal-keepalive-kick 0) 1))) {
-            (if (not (send-cached-balance-masks 0)) {
-                (print "BAL: keepalive transmit failed")
-                (clear-balance-request)
-                (stop-all-balancing)
-            })
-            (setix bal-keepalive-kick 0 0)
-        })
 
         (update-status)
         (send-bms-can)

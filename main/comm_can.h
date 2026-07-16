@@ -91,6 +91,8 @@ void comm_can_update_baudrate(int delay_msec);
 void comm_can_change_pins(int tx, int rx);
 void comm_can_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len);
 void comm_can_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len);
+esp_err_t comm_can_transmit_sid_sync(uint32_t id, const uint8_t *data,
+		uint8_t len, int timeout_ms);
 void comm_can_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send);
 bool comm_can_ping(uint8_t controller_id, HW_TYPE *hw_type);
 
@@ -145,6 +147,8 @@ void comm_can2_get_debug_info(comm_can2_debug_info_t *info);
 void comm_can2_reset_debug_info(void);
 esp_err_t comm_can2_transmit_eid_result(uint32_t id, const uint8_t *data, uint8_t len);
 esp_err_t comm_can2_transmit_sid_result(uint32_t id, const uint8_t *data, uint8_t len);
+esp_err_t comm_can2_transmit_sid_sync(uint32_t id, const uint8_t *data,
+		uint8_t len, int timeout_ms);
 void comm_can2_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len);
 void comm_can2_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len);
 void comm_can2_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send_type);
