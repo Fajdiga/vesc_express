@@ -210,12 +210,18 @@ static int configured_slave_count(void) {
 // CAN RX circular buffer for 11-bit messages
 #define CAN_BUF_SIZE 128
 #define SLAVE_INACTIVE_STALE_CHECKS 3
+#define SLAVE_BROADCAST_ASSEMBLY_TIMEOUT_MS 75U
+#define SLAVE_SAFETY_FRESHNESS_TIMEOUT_MS 300U
 #define SLAVE_CAN_BUS_ESC      0
 #define SLAVE_CAN_BUS_PRIVATE  1
 #define SLAVE_CAN_BUS_UNKNOWN  0xFF
 
+#define STAGE_CELL_FRAME_MASK  0x00FFU
+#define STAGE_TEMP_FRAME_BIT   0x0100U
+
 typedef struct {
 	uint32_t id;
+	uint32_t rx_ms;
 	uint8_t data[8];
 	uint8_t len;
 	uint8_t bus;
@@ -230,8 +236,11 @@ static volatile uint32_t can_rx_esc_total = 0;
 static volatile uint32_t can_rx_private_total = 0;
 static volatile uint32_t can_rx_filtered_total = 0;
 static volatile uint32_t can_rx_filtered_last_id = 0;
+static volatile uint32_t can_rx_malformed_total = 0;
+static volatile uint32_t can_rx_malformed_slave[MAX_SLAVES] = {0};
 static uint32_t debug_rate_last_ms = 0;
 static uint32_t debug_status_last[MAX_SLAVES] = {0};
+static uint32_t debug_complete_last[MAX_SLAVES] = {0};
 
 static volatile bool slave_can_running = false;
 static volatile uint32_t slave_can_tx_ok_cnt = 0;
@@ -241,8 +250,121 @@ static volatile esp_err_t slave_can_last_error = ESP_OK;
 static uint8_t slave_can_rx_bus[MAX_SLAVES];
 
 // Master slave data
+// Keep each broadcast private until all required frames and its final status
+// have arrived. The live snapshot is only replaced by one complete commit.
+typedef struct {
+	uint16_t cell_voltages[CELLS_PER_SLAVE];
+	int16_t temperatures[TEMPS_PER_SLAVE];
+	uint32_t balance_mask;
+	uint8_t fault_flags;
+	uint8_t cells_ic1;
+	uint8_t cells_ic2;
+	uint8_t temp_sensor_flags;
+	uint8_t bus;
+	uint16_t received_mask;
+	uint16_t last_missing_mask;
+	uint32_t start_ms;
+	uint32_t last_frame_ms;
+	uint32_t last_complete_ms;
+	uint32_t raw_status_count;
+	uint32_t complete_count;
+	uint32_t incomplete_count;
+	uint32_t timeout_count;
+	uint32_t restart_count;
+	uint32_t orphan_count;
+	uint32_t invalid_count;
+	uint32_t bus_mismatch_count;
+	uint32_t duplicate_count;
+	uint32_t generation;
+	bool settled;
+	bool in_progress;
+} slave_broadcast_stage_t;
+
 static master_bms_data_t m_bms_data;
+static slave_broadcast_stage_t m_slave_stage[MAX_SLAVES];
 static SemaphoreHandle_t m_data_mutex;
+
+static bool slave_cell_counts_valid_values(int cells_ic1, int cells_ic2) {
+	return cells_ic1 >= 3 && cells_ic1 <= 16 &&
+			(cells_ic2 == 0 || (cells_ic2 >= 3 && cells_ic2 <= 16));
+}
+
+static uint16_t required_cell_frame_mask(int cells_ic1, int cells_ic2) {
+	uint16_t mask = (uint16_t)((1U << ((cells_ic1 + 3) / 4)) - 1U);
+	if (cells_ic2 > 0) {
+		mask |= (uint16_t)(((1U << ((cells_ic2 + 3) / 4)) - 1U) << 4);
+	}
+	return mask;
+}
+
+static void clear_slave_stage_state_locked(int idx) {
+	slave_broadcast_stage_t *stage = &m_slave_stage[idx];
+	memset(stage->cell_voltages, 0, sizeof(stage->cell_voltages));
+	for (int t = 0; t < TEMPS_PER_SLAVE; t++) {
+		stage->temperatures[t] = 0x7FFF;
+	}
+	stage->balance_mask = 0;
+	stage->fault_flags = 0;
+	stage->cells_ic1 = 0;
+	stage->cells_ic2 = 0;
+	stage->temp_sensor_flags = 0;
+	stage->bus = SLAVE_CAN_BUS_UNKNOWN;
+	stage->received_mask = 0;
+	stage->start_ms = 0;
+	stage->last_frame_ms = 0;
+	stage->settled = false;
+	stage->in_progress = false;
+}
+
+static void clear_slave_stage_diagnostics_locked(int idx) {
+	slave_broadcast_stage_t *stage = &m_slave_stage[idx];
+	stage->last_missing_mask = 0;
+	stage->last_complete_ms = 0;
+	stage->raw_status_count = 0;
+	stage->complete_count = 0;
+	stage->incomplete_count = 0;
+	stage->timeout_count = 0;
+	stage->restart_count = 0;
+	stage->orphan_count = 0;
+	stage->invalid_count = 0;
+	stage->bus_mismatch_count = 0;
+	stage->duplicate_count = 0;
+	stage->generation = 0;
+}
+
+static uint16_t stage_expected_mask_locked(int idx) {
+	slave_broadcast_stage_t *stage = &m_slave_stage[idx];
+	if (slave_cell_counts_valid_values(stage->cells_ic1, stage->cells_ic2)) {
+		return required_cell_frame_mask(stage->cells_ic1, stage->cells_ic2) |
+				STAGE_TEMP_FRAME_BIT;
+	}
+	if (slave_cell_counts_valid_values(m_bms_data.cells_ic1[idx],
+			m_bms_data.cells_ic2[idx])) {
+		return required_cell_frame_mask(m_bms_data.cells_ic1[idx],
+				m_bms_data.cells_ic2[idx]) | STAGE_TEMP_FRAME_BIT;
+	}
+	return STAGE_CELL_FRAME_MASK | STAGE_TEMP_FRAME_BIT;
+}
+
+static void discard_slave_stage_locked(int idx) {
+	slave_broadcast_stage_t *stage = &m_slave_stage[idx];
+	stage->last_missing_mask = stage_expected_mask_locked(idx) &
+			(uint16_t)~stage->received_mask;
+	stage->incomplete_count++;
+	clear_slave_stage_state_locked(idx);
+}
+
+static bool expire_slave_stage_locked(int idx, uint32_t now_ms) {
+	slave_broadcast_stage_t *stage = &m_slave_stage[idx];
+	if (!stage->in_progress ||
+			(now_ms - stage->start_ms) <= SLAVE_BROADCAST_ASSEMBLY_TIMEOUT_MS) {
+		return false;
+	}
+
+	stage->timeout_count++;
+	discard_slave_stage_locked(idx);
+	return true;
+}
 
 static void clear_slave_data(int idx) {
 	memset(m_bms_data.cell_voltages[idx], 0, sizeof(m_bms_data.cell_voltages[idx]));
@@ -265,6 +387,8 @@ static void clear_slave_data(int idx) {
 	m_bms_data.active[idx] = false;
 	m_bms_data.stale_checks[idx] = 0;
 	slave_can_rx_bus[idx] = SLAVE_CAN_BUS_UNKNOWN;
+	clear_slave_stage_state_locked(idx);
+	clear_slave_stage_diagnostics_locked(idx);
 }
 
 static bool timestamp_fresh(uint32_t timestamp, uint32_t now, uint32_t timeout) {
@@ -272,10 +396,8 @@ static bool timestamp_fresh(uint32_t timestamp, uint32_t now, uint32_t timeout) 
 }
 
 static bool slave_cell_counts_valid_locked(int idx) {
-	int cells_ic1 = m_bms_data.cells_ic1[idx];
-	int cells_ic2 = m_bms_data.cells_ic2[idx];
-	return cells_ic1 >= 3 && cells_ic1 <= 16 &&
-			(cells_ic2 == 0 || (cells_ic2 >= 3 && cells_ic2 <= 16));
+	return slave_cell_counts_valid_values(m_bms_data.cells_ic1[idx],
+			m_bms_data.cells_ic2[idx]);
 }
 
 // Build the narrowest single hardware-mask superset for contiguous IDs 1..N.
@@ -364,8 +486,12 @@ static void slave_can_buffer_rx(uint32_t id, const uint8_t *data, int len, bool 
 
 	uint8_t slave_id = 0;
 	uint8_t msg_type = 0xFF;
-	if (!decode_slave_can_id(id, &slave_id, &msg_type) ||
-			!valid_slave_msg_len(msg_type, len)) {
+	if (!decode_slave_can_id(id, &slave_id, &msg_type)) {
+		return;
+	}
+	if (!valid_slave_msg_len(msg_type, len)) {
+		can_rx_malformed_total++;
+		can_rx_malformed_slave[slave_id - 1]++;
 		return;
 	}
 
@@ -382,6 +508,7 @@ static void slave_can_buffer_rx(uint32_t id, const uint8_t *data, int len, bool 
 	}
 
 	can_rx_buf[can_rx_head].id = id;
+	can_rx_buf[can_rx_head].rx_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
 	can_rx_buf[can_rx_head].len = (len > 8) ? 8 : len;
 	can_rx_buf[can_rx_head].bus = bus;
 	memcpy(can_rx_buf[can_rx_head].data, data, can_rx_buf[can_rx_head].len);
@@ -499,8 +626,10 @@ static bool slave_can_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len
 #endif
 }
 
-// Parse a single CAN message from a slave
-static void parse_slave_message(uint32_t id, uint8_t *data, int len, uint8_t bus) {
+// Parse a single CAN message from a slave. Cell frame 0 starts a candidate;
+// the status frame commits it only after every required frame is present.
+static void parse_slave_message(uint32_t id, uint8_t *data, int len, uint8_t bus,
+		uint32_t rx_ms) {
 	uint8_t slave_id = 0;
 	uint8_t msg_type = 0xFF;
 
@@ -510,50 +639,142 @@ static void parse_slave_message(uint32_t id, uint8_t *data, int len, uint8_t bus
 	}
 
 	uint8_t idx = slave_id - 1;  // 0-based index
+	uint32_t now_ms = rx_ms;
 
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 
-	m_bms_data.last_seen_ms[idx] = xTaskGetTickCount() * portTICK_PERIOD_MS;
 	m_bms_data.frame_rx_count[idx]++;
-	slave_can_rx_bus[idx] = bus;
+	expire_slave_stage_locked(idx, now_ms);
+	slave_broadcast_stage_t *stage = &m_slave_stage[idx];
+	if (msg_type == 0x09) {
+		stage->raw_status_count++;
+	}
 
+	if (msg_type == 0x00) {
+		if (stage->in_progress) {
+			stage->duplicate_count++;
+			if (stage->bus != bus) {
+				stage->bus_mismatch_count++;
+			} else {
+				stage->restart_count++;
+			}
+			discard_slave_stage_locked(idx);
+		}
+
+		clear_slave_stage_state_locked(idx);
+		stage->in_progress = true;
+		stage->bus = bus;
+		stage->start_ms = now_ms;
+		stage->last_frame_ms = now_ms;
+	}
+
+	if (!stage->in_progress) {
+		stage->orphan_count++;
+		xSemaphoreGive(m_data_mutex);
+		return;
+	}
+
+	if (stage->bus != bus) {
+		stage->bus_mismatch_count++;
+		discard_slave_stage_locked(idx);
+		xSemaphoreGive(m_data_mutex);
+		return;
+	}
+
+	stage->last_frame_ms = now_ms;
 	if (msg_type <= 0x07) {
-		// Cell voltage message: 4 cells per message, little-endian uint16 mV
-		if (len >= 8) {
-			uint8_t base_cell = msg_type * 4;
-			for (int i = 0; i < 4 && (base_cell + i) < CELLS_PER_SLAVE; i++) {
-				m_bms_data.cell_voltages[idx][base_cell + i] =
-					(uint16_t)data[i * 2] | ((uint16_t)data[i * 2 + 1] << 8);
-			}
-			m_bms_data.cell_last_seen_ms[idx][msg_type] = m_bms_data.last_seen_ms[idx];
+		// Cell voltage message: 4 cells per message, little-endian uint16 mV.
+		uint8_t base_cell = msg_type * 4;
+		for (int i = 0; i < 4 && (base_cell + i) < CELLS_PER_SLAVE; i++) {
+			stage->cell_voltages[base_cell + i] =
+				(uint16_t)data[i * 2] | ((uint16_t)data[i * 2 + 1] << 8);
 		}
+		uint16_t frame_bit = (uint16_t)(1U << msg_type);
+		if ((stage->received_mask & frame_bit) != 0) {
+			stage->duplicate_count++;
+		}
+		stage->received_mask |= frame_bit;
 	} else if (msg_type == 0x08) {
-		// Temperature message: 4 temps, little-endian int16 0.1 deg C
-		if (len >= 8) {
-			for (int i = 0; i < TEMPS_PER_SLAVE; i++) {
-				m_bms_data.temperatures[idx][i] =
-					(int16_t)((uint16_t)data[i * 2] | ((uint16_t)data[i * 2 + 1] << 8));
-			}
-			m_bms_data.temp_last_seen_ms[idx] = m_bms_data.last_seen_ms[idx];
+		// Temperature message: 4 temps, little-endian int16 0.1 deg C.
+		for (int i = 0; i < TEMPS_PER_SLAVE; i++) {
+			stage->temperatures[i] =
+				(int16_t)((uint16_t)data[i * 2] | ((uint16_t)data[i * 2 + 1] << 8));
 		}
+		if ((stage->received_mask & STAGE_TEMP_FRAME_BIT) != 0) {
+			stage->duplicate_count++;
+		}
+		stage->received_mask |= STAGE_TEMP_FRAME_BIT;
 	} else if (msg_type == 0x09) {
-		// Status message: balance mask (4B), faults, IC1/IC2 cell counts,
-		// and the external-temperature-sensor enable mask.
-		if (len == 8) {
-			m_bms_data.balance_mask[idx] =
+		// Status is the protocol-defined final frame. Its cell counts define the
+		// exact cell-frame set required for this candidate.
+		stage->balance_mask =
 				(uint32_t)data[0] |
 				((uint32_t)data[1] << 8) |
 				((uint32_t)data[2] << 16) |
 				((uint32_t)data[3] << 24);
-			m_bms_data.fault_flags[idx] = data[4];
-			m_bms_data.settled[idx] = (data[4] & 0x04) != 0;
-			m_bms_data.temp_sensor_flags[idx] = data[7] &
-					(STATUS_TEMP_BQ1_ENABLED | STATUS_TEMP_BQ2_ENABLED);
-			m_bms_data.cells_ic1[idx] = data[5];
-			m_bms_data.cells_ic2[idx] = data[6];
-			m_bms_data.status_last_seen_ms[idx] = m_bms_data.last_seen_ms[idx];
-			m_bms_data.status_rx_count[idx]++;
+		stage->fault_flags = data[4];
+		stage->settled = (data[4] & 0x04) != 0;
+		stage->temp_sensor_flags = data[7] &
+				(STATUS_TEMP_BQ1_ENABLED | STATUS_TEMP_BQ2_ENABLED);
+		stage->cells_ic1 = data[5];
+		stage->cells_ic2 = data[6];
+
+		if (!slave_cell_counts_valid_values(stage->cells_ic1, stage->cells_ic2)) {
+			stage->invalid_count++;
+			discard_slave_stage_locked(idx);
+			xSemaphoreGive(m_data_mutex);
+			return;
 		}
+
+		uint16_t expected_cells = required_cell_frame_mask(stage->cells_ic1,
+				stage->cells_ic2);
+		uint16_t expected = expected_cells | STAGE_TEMP_FRAME_BIT;
+		uint16_t received_cells = stage->received_mask & STAGE_CELL_FRAME_MASK;
+		bool missing = (stage->received_mask & expected) != expected;
+		bool unexpected = (received_cells & (uint16_t)~expected_cells) != 0;
+		if (missing || unexpected ||
+				(now_ms - stage->start_ms) > SLAVE_BROADCAST_ASSEMBLY_TIMEOUT_MS) {
+			if (unexpected) {
+				stage->invalid_count++;
+			}
+			if ((now_ms - stage->start_ms) > SLAVE_BROADCAST_ASSEMBLY_TIMEOUT_MS) {
+				stage->timeout_count++;
+			}
+			discard_slave_stage_locked(idx);
+			xSemaphoreGive(m_data_mutex);
+			return;
+		}
+
+		// Publish all values and freshness timestamps together. No partial frame
+		// can update the live snapshot used by the rest of the BMS.
+		memcpy(m_bms_data.cell_voltages[idx], stage->cell_voltages,
+				sizeof(m_bms_data.cell_voltages[idx]));
+		memcpy(m_bms_data.temperatures[idx], stage->temperatures,
+				sizeof(m_bms_data.temperatures[idx]));
+		m_bms_data.balance_mask[idx] = stage->balance_mask;
+		m_bms_data.fault_flags[idx] = stage->fault_flags;
+		m_bms_data.settled[idx] = stage->settled;
+		m_bms_data.temp_sensor_flags[idx] = stage->temp_sensor_flags;
+		m_bms_data.cells_ic1[idx] = stage->cells_ic1;
+		m_bms_data.cells_ic2[idx] = stage->cells_ic2;
+		m_bms_data.last_seen_ms[idx] = now_ms;
+		memset(m_bms_data.cell_last_seen_ms[idx], 0,
+				sizeof(m_bms_data.cell_last_seen_ms[idx]));
+		for (int frame = 0; frame < 8; frame++) {
+			if ((expected_cells & (1U << frame)) != 0) {
+				m_bms_data.cell_last_seen_ms[idx][frame] = now_ms;
+			}
+		}
+		m_bms_data.temp_last_seen_ms[idx] = now_ms;
+		m_bms_data.status_last_seen_ms[idx] = now_ms;
+		m_bms_data.status_rx_count[idx]++;
+		slave_can_rx_bus[idx] = stage->bus;
+
+		stage->last_missing_mask = 0;
+		stage->last_complete_ms = now_ms;
+		stage->complete_count++;
+		stage->generation++;
+		clear_slave_stage_state_locked(idx);
 	}
 
 	xSemaphoreGive(m_data_mutex);
@@ -879,7 +1100,7 @@ static lbm_value ext_master_can_read_all(lbm_value *args, lbm_uint argn) {
 	int count = 0;
 	while (can_rx_tail != can_rx_head) {
 		can_msg_t *msg = &can_rx_buf[can_rx_tail];
-		parse_slave_message(msg->id, msg->data, msg->len, msg->bus);
+		parse_slave_message(msg->id, msg->data, msg->len, msg->bus, msg->rx_ms);
 		can_rx_tail = (can_rx_tail + 1) % CAN_BUF_SIZE;
 		count++;
 	}
@@ -1031,8 +1252,10 @@ static lbm_value ext_master_slave_fresh(lbm_value *args, lbm_uint argn) {
 
 	int idx = slave_id - 1;
 
+	uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
-	bool fresh = m_bms_data.fresh[idx];
+	bool fresh = slave_data_fresh_locked(idx, now, SLAVE_SAFETY_FRESHNESS_TIMEOUT_MS);
+	m_bms_data.fresh[idx] = fresh;
 	xSemaphoreGive(m_data_mutex);
 
 	return fresh ? ENC_SYM_TRUE : ENC_SYM_NIL;
@@ -1103,11 +1326,15 @@ static lbm_value ext_master_check_timeouts(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 
 	uint32_t timeout = lbm_dec_as_u32(args[0]);
+	if (timeout > SLAVE_SAFETY_FRESHNESS_TIMEOUT_MS) {
+		timeout = SLAVE_SAFETY_FRESHNESS_TIMEOUT_MS;
+	}
 	uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
 
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 
 	for (int i = 0; i < MAX_SLAVES; i++) {
+		expire_slave_stage_locked(i, now);
 		bool fresh = slave_data_fresh_locked(i, now, timeout);
 		m_bms_data.fresh[i] = fresh;
 
@@ -1153,8 +1380,11 @@ static lbm_value ext_master_reset_slaves(lbm_value *args, lbm_uint argn) {
 	can_rx_private_total = 0;
 	can_rx_filtered_total = 0;
 	can_rx_filtered_last_id = 0;
+	can_rx_malformed_total = 0;
+	memset((void *)can_rx_malformed_slave, 0, sizeof(can_rx_malformed_slave));
 	debug_rate_last_ms = 0;
 	memset(debug_status_last, 0, sizeof(debug_status_last));
+	memset(debug_complete_last, 0, sizeof(debug_complete_last));
 
 	return ENC_SYM_TRUE;
 }
@@ -1574,13 +1804,14 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 		(unsigned long)can_dbg.rx_bad_len);
 
 #if JFBMS_USE_DEDICATED_SLAVE_TWAI
-	commands_printf_lisp("Slave CAN TWAI%d: tx=%d rx=%d baud=%d running=%d filter_id=0x%03lX filter_mask=0x%03lX rx_total=%lu filtered=%lu filtered_last=0x%03lX esc_rx=%lu priv_rx=%lu buf_head=%d buf_tail=%d overflow=%lu recovery=%d tx_ok=%lu tx_fail=%lu tx_timeout=%lu last_err=%d",
+	commands_printf_lisp("Slave CAN TWAI%d: tx=%d rx=%d baud=%d running=%d filter_id=0x%03lX filter_mask=0x%03lX rx_total=%lu filtered=%lu malformed=%lu filtered_last=0x%03lX esc_rx=%lu priv_rx=%lu buf_head=%d buf_tail=%d overflow=%lu recovery=%d tx_ok=%lu tx_fail=%lu tx_timeout=%lu last_err=%d",
 		JFBMS_SLAVE_CAN_TWAI_ID, JFBMS_SLAVE_CAN_TX_GPIO_NUM, JFBMS_SLAVE_CAN_RX_GPIO_NUM,
 		JFBMS_SLAVE_CAN_BAUD_KBITS,
 		slave_can_running ? 1 : 0,
 		(unsigned long)filter_id, (unsigned long)filter_mask,
 		(unsigned long)can_rx_total,
 		(unsigned long)can_rx_filtered_total,
+		(unsigned long)can_rx_malformed_total,
 		(unsigned long)can_rx_filtered_last_id,
 		(unsigned long)can_rx_esc_total,
 		(unsigned long)can_rx_private_total,
@@ -1601,11 +1832,12 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 		(unsigned long)can2_dbg.last_tx_sid,
 		(int)can2_dbg.last_error);
 #else
-	commands_printf_lisp("Slave CAN primary TWAI0: tx=%d rx=%d baud_cfg=%d one_bus=1 twai1_disabled_pin_collision=%d rx_total=%lu primary_rx=%lu dedicated_rx=%lu buf_head=%d buf_tail=%d overflow=%lu tx_ok=%lu tx_fail=%lu tx_timeout=%lu last_err=%d",
+	commands_printf_lisp("Slave CAN primary TWAI0: tx=%d rx=%d baud_cfg=%d one_bus=1 twai1_disabled_pin_collision=%d rx_total=%lu malformed=%lu primary_rx=%lu dedicated_rx=%lu buf_head=%d buf_tail=%d overflow=%lu tx_ok=%lu tx_fail=%lu tx_timeout=%lu last_err=%d",
 		CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM,
 		(int)backup.config.can_baud_rate,
 		JFBMS_DEDICATED_SLAVE_TWAI_PIN_COLLISION,
 		(unsigned long)can_rx_total,
+		(unsigned long)can_rx_malformed_total,
 		(unsigned long)can_rx_esc_total,
 		(unsigned long)can_rx_private_total,
 		can_rx_head, can_rx_tail, (unsigned long)can_rx_overflow,
@@ -1618,26 +1850,46 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 	int expected_slaves = configured_slave_count();
 	for (int i = 0; i < expected_slaves; i++) {
-		uint32_t status_delta = m_bms_data.status_rx_count[i] - debug_status_last[i];
+		uint32_t status_delta = m_slave_stage[i].raw_status_count - debug_status_last[i];
 		float status_hz = rate_elapsed_ms > 0 ?
 				((float)status_delta * 1000.0f / (float)rate_elapsed_ms) : 0.0f;
+		uint32_t complete_delta = m_slave_stage[i].complete_count - debug_complete_last[i];
+		float complete_hz = rate_elapsed_ms > 0 ?
+				((float)complete_delta * 1000.0f / (float)rate_elapsed_ms) : 0.0f;
 		int32_t status_age = m_bms_data.status_last_seen_ms[i] != 0 ?
 				(int32_t)(now_ms - m_bms_data.status_last_seen_ms[i]) : -1;
 		int32_t temp_age = m_bms_data.temp_last_seen_ms[i] != 0 ?
 				(int32_t)(now_ms - m_bms_data.temp_last_seen_ms[i]) : -1;
+		int32_t stage_age = m_slave_stage[i].in_progress ?
+				(int32_t)(now_ms - m_slave_stage[i].start_ms) : -1;
 
-		commands_printf_lisp("Slave %d: active=%d fresh=%d stale_checks=%u frames=%lu status_frames=%lu status_rate=%.2fHz status_age=%ldms temp_age=%ldms ic1=%d ic2=%d faults=0x%02X bus=%s",
+		commands_printf_lisp("Slave %d: active=%d fresh=%d stale_checks=%u frames=%lu raw_status=%lu raw_status_rate=%.2fHz complete=%lu complete_rate=%.2fHz incomplete=%lu timeout=%lu restart=%lu orphan=%lu duplicate=%lu malformed=%lu invalid=%lu bus_mismatch=%lu generation=%lu commit_age=%ldms temp_age=%ldms stage_age=%ldms stage_mask=0x%03X last_missing=0x%03X ic1=%d ic2=%d faults=0x%02X bus=%s",
 			i + 1, m_bms_data.active[i] ? 1 : 0,
 			m_bms_data.fresh[i] ? 1 : 0,
 			(unsigned int)m_bms_data.stale_checks[i],
 			(unsigned long)m_bms_data.frame_rx_count[i],
-			(unsigned long)m_bms_data.status_rx_count[i],
-			(double)status_hz, (long)status_age, (long)temp_age,
+			(unsigned long)m_slave_stage[i].raw_status_count,
+			(double)status_hz,
+			(unsigned long)m_slave_stage[i].complete_count,
+			(double)complete_hz,
+			(unsigned long)m_slave_stage[i].incomplete_count,
+			(unsigned long)m_slave_stage[i].timeout_count,
+			(unsigned long)m_slave_stage[i].restart_count,
+			(unsigned long)m_slave_stage[i].orphan_count,
+			(unsigned long)m_slave_stage[i].duplicate_count,
+			(unsigned long)can_rx_malformed_slave[i],
+			(unsigned long)m_slave_stage[i].invalid_count,
+			(unsigned long)m_slave_stage[i].bus_mismatch_count,
+			(unsigned long)m_slave_stage[i].generation,
+			(long)status_age, (long)temp_age, (long)stage_age,
+			(unsigned int)m_slave_stage[i].received_mask,
+			(unsigned int)m_slave_stage[i].last_missing_mask,
 			m_bms_data.cells_ic1[i], m_bms_data.cells_ic2[i],
 			m_bms_data.fault_flags[i],
 			slave_can_rx_bus[i] == SLAVE_CAN_BUS_ESC ? "primary/TWAI0" :
 			(slave_can_rx_bus[i] == SLAVE_CAN_BUS_PRIVATE ? "BMS/TWAI1" : "unknown"));
-		debug_status_last[i] = m_bms_data.status_rx_count[i];
+		debug_status_last[i] = m_slave_stage[i].raw_status_count;
+		debug_complete_last[i] = m_slave_stage[i].complete_count;
 	}
 	xSemaphoreGive(m_data_mutex);
 	debug_rate_last_ms = now_ms;
@@ -1656,12 +1908,16 @@ static lbm_value ext_can_debug_reset(lbm_value *args, lbm_uint argn) {
 	can_rx_private_total = 0;
 	can_rx_filtered_total = 0;
 	can_rx_filtered_last_id = 0;
+	can_rx_malformed_total = 0;
+	memset((void *)can_rx_malformed_slave, 0, sizeof(can_rx_malformed_slave));
 	debug_rate_last_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
 	memset(debug_status_last, 0, sizeof(debug_status_last));
+	memset(debug_complete_last, 0, sizeof(debug_complete_last));
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 	for (int i = 0; i < MAX_SLAVES; i++) {
 		m_bms_data.frame_rx_count[i] = 0;
 		m_bms_data.status_rx_count[i] = 0;
+		clear_slave_stage_diagnostics_locked(i);
 	}
 	xSemaphoreGive(m_data_mutex);
 	slave_can_tx_ok_cnt = 0;
@@ -1770,10 +2026,7 @@ void hw_init(void) {
 	// Initialize master slave data
 	memset(&m_bms_data, 0, sizeof(m_bms_data));
 	for (int s = 0; s < MAX_SLAVES; s++) {
-		slave_can_rx_bus[s] = SLAVE_CAN_BUS_UNKNOWN;
-		for (int t = 0; t < TEMPS_PER_SLAVE; t++) {
-			m_bms_data.temperatures[s][t] = 0x7FFF;
-		}
+		clear_slave_data(s);
 	}
 
 	// GPIO setup

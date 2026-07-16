@@ -13,7 +13,7 @@
 
 ;;;;;;;;;; State ;;;;;;;;;;
 
-(def slave-timeout-ms 1000)
+(def slave-timeout-ms 300)
 (def chg-allowed true)
 (def charge-ok false)
 (def is-charging false)

@@ -441,7 +441,9 @@ Balance (slave 8):   0x508
 
 ## Freshness and Activation
 
-At a 100 ms broadcast interval, the master applies a 1000 ms freshness timeout and a 3-check offline debounce.
+At a 100 ms broadcast interval, the master stages each slave burst privately. Cell frame type 0 starts a candidate and the status frame ends it. The candidate is committed atomically only when all cell frames required by the status topology and the temperature frame arrived on the same CAN bus within 75 ms. Incomplete candidates never modify live safety data.
+
+The master applies a fixed 300 ms safety freshness timeout from the last complete atomic commit and a separate 3-check offline debounce for display/presence state.
 
 The master tracks two related states:
 
@@ -462,7 +464,9 @@ The master keeps the last valid values visible while a previously active slave i
 
 Each configured slave must have a unique slave ID. Duplicate IDs cannot be reliably separated by CAN arbitration because frames with the same CAN ID are treated as the same message source.
 
-The master exposes CAN RX overflow diagnostics. Any nonzero or increasing overflow counter indicates dropped frames and must be treated as a bus/load/firmware scheduling issue rather than normal arbitration.
+The master exposes CAN RX overflow, complete, incomplete, timeout, restart, orphan, duplicate, malformed, commit-rate, age, bus-off recovery and TX-failure diagnostics. Any nonzero or increasing overflow counter indicates dropped frames and must be treated as a bus/load/firmware scheduling issue rather than normal arbitration.
+
+The current wire format has no broadcast sequence number. Therefore the master cannot count every lost CAN frame exactly: a completely missing burst is indistinguishable from a slave that did not broadcast. Incomplete-burst counts and gaps in the complete-commit rate are loss estimates. Exact per-burst loss accounting would require a future slave protocol revision carrying a sequence number.
 
 ---
 
@@ -471,7 +475,7 @@ The master exposes CAN RX overflow diagnostics. Any nonzero or increasing overfl
 ### Master Integration
 
 - Receives slave data via standard CAN RX
-- Aggregates all cell voltages into single array
+- Stages each slave broadcast and publishes cells, temperatures, topology and status as one atomic snapshot
 - Uses `cells_ic1` and `cells_ic2` from status message to know exact IC configuration
 - Uses `TempSensorMask` from status message to decide which external NTC slots are required
 - Treats invalid enabled NTC readings as faults
@@ -503,7 +507,8 @@ The master exposes CAN RX overflow diagnostics. Any nonzero or increasing overfl
 | Fitted BQ die temperature invalid | Send `0x7FFF` | Set temperature-data fault; block charge/balance |
 | Malformed status DLC | N/A | Reject frame; do not refresh slave status |
 | No balance cmd (10 s) | Stop all balancing | N/A (master should resend periodically) |
-| Slave offline | N/A | Mark offline after the 1000 ms freshness timeout plus 3 stale checks |
+| Slave data older than 300 ms | N/A | Immediately block charge/balance; retain last complete values for display only |
+| Slave offline | N/A | Mark display/presence offline after 3 stale checks |
 | Single-chip slave | BQ2 temps = `0x7FFF`, TempSensorMask bit 1 = 0, fault bit 1 = 0 | Normal operation (not an error) |
 
 ---
