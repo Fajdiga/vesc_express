@@ -186,6 +186,21 @@ static float m_temp_pcb = -300.0f;
 static bool  m_temp_pcb_filter_init = false;
 static bool  m_temp_pcb_valid = false;
 
+// Rebuilding the continuous ADC monitor stops the ADC briefly. Keep track of
+// the settings that actually affect that monitor so a normal configuration
+// save (for example a cell-voltage limit) does not interrupt the controller.
+static bool m_fast_oc_config_valid = false;
+static bool m_fast_oc_config_en;
+static float m_fast_oc_config_trip_a;
+static float m_fast_oc_config_max_charge_a;
+
+static void remember_fast_oc_config(const main_config_t *cfg) {
+	m_fast_oc_config_en = cfg->fast_charge_oc_en;
+	m_fast_oc_config_trip_a = cfg->fast_charge_oc_a;
+	m_fast_oc_config_max_charge_a = cfg->max_charge_current;
+	m_fast_oc_config_valid = true;
+}
+
 static bool bms_temp_valid(float temp_c) {
 	return temp_c >= -40.0f && temp_c <= 120.0f;
 }
@@ -231,13 +246,28 @@ bool jfbms_master_validate_config(const main_config_t *conf) {
 }
 
 bool jfbms_master_apply_config(void) {
-	GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
-	if (!jfbms_master_validate_config((const main_config_t *)&backup.config)) {
+	const main_config_t *cfg = (const main_config_t *)&backup.config;
+	if (!jfbms_master_validate_config(cfg)) {
 		return false;
 	}
+
+	bool monitor_changed = !m_fast_oc_config_valid ||
+			m_fast_oc_config_en != cfg->fast_charge_oc_en ||
+			m_fast_oc_config_trip_a != cfg->fast_charge_oc_a ||
+			m_fast_oc_config_max_charge_a != cfg->max_charge_current;
+	if (!monitor_changed) {
+		return true;
+	}
+
+	GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
 	// Rebuild the raw threshold immediately; a lower configured trip must never
 	// wait for a reboot or later calibration to become effective.
-	return jfbms_fast_adc_set_current_offset(m_current_offset);
+	if (!jfbms_fast_adc_set_current_offset(m_current_offset)) {
+		return false;
+	}
+
+	remember_fast_oc_config(cfg);
+	return true;
 }
 
 // The configured topology is deliberately contiguous: slave IDs 1..N.
@@ -2045,6 +2075,23 @@ static lbm_value ext_master_get_vchg(lbm_value *args, lbm_uint argn) {
 	return lbm_enc_float(m_vchg_valid ? m_vchg_filtered : 0.0f);
 }
 
+// (master-probe-vchg-off) -- force the charge path open, then return the raw
+// charger-port voltage. With CHG_EN on, the pack can back-feed the port sense
+// divider and make an unplugged connector look like a connected charger.
+// This probe is deliberately fail-closed: it never re-enables CHG_EN.
+static lbm_value ext_master_probe_vchg_off(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+
+	gpio_set_level(PIN_CHG_EN, 0);
+	vTaskDelay(pdMS_TO_TICKS(25) + 1);
+	float v = adc_get_voltage(HW_ADC_CH3);
+	if (v < 0.0f || !isfinite(v)) {
+		return ENC_SYM_NIL;
+	}
+	return lbm_enc_float(v * VCHG_DIV_SCALE);
+}
+
 // (master-get-temp-pcb) — returns EMA-filtered PCB NTC temp (°C); updated by master-update-vesc-bms
 static lbm_value ext_master_get_temp_pcb(lbm_value *args, lbm_uint argn) {
 	(void)args;
@@ -2408,6 +2455,7 @@ static void load_extensions(bool main_found) {
 	lbm_add_extension("master-set-chg", ext_master_set_chg);
 	lbm_add_extension("master-get-current", ext_master_get_current);
 	lbm_add_extension("master-get-vchg", ext_master_get_vchg);
+	lbm_add_extension("master-probe-vchg-off", ext_master_probe_vchg_off);
 	lbm_add_extension("master-get-temp-pcb", ext_master_get_temp_pcb);
 	lbm_add_extension("master-local-sensors-valid?", ext_master_local_sensors_valid);
 	lbm_add_extension("master-local-sensor-status", ext_master_local_sensor_status);
@@ -2505,6 +2553,13 @@ void hw_init(void) {
 				(unsigned)ISENSE_OFFSET_BOOT_TIMEOUT_MS, (double)m_current_offset);
 			commands_printf("JFBMS current protection not armed; CHG_EN locked off");
 		}
+
+		// The boot calibration already applied the fast-overcurrent settings from
+		// backup.config (or left charging safely locked off if ADC setup failed).
+		// Remember that snapshot so writing an unrelated setting, such as a cell
+		// charge voltage, does not needlessly rebuild the ADC monitor and reject
+		// the complete VESC Tool configuration transaction.
+		remember_fast_oc_config((const main_config_t *)&backup.config);
 	}
 
 #if JFBMS_USE_DEDICATED_SLAVE_TWAI

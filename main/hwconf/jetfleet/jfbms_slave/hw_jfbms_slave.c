@@ -1460,7 +1460,8 @@ static lbm_value ext_set_buzzer(lbm_value *args, lbm_uint argn) {
 
 // Track fault state for status messages
 static volatile uint8_t m_fault_flags = 0;
-// Voltage-settled flag: 1 = balance FETs off long enough for accurate readings
+// Voltage-settled flag: 1 = both ICs have had balance FETs off long enough
+// for accurate readings. Both ICs are synchronized within one slave.
 static volatile uint8_t m_settled_flag = 1;  // Start settled (no balancing at boot)
 
 static bool decode_bool_arg(lbm_value arg, bool *val) {
@@ -1606,7 +1607,7 @@ static lbm_value ext_broadcast_all(lbm_value *args, lbm_uint argn) {
 		}
 	}
 
-	// Include voltage-settled flag (bit 2)
+	// Include voltage-settled flag (bit 2).
 	if (m_settled_flag) faults |= 0x04;
 	faults &= 0x07;
 

@@ -9,9 +9,10 @@
 (def user-beeps-en true)
 (def beep-duty-normal 0.5)
 (def sleep-unblock-en true)
+(def charger-max-delay 10.0)
+(def balance-settle-timeout-s 5.0)
+(def balance-active-time-s 30.0)
 (def control-max-qualify-dt 0.25)
-(def balance-zero-current-a 0.15)
-(def balance-zero-settle-time-s 2.0)
 (def soc-checkpoint-min-time-s 10.0)
 (def soc-checkpoint-max-time-s 300.0)
 (def soc-checkpoint-delta 0.02)
@@ -23,28 +24,19 @@
 (def charge-ok false)
 (def is-charging false)
 (def charger-detected-prev false)
+(def trigger-bal-after-charge false)
+(def charge-session-valid false)
+(def charge-complete false)
+(def charge-complete-msg false)
+(def charge-dis-ts (systime))
+(def charge-ts (systime))
 
 (def bal-auto-retry-ts (systime))
+(def balance-cycle-start-ts (systime))
+(def balance-cycle-min 0.0)
 (def bal-status "")
 (def chg-status "")
 (def pack-status "")
-
-; Charger presence and charge-session state are separate. Charger voltage
-; alone never proves that a real charge session occurred.
-(def charge-state-idle 0)
-(def charge-state-charger-present 1)
-(def charge-state-confirmed 2)
-(def charge-state-complete 3)
-(def charge-state-balance-pending 4)
-(def charge-state charge-state-idle)
-(def charge-confirm-elapsed 0.0)
-(def charge-taper-elapsed 0.0)
-(def charger-presence-unknown -1)
-(def charger-presence-absent 0)
-(def charger-presence-present 1)
-(def charger-presence charger-presence-unknown)
-(def charger-absence-elapsed 0.0)
-(def balance-zero-elapsed 0.0)
 
 (def c-min 0.0)
 (def c-max 0.0)
@@ -175,11 +167,6 @@ loopwhile-thd
 (defun bool-int (v) (if v 1 0))
 
 (defun balance-state-is (state) (= (ix bal-state 0) state))
-
-(defun charge-completion-latched () (or
-    (= charge-state charge-state-complete)
-    (= charge-state charge-state-balance-pending)
-))
 
 ; Hardware-owned fast overcurrent status. Missing or malformed extensions fail
 ; closed: charging remains disabled until the ADC monitor reports armed.
@@ -453,19 +440,15 @@ loopwhile-thd
         (if (> vchg (bms-get-param 'v_charge_detect)) (break))
     })
 
-    (> vchg (bms-get-param 'v_charge_detect))
-})
+    (var detected (and
+        (charger-data-ok)
+        (> vchg (bms-get-param 'v_charge_detect))
+    ))
 
-; Charger presence is three-state. UNKNOWN must never clear a completion or
-; fault latch because an invalid ADC reading is not proof of removal.
-(defun read-charger-presence () {
-    (if (not (charger-data-ok))
-        charger-presence-unknown
-        (if (test-chg 1)
-            charger-presence-present
-            charger-presence-absent
-        )
-    )
+    ; Keep the same disconnect timer semantics as JFBMS32: this timestamp is
+    ; refreshed for as long as valid charger voltage is present.
+    (if detected (setq charge-dis-ts (systime)))
+    detected
 })
 
 (defun valid-pack-reading () (and
@@ -507,6 +490,7 @@ loopwhile-thd
 
 (defun set-chg (chg) {
     (var requested (if chg true false))
+    (var was-charging is-charging)
     (var allowed true)
 
     ; Charging has priority. A charge request first performs the checked
@@ -527,9 +511,28 @@ loopwhile-thd
     })
 
     (if (and requested ok) {
+        (if (not was-charging) (setq charge-ts (systime)))
         (setq is-charging true)
     } {
         (if requested (trap (master-set-chg 0)))
+
+        ; Match JFBMS32: any fault-free stop after meaningful charge current
+        ; requests a balance cycle. Charger voltage alone does not qualify a
+        ; real charge session.
+        (if (and
+                (not requested)
+                was-charging
+                charge-session-valid
+                pack-data-ok
+                slave-data-fresh
+                (not (assoc rtc-val 'charge-fault))
+                (not (fast-oc-latched))
+            ) {
+            (setq trigger-bal-after-charge true)
+            (setq bal-auto-retry-ts (systime))
+        })
+
+        (if (not requested) (setq charge-session-valid false))
         (setq is-charging false)
     })
 
@@ -766,6 +769,7 @@ loopwhile-thd
 
     (setq is-charging false)
     (setq charge-ok false)
+    (setq charge-session-valid false)
     (if clear-bal-trigger (clear-balance-request))
     (var bal-close-ok (stop-all-balancing))
     (var close-ok (and local-ok bal-close-ok))
@@ -808,7 +812,7 @@ loopwhile-thd
 (defun low-soc-unused () (and
     (valid-pack-reading)
     (< soc 0.05)
-    (not (= charge-state charge-state-balance-pending))
+    (not trigger-bal-after-charge)
     (< vt-vchg (bms-get-param 'v_charge_detect))
     (external-wake-inactive)
     (not (is-connected))
@@ -889,7 +893,7 @@ loopwhile-thd
     (charger-data-ok)
     (external-wake-inactive)
     (not is-charging)
-    (not (= charge-state charge-state-balance-pending))
+    (not trigger-bal-after-charge)
     (balance-state-is bal-state-idle)
     (not (test-chg 1))
     (not (is-connected))
@@ -1043,109 +1047,36 @@ loopwhile-thd
     )
 ))
 
-(defun charge-confirm-time () (param-or 'charge_confirm_time_s 10.0))
-
-(defun charge-taper-time () (param-or 'charge_taper_time_s 5.0))
-
-(defun update-balance-zero-settle (dt) {
-    (if (and
-            (qualify-dt-valid dt)
-            pack-data-ok
-            slave-data-fresh
-            (current-data-ok)
-            (charger-data-ok)
-            (<= (abs iout) balance-zero-current-a)
-        )
-        (setq balance-zero-elapsed (+ balance-zero-elapsed dt))
-        (setq balance-zero-elapsed 0.0)
-    )
-})
-
-(defun charge-taper-current-ok (charge-current) (and
-    (>= charge-current 0.0)
-    (<= charge-current balance-zero-current-a)
-))
-
-(defun complete-charge-session (anchor-full reason) {
-    (set-chg false)
-    (setq charge-ok false)
-    (setq charge-state charge-state-balance-pending)
-    (setq charge-confirm-elapsed 0.0)
-    (setq charge-taper-elapsed 0.0)
-    (setq bal-auto-retry-ts (systime))
-
-    ; Only a confirmed current-taper completion establishes a trustworthy full
-    ; reference. A voltage safety cutoff requests balancing without SOC=100%.
-    (if anchor-full {
-        (setq ah-cnt-soc (bms-get-param 'batt_ah))
-        (set-soc-value 1.0 "ANCHOR" reason true)
-        (checkpoint-soc true reason)
-    } {
-        (print (str-merge "SOC unchanged at voltage completion: " reason
-            " gen=" (str-from-n (pack-generation) "%d")))
-    })
-
-    (send-slave-beep 0x03)
-})
-
 (defun update-charge-control (dt) {
-    (setq charger-presence (read-charger-presence))
-    (var charger-detected (= charger-presence charger-presence-present))
+    (var charger-detected (test-chg 1))
     (var charge-current (- iout))
-    (var min-current (bms-get-param 'min_charge_current))
-    (var dt-ok (qualify-dt-valid dt))
-
-    (update-balance-zero-settle dt)
 
     (if (and charger-detected (not charger-detected-prev)) {
-        (if (= charge-state charge-state-idle)
-            (setq charge-state charge-state-charger-present)
-        )
+        (setq charge-ts (systime))
     })
-    ; UNKNOWN preserves the previous edge state and never starts the removal
-    ; timer.
-    (if (not (= charger-presence charger-presence-unknown))
+    ; Invalid charger ADC data is not proof of removal, so preserve the last
+    ; edge state until the local sensor becomes valid again.
+    (if (charger-data-ok)
         (setq charger-detected-prev charger-detected)
     )
 
-    (if (= charger-presence charger-presence-unknown) {
-        (set-chg false)
-        (setq charge-confirm-elapsed 0.0)
-        (setq charge-taper-elapsed 0.0)
-        (setq charger-absence-elapsed 0.0)
-    })
-
-    ; Completion and charge faults clear only after five seconds of continuous,
-    ; valid charger absence.
-    (if (= charger-presence charger-presence-absent) {
-        (set-chg false)
-        (setq charge-confirm-elapsed 0.0)
-        (setq charge-taper-elapsed 0.0)
-        (if dt-ok
-            (setq charger-absence-elapsed (+ charger-absence-elapsed dt))
-            (setq charger-absence-elapsed 0.0)
-        )
-
-        ; The hardware latch owns its own five-second valid-absence timer.
-        ; Poll it throughout the absence window so clearing is not delayed by
-        ; the Lisp charge-fault debounce timer.
-        (if (fast-oc-latched)
-            (trap (master-clear-fast-oc))
-        )
-
-        (if (>= charger-absence-elapsed 5.0) {
-            (setq charge-state charge-state-idle)
-            (if (assoc rtc-val 'charge-fault) {
-                (setassoc rtc-val 'charge-fault false)
-                (save-rtc-val)
-            })
-        })
-    })
-
-    (if charger-detected (setq charger-absence-elapsed 0.0))
-    (if (and charger-detected (= charge-state charge-state-idle))
-        (setq charge-state charge-state-charger-present)
+    ; Meaningful current while CHG_EN is on qualifies the session for the same
+    ; automatic post-charge balancing behavior as JFBMS32.
+    (if (and is-charging (> charge-current (bms-get-param 'min_charge_current)))
+        (setq charge-session-valid true)
     )
+
+    ; Reaching the configured end voltage latches charging off until the
+    ; charger has been absent continuously for five seconds. This prevents
+    ; relaxation below vc_charge_start from cycling the charger.
+    (if (and
+            is-charging
+            pack-data-ok
+            (>= c-max (bms-get-param 'vc_charge_end))
+        ) {
+        (setq charge-complete true)
+        (setq charge-complete-msg true)
+    })
 
     (setq charge-ok (and
         charger-detected
@@ -1153,7 +1084,7 @@ loopwhile-thd
         slave-data-fresh
         (current-data-ok)
         (charger-data-ok)
-        (< c-max (if (or is-charging (= charge-state charge-state-confirmed))
+        (< c-max (if is-charging
             (bms-get-param 'vc_charge_end)
             (bms-get-param 'vc_charge_start)
         ))
@@ -1163,7 +1094,7 @@ loopwhile-thd
         (fast-oc-armed)
         (not (fast-oc-latched))
         (not (assoc rtc-val 'charge-fault))
-        (not (charge-completion-latched))
+        (not charge-complete)
     ))
 
     ; Slow filtered overcurrent protection remains independent of session
@@ -1174,82 +1105,66 @@ loopwhile-thd
         (save-rtc-val)
     })
 
-    ; Voltage end is a safety cutoff, not proof that enough charge flowed to set
-    ; SOC to 100%.
-    (if (and
-            charger-detected
-            is-charging
-            (not (charge-completion-latched))
-            pack-data-ok
-            (>= c-max (bms-get-param 'vc_charge_end))
-        )
-        (complete-charge-session false "VC_END")
-    )
+    ; Reset both software and hardware charge-fault latches only after five
+    ; seconds of valid, continuous charger absence.
+    (if (and (charger-data-ok) (not charger-detected)) {
+        (if (fast-oc-latched) (trap (master-clear-fast-oc)))
 
-    ; Confirm only uninterrupted meaningful current; charger voltage and CHG_EN
-    ; alone do not qualify a real charge session.
-    (if (= charge-state charge-state-charger-present) {
-        (if (and
-                dt-ok
-                charger-detected
-                charge-ok
-                is-charging
-                (>= charge-current min-current)
-            )
-            (setq charge-confirm-elapsed (+ charge-confirm-elapsed dt))
-            (setq charge-confirm-elapsed 0.0)
-        )
-
-        (if (>= charge-confirm-elapsed (charge-confirm-time)) {
-            (setq charge-state charge-state-confirmed)
-            (setq charge-taper-elapsed 0.0)
-            (print "CHG: real current session confirmed")
+        (if (> (secs-since charge-dis-ts) 5.0) {
+            (if (assoc rtc-val 'charge-fault) {
+                (setassoc rtc-val 'charge-fault false)
+                (save-rtc-val)
+            })
+            (setq charge-complete false)
+            (setq charge-complete-msg false)
         })
     })
 
-    ; Completion requires a confirmed session followed by continuous low-current
-    ; taper while all charge gates remain valid.
-    (if (= charge-state charge-state-confirmed) {
-        (if (and
-                dt-ok
-                charger-detected
-                charge-ok
-                is-charging
-                (< charge-current min-current)
-                (charge-taper-current-ok charge-current)
-            )
-            (setq charge-taper-elapsed (+ charge-taper-elapsed dt))
-            (setq charge-taper-elapsed 0.0)
-        )
-
-        (if (>= charge-taper-elapsed (charge-taper-time))
-            (complete-charge-session true "CURRENT_TAPER")
-        )
-    })
-
-    ; Charge has priority over balancing. It is enabled only after the checked
-    ; zero-mask handoff has released the balance inhibit.
-    (if (and charger-detected charge-ok (not (charge-completion-latched))) {
+    ; Match JFBMS32 start/stop behavior: allow up to ten seconds for a charger
+    ; to establish current, then keep CHG_EN on only while current remains above
+    ; min_charge_current. A new attempt requires a charger disconnect/reconnect.
+    (if (and charger-detected charge-ok) {
         (var balance-stopped (if (balance-in-progress)
             (stop-all-balancing)
             true
         ))
-        (if balance-stopped
-            (set-chg true)
+        (if balance-stopped {
+            (if (< (secs-since charge-ts) charger-max-delay)
+                (set-chg true)
+                (set-chg (> charge-current (bms-get-param 'min_charge_current)))
+            )
+        } {
             (set-chg false)
-        )
+        })
     } {
         (set-chg false)
+
+        ; Keep the JFBMS32 full-counter anchoring behavior. This is intentionally
+        ; based on vc_charge_start and occurs after charging has stopped.
+        (if (and pack-data-ok (>= c-max (bms-get-param 'vc_charge_start)))
+            (setq ah-cnt-soc (bms-get-param 'batt_ah))
+        )
     })
 
     (setq chg-status
         (cond
-            ((fast-oc-latched) "FLT_CHG_FAST_OC")
-            ((not (fast-oc-armed)) "FLT_FAST_ADC")
-            ((assoc rtc-val 'charge-fault) "FLT_CHG_OC")
-            ((charge-completion-latched) "CHG_DONE")
-            ((= charge-state charge-state-confirmed) "CHARGING_OK")
-            (is-charging "CHARGING")
+            ((fast-oc-latched) {
+                (setq charge-complete-msg false)
+                "FLT_CHG_FAST_OC"
+            })
+            ((not (fast-oc-armed)) {
+                (setq charge-complete-msg false)
+                "FLT_FAST_ADC"
+            })
+            ((assoc rtc-val 'charge-fault) {
+                (setq charge-complete-msg false)
+                "FLT_CHG_OC"
+            })
+            (charge-complete-msg "CHG_COMPLETE")
+            (is-charging {
+                (setq charge-complete-msg false)
+                "CHARGING"
+            })
             (true "")
         )
     )
@@ -1392,17 +1307,9 @@ loopwhile-thd
     (current-data-ok)
     (charger-data-ok)
     (not is-charging)
-    ; A connected charger is permitted only after a completed real session,
-    ; with CHG_EN low and measured current settled near zero.
-    (or
-        (not (test-chg 1))
-        (and
-            (charge-completion-latched)
-            (<= (abs iout) balance-zero-current-a)
-            (>= balance-zero-elapsed balance-zero-settle-time-s)
-        )
-    )
-    (<= (abs iout) (bms-get-param 'balance_max_current))
+    (<= (* (abs iout)
+            (if (balance-state-is bal-state-active) 0.8 1.0))
+        (bms-get-param 'balance_max_current))
     (>= c-min (bms-get-param 'vc_balance_min))
     (or
         (not cell-temp-mon-en)
@@ -1423,6 +1330,58 @@ loopwhile-thd
     })
 
     all-fresh
+})
+
+; JFBMS32 disables balancing and waits two seconds before making a new balance
+; decision. Both ICs on each slave are synchronized, but different slaves can
+; settle at different times, so require the combined settled flag from every
+; configured slave independently.
+(defun all-configured-slaves-settled () {
+    (var all-settled true)
+    (var sid 1)
+    (var max-sid (cfg-num-slaves))
+
+    (loopwhile (<= sid max-sid) {
+        (if (not (and
+                (master-slave-active? sid)
+                (master-slave-fresh? sid)
+                (master-get-slave-settled? sid)
+            ))
+            (setq all-settled false)
+        )
+        (setq sid (+ sid 1))
+    })
+
+    all-settled
+})
+
+(defun wait-for-slave-settle () {
+    (var started (systime))
+    (var settled false)
+    (var keep-waiting true)
+
+    ; Two seconds are measured by each slave; the additional margin allows
+    ; the settled status to arrive over CAN even when the slave loop is
+    ; running slightly below its nominal rate.
+    (loopwhile (and keep-waiting (< (secs-since started) balance-settle-timeout-s)) {
+        (refresh-pack-data)
+        (if (not (and
+                (balance-state-is bal-state-requested)
+                (balance-safe-now)
+                (all-configured-slaves-fresh)
+            )) {
+            (setq keep-waiting false)
+        } {
+            (if (all-configured-slaves-settled) {
+                (setq settled true)
+                (setq keep-waiting false)
+            } {
+                (sleep 0.1)
+            })
+        })
+    })
+
+    settled
 })
 
 (defun slave-balance-masks (sid threshold max-ch) {
@@ -1501,9 +1460,7 @@ loopwhile-thd
 
 (defun clear-balance-request () {
     (if (balance-in-progress) (stop-all-balancing))
-    (if (= charge-state charge-state-balance-pending)
-        (setq charge-state charge-state-complete)
-    )
+    (setq trigger-bal-after-charge false)
 })
 
 (defun fail-close-active-balance () {
@@ -1548,11 +1505,78 @@ loopwhile-thd
     any-bal
 })
 
+; Remove only cells that have reached the end threshold. Do not recompute or
+; add cells during an active session: vc_balance_start selects cells at the
+; beginning, while vc_balance_end removes them with hysteresis.
+(defun trim-balance-mask (mask voltages base threshold) {
+    (var trimmed 0)
+    (looprange i 0 (length voltages) {
+        (if (and
+                (> (bitwise-and mask (shl 1 i)) 0)
+                (> (- (ix voltages i) base) threshold)
+            )
+            (setq trimmed (+ trimmed (shl 1 i)))
+        )
+    })
+    trimmed
+})
+
+(defun trim-active-balance-masks () {
+    (var any-bal false)
+    (var sid 1)
+    (var max-sid (cfg-num-slaves))
+    (var end-threshold (bms-get-param 'vc_balance_end))
+
+    (loopwhile (<= sid max-sid) {
+        (if (and (master-slave-active? sid) (master-slave-fresh? sid)) {
+            (var cells (master-get-slave-cells sid))
+            (var ic1-cnt (master-get-cells-ic1 sid))
+            (var ic2-cnt (master-get-cells-ic2 sid))
+            (var cnt (+ ic1-cnt ic2-cnt))
+
+            (if (and cells (> cnt 0) (= (length cells) cnt)) {
+                (var ic1-volts (map (fn (i) (ix cells i)) (range ic1-cnt)))
+                (var ic2-volts (if (> ic2-cnt 0)
+                    (map (fn (i) (ix cells (+ ic1-cnt i))) (range ic2-cnt))
+                    '()
+                ))
+                (var old-ic1 (ix slave-bal-mask-ic1 (- sid 1)))
+                (var old-ic2 (ix slave-bal-mask-ic2 (- sid 1)))
+                (var new-ic1 (trim-balance-mask
+                    old-ic1 ic1-volts balance-cycle-min end-threshold))
+                (var new-ic2 (trim-balance-mask
+                    old-ic2 ic2-volts balance-cycle-min end-threshold))
+
+                (if (or (not-eq old-ic1 new-ic1) (not-eq old-ic2 new-ic2))
+                    (print (str-merge "BAL S" (str-from-n sid "%d")
+                        " trim IC1:" (mask-to-bin new-ic1 ic1-cnt)
+                        " IC2:" (mask-to-bin new-ic2 ic2-cnt)
+                        " end=" (str-from-n end-threshold "%.3f")))
+                )
+
+                (setix slave-bal-mask-ic1 (- sid 1) new-ic1)
+                (setix slave-bal-mask-ic2 (- sid 1) new-ic2)
+                (if (or (> new-ic1 0) (> new-ic2 0))
+                    (setq any-bal true)
+                )
+            })
+        })
+        (setq sid (+ sid 1))
+    })
+
+    any-bal
+})
+
 (defun balance-cycle-failed (message) {
     (print message)
+    ; JFBMS32 cancels the automatic post-charge request when discharge current
+    ; makes balancing unsafe. Other temporary safety conditions keep retrying.
+    (if (> iout (bms-get-param 'balance_max_current))
+        (setq trigger-bal-after-charge false)
+    )
     (fail-close-active-balance)
     (stop-all-balancing)
-    (if (= charge-state charge-state-balance-pending)
+    (if trigger-bal-after-charge
         (setq bal-auto-retry-ts (systime))
     )
 })
@@ -1577,7 +1601,7 @@ loopwhile-thd
 
         (if (and
                 (balance-state-is bal-state-idle)
-                (= charge-state charge-state-balance-pending)
+                trigger-bal-after-charge
                 (not is-charging)
                 (> (secs-since bal-auto-retry-ts) 5.0)
             )
@@ -1594,14 +1618,18 @@ loopwhile-thd
                 (if (not (zero-balancing-preserve-request)) {
                     (balance-cycle-failed "BAL: zero-mask handoff failed")
                 } {
-                    (refresh-pack-data)
-                    (if (not (and (balance-safe-now) (all-configured-slaves-fresh))) {
-                        (balance-cycle-failed "BAL: data changed during handoff")
+                    (if (not (wait-for-slave-settle)) {
+                        (balance-cycle-failed "BAL: voltages did not settle after zero masks")
                     } {
+                        ; Freeze the pack minimum for this session. This keeps
+                        ; the start/end hysteresis reference stable while the
+                        ; selected cells are being discharged.
+                        (setq balance-cycle-min c-min)
                         (if (update-balance-masks (bms-get-param 'vc_balance_start)) {
                             (if (send-cached-balance-masks 0) {
                                 (setix bal-state 0 bal-state-active)
                                 (setq bal-status "BAL")
+                                (setq balance-cycle-start-ts (systime))
                                 (setq keepalive-cnt 0)
                             } {
                                 (balance-cycle-failed "BAL: initial transmit failed")
@@ -1622,15 +1650,33 @@ loopwhile-thd
                 (balance-cycle-failed "BAL: safety condition failed")
                 (setq keepalive-cnt 0)
             } {
-                (if (>= keepalive-cnt 20) {
+                ; Hold selected cells until they reach vc_balance_end. The
+                ; trim operation only removes cells, so vc_balance_start/end
+                ; provide real hysteresis and noise cannot re-add a cell.
+                (if (>= (secs-since balance-cycle-start-ts) balance-active-time-s) {
+                    (print "BAL: active cycle complete; stopping for settled measurements")
+                    (var cycle-stopped (stop-all-balancing))
+                    (if cycle-stopped {
+                        ; A 30-second request is one complete balance session.
+                        ; Leave every IC off; another explicit balance request
+                        ; is required to begin a new session.
+                        (setq trigger-bal-after-charge false)
+                        (setq bal-auto-retry-ts (systime))
+                    })
                     (setq keepalive-cnt 0)
-                    (if (update-balance-masks (bms-get-param 'vc_balance_end)) {
-                        (if (not (send-cached-balance-masks 0))
-                            (balance-cycle-failed "BAL: keepalive transmit failed")
-                        )
-                    } {
-                        (print "BAL: target reached")
-                        (clear-balance-request)
+                } {
+                    (if (>= keepalive-cnt 20) {
+                        (setq keepalive-cnt 0)
+                        (var any-bal (trim-active-balance-masks))
+                        (if any-bal {
+                            (if (not (send-cached-balance-masks 0))
+                                (balance-cycle-failed "BAL: keepalive transmit failed")
+                            )
+                        } {
+                            (print "BAL: all cells reached end threshold")
+                            (setq trigger-bal-after-charge false)
+                            (stop-all-balancing)
+                        })
                     })
                 })
             })
@@ -1702,6 +1748,20 @@ loopwhile-thd
 
 (defun update-status () {
     (var s "")
+
+    ; As on JFBMS32, a pack/output fault takes precedence over the one-shot
+    ; charge-complete message.
+    (if (and
+            charge-complete-msg
+            (or
+                (> (str-len pack-status) 0)
+                bal-off-failed
+                fail-close-failed
+            )
+        ) {
+        (setq charge-complete-msg false)
+        (setq chg-status "")
+    })
 
     (setq s (status-append s chg-status))
     (setq s (status-append s bal-status))
@@ -1890,13 +1950,14 @@ loopwhile-thd
 
     ; Reset values that must be relative to this boot, not image creation.
     (setq bal-auto-retry-ts (systime))
-    (setq charge-state charge-state-idle)
-    (setq charger-presence charger-presence-unknown)
+    (setq trigger-bal-after-charge false)
+    (setq balance-cycle-start-ts (systime))
+    (setq charge-session-valid false)
+    (setq charge-complete false)
+    (setq charge-complete-msg false)
     (setq charger-detected-prev false)
-    (setq charge-confirm-elapsed 0.0)
-    (setq charge-taper-elapsed 0.0)
-    (setq charger-absence-elapsed 0.0)
-    (setq balance-zero-elapsed 0.0)
+    (setq charge-dis-ts (systime))
+    (setq charge-ts (systime))
     (setq t-last (systime))
     (setq loop-cnt 0)
 
@@ -1916,6 +1977,19 @@ loopwhile-thd
     (pwm-start 4000 0.0 0 8)
 
     (load-rtc-val)
+
+    ; Match JFBMS32 boot behavior: a valid charger-absent reading clears the
+    ; persisted slow overcurrent fault immediately. Invalid ADC data remains
+    ; fail-closed and is handled by the normal five-second absence path.
+    (if (and (charger-data-ok) (not (test-chg 5))) {
+        (if (assoc rtc-val 'charge-fault) {
+            (setassoc rtc-val 'charge-fault false)
+            (save-rtc-val)
+        })
+        (setq charge-complete false)
+        (setq charge-complete-msg false)
+    })
+
     (master-reset-slaves)
 
     (event-register-handler (spawn 200 event-supervisor))

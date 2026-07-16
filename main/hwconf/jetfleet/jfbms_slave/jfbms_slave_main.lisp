@@ -6,6 +6,7 @@
 ; SLAVE CONFIGURATION - Read from VESC Tool configuration
 ; ============================================================================
 (def slave-id (bms-get-slave-id))  ; Configured in VESC Tool -> JFBMS Slave -> Slave ID
+(def broadcast-period-s 0.1)       ; Total loop period: 100 ms = 10 Hz.
 
 ; ============================================================================
 ; Cell Configuration (read from stored config)
@@ -15,7 +16,7 @@
 (def total-cells (+ cells-ic1 cells-ic2))
 
 ; ============================================================================
-; Balance Watchdog (counter-based, systime doesn't work in loops)
+; Balance Watchdog (counter-based; loop pacing uses systime separately)
 ; ============================================================================
 ; Master must send balance command at least every 10 seconds
 ; If no command received, stop all balancing for safety
@@ -28,14 +29,25 @@
 (def prev-ic2-mask (list 0))
 ; Previous status flags printed to terminal
 (def prev-status-flags (list -1))
-; Settle tracking: count loops with zero balance bitmap
-; After 20 loops (2s at 10Hz) voltages are considered settled for master balance decisions
+; Settle tracking: both ICs on one slave are synchronized.
+; After 20 loops (2s at 10Hz) voltages are considered settled for master
+; balance decisions. Each slave reports this flag independently.
 (def settle-counter (list 20))  ; Start settled (no balancing at boot)
-
 (defun trap-value (expr fallback) {
     (match (trap (eval expr))
         ((exit-ok (? value)) value)
         (_ fallback)
+    )
+})
+
+; Pace the complete broadcast loop to a 100 ms deadline. A fixed 100 ms
+; sleep after the I2C/CAN work makes the actual rate slower than 10 Hz. If the
+; work overruns the deadline, do not add delay; the loop remains fail-safe and
+; runs at the maximum rate the hardware can sustain.
+(defun sleep-to-broadcast-deadline (loop-start) {
+    (var remaining (- broadcast-period-s (secs-since loop-start)))
+    (if (> remaining 0.0)
+        (sleep remaining)
     )
 })
 
@@ -60,6 +72,7 @@
     (if (not bq1-ok) (setq flags (+ flags 0x01)))
     ; CellsIC2 = 0 means there is no BQ2 fitted, not a BQ2 fault.
     (if (and (> cells-ic2 0) (not bq2-ok)) (setq flags (+ flags 0x02)))
+
     (if (>= (ix settle-counter 0) 20) (setq flags (+ flags 0x04)))
 
     flags
@@ -145,8 +158,9 @@
                     (trap-value '(bms-stop-balancing) false)
                 })
 
-                ; Any transition into or out of active balancing makes voltages unsettled
-                ; immediately. Only the zero-mask settle timer can set this true again.
+                ; Any transition into or out of active balancing makes voltages
+                ; unsettled immediately. Only the zero-mask settle timer can set
+                ; this true again.
                 (if (and result (or old-bal-active new-bal-active)) {
                     (setix settle-counter 0 0)
                     (bms-set-settled-flag 0)
@@ -207,6 +221,7 @@
     (var loop-count 0)
 
     (loopwhile t {
+        (var loop-start (systime))
         (setix bal-rx-flag 0 0)
 
         ; Process incoming CAN messages (balance commands from master)
@@ -240,8 +255,8 @@
             (setq bq2-ok true)
         })
 
-        ; Track settle state for master balance synchronization
-        ; When balance FETs are off for >= 2s, voltages are settled and accurate
+        ; Track settle state for master balance synchronization. Both ICs on
+        ; this slave are synchronized, while different slaves settle separately.
         (var bal-bmp-now (bms-get-bal-bitmap))
         (if (= bal-bmp-now 0) {
             ; Balance is off - increment settle counter toward threshold
@@ -289,8 +304,9 @@
         ; Check balance watchdog
         (check-bal-watchdog)
 
-        ; 100ms loop (10 Hz broadcast rate per protocol spec)
-        (sleep 0.1)
+        ; Keep the complete loop at 100 ms (10 Hz nominal), including the
+        ; I2C reads and CAN transmission time.
+        (sleep-to-broadcast-deadline loop-start)
     })
 })
 
@@ -352,11 +368,12 @@
     (print "Entering diagnostic mode due to init failure")
     (var diag-count 0)
     (loopwhile t {
+        (var loop-start (systime))
         (if (= (mod diag-count 10) 0)
             (print (str-merge "I2C detect 0x08: " (if (i2c-detect-addr 0x08) "OK" "FAIL"))))
         ; Broadcast empty data with fault flags
         (bms-broadcast-all slave-id '() '() 0 (if (> cells-ic2 0) 0 1))
         (setq diag-count (+ diag-count 1))
-        (sleep 0.1)
+        (sleep-to-broadcast-deadline loop-start)
     })
 })
