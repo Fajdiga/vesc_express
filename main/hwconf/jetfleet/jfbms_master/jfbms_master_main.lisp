@@ -5,11 +5,16 @@
 
 ;;;;;;;;;; User settings ;;;;;;;;;;
 
-(def charger-max-delay 10.0) ; Seconds to wait for charger current after enabling charge FET.
 (def app-wdt-timeout 120)    ; Seconds. Set to 0 to disable the app watchdog.
 (def user-beeps-en true)
 (def beep-duty-normal 0.5)
 (def sleep-unblock-en true)
+(def control-max-qualify-dt 0.25)
+(def balance-zero-current-a 0.15)
+(def balance-zero-settle-time-s 2.0)
+(def soc-checkpoint-min-time-s 10.0)
+(def soc-checkpoint-max-time-s 300.0)
+(def soc-checkpoint-delta 0.02)
 
 ;;;;;;;;;; State ;;;;;;;;;;
 
@@ -17,15 +22,29 @@
 (def chg-allowed true)
 (def charge-ok false)
 (def is-charging false)
-(def charge-complete false)
-(def charge-complete-msg false)
 (def charger-detected-prev false)
-(def trigger-bal-after-charge false)
 
 (def bal-auto-retry-ts (systime))
 (def bal-status "")
 (def chg-status "")
 (def pack-status "")
+
+; Charger presence and charge-session state are separate. Charger voltage
+; alone never proves that a real charge session occurred.
+(def charge-state-idle 0)
+(def charge-state-charger-present 1)
+(def charge-state-confirmed 2)
+(def charge-state-complete 3)
+(def charge-state-balance-pending 4)
+(def charge-state charge-state-idle)
+(def charge-confirm-elapsed 0.0)
+(def charge-taper-elapsed 0.0)
+(def charger-presence-unknown -1)
+(def charger-presence-absent 0)
+(def charger-presence-present 1)
+(def charger-presence charger-presence-unknown)
+(def charger-absence-elapsed 0.0)
+(def balance-zero-elapsed 0.0)
 
 (def c-min 0.0)
 (def c-max 0.0)
@@ -55,9 +74,9 @@
 (def ah-dis-tot 0.0)
 (def wh-dis-tot 0.0)
 (def ah-cnt-soc -1.0)
+(def soc-checkpoint-ah -1.0)
+(def soc-checkpoint-ts (systime))
 
-(def charge-dis-ts (systime))
-(def charge-ts (systime))
 (def t-last (systime))
 (def rtc-val '(
     (charge-fault . false)
@@ -156,6 +175,11 @@ loopwhile-thd
 (defun bool-int (v) (if v 1 0))
 
 (defun balance-state-is (state) (= (ix bal-state 0) state))
+
+(defun charge-completion-latched () (or
+    (= charge-state charge-state-complete)
+    (= charge-state charge-state-balance-pending)
+))
 
 (defun c-balance-inhibited ()
     (trap-value '(master-balance-inhibited?) false)
@@ -271,6 +295,8 @@ loopwhile-thd
     (setq ah-dis-tot (number-or (read-setting 'ah-dis-tot) 0.0))
     (setq wh-dis-tot (number-or (read-setting 'wh-dis-tot) 0.0))
     (setq ah-cnt-soc (number-or (read-setting 'ah-cnt-soc) -1.0))
+    (setq soc-checkpoint-ah ah-cnt-soc)
+    (setq soc-checkpoint-ts (systime))
 })
 
 (defun save-settings () {
@@ -281,6 +307,36 @@ loopwhile-thd
     (write-setting 'ah-dis-tot ah-dis-tot)
     (write-setting 'wh-dis-tot wh-dis-tot)
     (write-setting 'ah-cnt-soc ah-cnt-soc)
+})
+
+; Persist SOC periodically without writing EEPROM at the 10 Hz control rate.
+; Anchors (confirmed current taper) call this with force=true.
+(defun checkpoint-soc (force reason) {
+    (var batt-ah (bms-get-param 'batt_ah))
+    (var age (secs-since soc-checkpoint-ts))
+    (var delta (if (and (> batt-ah 0.0) (>= soc-checkpoint-ah 0.0))
+        (/ (abs (- ah-cnt-soc soc-checkpoint-ah)) batt-ah)
+        1.0
+    ))
+    (var due (and
+        (>= ah-cnt-soc 0.0)
+        (or
+            force
+            (>= age soc-checkpoint-max-time-s)
+            (and
+                (>= age soc-checkpoint-min-time-s)
+                (>= delta soc-checkpoint-delta)
+            )
+        )
+    ))
+
+    (if due {
+        (write-setting 'ah-cnt-soc ah-cnt-soc)
+        (setq soc-checkpoint-ah ah-cnt-soc)
+        (setq soc-checkpoint-ts (systime))
+        (if force (print (str-merge "SOC checkpoint: " reason)))
+    })
+    due
 })
 
 (defun status-append (base part)
@@ -362,9 +418,19 @@ loopwhile-thd
         (if (> vchg (bms-get-param 'v_charge_detect)) (break))
     })
 
-    (var detected (> vchg (bms-get-param 'v_charge_detect)))
-    (if detected (setq charge-dis-ts (systime)))
-    detected
+    (> vchg (bms-get-param 'v_charge_detect))
+})
+
+; Charger presence is three-state. UNKNOWN must never clear a completion or
+; fault latch because an invalid ADC reading is not proof of removal.
+(defun read-charger-presence () {
+    (if (not (charger-data-ok))
+        charger-presence-unknown
+        (if (test-chg 1)
+            charger-presence-present
+            charger-presence-absent
+        )
+    )
 })
 
 (defun valid-pack-reading () (and
@@ -407,10 +473,6 @@ loopwhile-thd
 (defun set-chg (chg) {
     (var requested (if chg true false))
     (var allowed true)
-
-    (if (and (not requested) is-charging (> (secs-since charge-ts) 10.0))
-        (setq trigger-bal-after-charge true)
-    )
 
     ; Charging has priority. A charge request first performs the checked
     ; three-pass zero-mask handoff; CHG_EN cannot rise while STOPPING fails.
@@ -612,6 +674,8 @@ loopwhile-thd
         (not missing)
         (not slave-fault)
         (not bad-cell)
+        (not stale-slave)
+        temp-data-ok
     ))
 
     (trap (set-bms-val 'bms-cell-num cell-num))
@@ -717,7 +781,7 @@ loopwhile-thd
 (defun low-soc-unused () (and
     (valid-pack-reading)
     (< soc 0.05)
-    (not trigger-bal-after-charge)
+    (not (= charge-state charge-state-balance-pending))
     (< vt-vchg (bms-get-param 'v_charge_detect))
     (external-wake-inactive)
     (not (is-connected))
@@ -798,7 +862,7 @@ loopwhile-thd
     (charger-data-ok)
     (external-wake-inactive)
     (not is-charging)
-    (not trigger-bal-after-charge)
+    (not (= charge-state charge-state-balance-pending))
     (balance-state-is bal-state-idle)
     (not (test-chg 1))
     (not (is-connected))
@@ -843,23 +907,71 @@ loopwhile-thd
 
 ;;;;;;;;;; Charge and counter control ;;;;;;;;;;
 
+(defun pack-generation () (trap-value '(master-get-pack-generation) 0))
+
+(defun qualify-dt-valid (dt) (and
+    (> dt 0.0)
+    (<= dt control-max-qualify-dt)
+))
+
+(defun set-soc-value (new-soc source reason force-log) {
+    (var bounded (truncate new-soc 0.0 1.0))
+    (var previous soc)
+    (var batt-ah (bms-get-param 'batt_ah))
+    (var coulomb-candidate (if (> batt-ah 0.0)
+        (truncate (/ ah-cnt-soc batt-ah) 0.0 1.0)
+        0.0
+    ))
+    (var voltage-candidate (calc-soc c-min))
+
+    (if (or
+            force-log
+            (< previous 0.0)
+            (> (abs (- bounded previous)) 0.05)
+        )
+        (print (str-merge
+            "SOC " source "/" reason
+            " prev=" (str-from-n previous "%.3f")
+            " new=" (str-from-n bounded "%.3f")
+            " ah=" (str-from-n coulomb-candidate "%.3f")
+            " volt=" (str-from-n voltage-candidate "%.3f")
+            " I=" (str-from-n iout "%.2f")
+            " min=" (str-from-n c-min "%.3f")
+            " max=" (str-from-n c-max "%.3f")
+            " gen=" (str-from-n (pack-generation) "%d")
+        ))
+    )
+
+    (setq soc bounded)
+    (set-bms-val 'bms-soc bounded)
+})
+
 (defun update-soc-and-counters (dt) {
     (var batt-ah (bms-get-param 'batt_ah))
+    (var dt-ok (qualify-dt-valid dt))
 
     (if (and pack-data-ok (< ah-cnt-soc 0.0))
         (setq ah-cnt-soc (* (calc-soc c-min) batt-ah))
     )
 
     (if (and pack-data-ok (> batt-ah 0.0)) {
-        (var ah (* iout (/ dt 3600.0)))
+        ; Do not extrapolate current across a scheduler stall.
+        (var integration-dt (if dt-ok dt 0.0))
+        (var ah (* iout (/ integration-dt 3600.0)))
         (setq ah-cnt-soc (truncate (- ah-cnt-soc ah) 0.0 batt-ah))
 
+        (var coulomb-soc (/ ah-cnt-soc batt-ah))
+        (var voltage-soc (calc-soc c-min))
+
         (if (= (bms-get-param 'soc_use_ah) 1) {
-            (setq soc (/ ah-cnt-soc batt-ah))
+            (set-soc-value coulomb-soc "COULOMB" "TRACK" false)
         } {
             (if (>= soc 0.0)
-                (setq soc (lpf soc (calc-soc c-min) (* 100.0 (bms-get-param 'soc_filter_const))))
-                (setq soc (calc-soc c-min))
+                (set-soc-value
+                    (lpf soc voltage-soc
+                        (truncate (* 100.0 (bms-get-param 'soc_filter_const)) 0.0 1.0))
+                    "VOLTAGE" "TRACK" false)
+                (set-soc-value voltage-soc "VOLTAGE" "INITIAL" true)
             )
         })
 
@@ -878,7 +990,8 @@ loopwhile-thd
         })
     })
 
-    (set-bms-val 'bms-soc (if (>= soc 0.0) soc 0.0))
+    (checkpoint-soc false "PERIODIC")
+    (if (< soc 0.0) (set-bms-val 'bms-soc 0.0))
     (set-bms-val 'bms-soh 1.0)
     (set-bms-val 'bms-ah-cnt ah-cnt)
     (set-bms-val 'bms-wh-cnt wh-cnt)
@@ -903,21 +1016,110 @@ loopwhile-thd
     )
 ))
 
-(defun update-charge-control () {
-    (if (and is-charging (>= c-max (bms-get-param 'vc_charge_end))) {
-        ; Latch completion until charger disconnect. This avoids charge cycling
-        ; when unloaded cell voltage relaxes below vc_charge_start.
-        (setq charge-complete true)
-        (setq charge-complete-msg true)
-        (setq trigger-bal-after-charge true)
-        (send-slave-beep 0x03)
+(defun charge-confirm-time () (param-or 'charge_confirm_time_s 10.0))
+
+(defun charge-taper-time () (param-or 'charge_taper_time_s 5.0))
+
+(defun update-balance-zero-settle (dt) {
+    (if (and
+            (qualify-dt-valid dt)
+            pack-data-ok
+            slave-data-fresh
+            (current-data-ok)
+            (charger-data-ok)
+            (<= (abs iout) balance-zero-current-a)
+        )
+        (setq balance-zero-elapsed (+ balance-zero-elapsed dt))
+        (setq balance-zero-elapsed 0.0)
+    )
+})
+
+(defun charge-taper-current-ok (charge-current) (and
+    (>= charge-current 0.0)
+    (<= charge-current balance-zero-current-a)
+))
+
+(defun complete-charge-session (anchor-full reason) {
+    (set-chg false)
+    (setq charge-ok false)
+    (setq charge-state charge-state-balance-pending)
+    (setq charge-confirm-elapsed 0.0)
+    (setq charge-taper-elapsed 0.0)
+    (setq bal-auto-retry-ts (systime))
+
+    ; Only a confirmed current-taper completion establishes a trustworthy full
+    ; reference. A voltage safety cutoff requests balancing without SOC=100%.
+    (if anchor-full {
+        (setq ah-cnt-soc (bms-get-param 'batt_ah))
+        (set-soc-value 1.0 "ANCHOR" reason true)
+        (checkpoint-soc true reason)
+    } {
+        (print (str-merge "SOC unchanged at voltage completion: " reason
+            " gen=" (str-from-n (pack-generation) "%d")))
     })
 
+    (send-slave-beep 0x03)
+})
+
+(defun update-charge-control (dt) {
+    (setq charger-presence (read-charger-presence))
+    (var charger-detected (= charger-presence charger-presence-present))
+    (var charge-current (- iout))
+    (var min-current (bms-get-param 'min_charge_current))
+    (var dt-ok (qualify-dt-valid dt))
+
+    (update-balance-zero-settle dt)
+
+    (if (and charger-detected (not charger-detected-prev)) {
+        (if (= charge-state charge-state-idle)
+            (setq charge-state charge-state-charger-present)
+        )
+    })
+    ; UNKNOWN preserves the previous edge state and never starts the removal
+    ; timer.
+    (if (not (= charger-presence charger-presence-unknown))
+        (setq charger-detected-prev charger-detected)
+    )
+
+    (if (= charger-presence charger-presence-unknown) {
+        (set-chg false)
+        (setq charge-confirm-elapsed 0.0)
+        (setq charge-taper-elapsed 0.0)
+        (setq charger-absence-elapsed 0.0)
+    })
+
+    ; Completion and charge faults clear only after five seconds of continuous,
+    ; valid charger absence.
+    (if (= charger-presence charger-presence-absent) {
+        (set-chg false)
+        (setq charge-confirm-elapsed 0.0)
+        (setq charge-taper-elapsed 0.0)
+        (if dt-ok
+            (setq charger-absence-elapsed (+ charger-absence-elapsed dt))
+            (setq charger-absence-elapsed 0.0)
+        )
+
+        (if (>= charger-absence-elapsed 5.0) {
+            (setq charge-state charge-state-idle)
+            (if (assoc rtc-val 'charge-fault) {
+                (setassoc rtc-val 'charge-fault false)
+                (save-rtc-val)
+            })
+        })
+    })
+
+    (if charger-detected (setq charger-absence-elapsed 0.0))
+    (if (and charger-detected (= charge-state charge-state-idle))
+        (setq charge-state charge-state-charger-present)
+    )
+
     (setq charge-ok (and
+        charger-detected
         pack-data-ok
+        slave-data-fresh
         (current-data-ok)
         (charger-data-ok)
-        (< c-max (if is-charging
+        (< c-max (if (or is-charging (= charge-state charge-state-confirmed))
             (bms-get-param 'vc_charge_end)
             (bms-get-param 'vc_charge_start)
         ))
@@ -925,59 +1127,91 @@ loopwhile-thd
         (charge-temp-ok)
         chg-allowed
         (not (assoc rtc-val 'charge-fault))
-        (not charge-complete)
+        (not (charge-completion-latched))
     ))
 
-    ; If charging is enabled and maximum charge current is exceeded, latch a
-    ; charge fault until the charger has been removed for several seconds.
-    (if (and is-charging (> (- iout) (bms-get-param 'max_charge_current))) {
+    ; Slow filtered overcurrent protection remains independent of session
+    ; qualification.
+    (if (and is-charging (> charge-current (bms-get-param 'max_charge_current))) {
         (setq charge-ok false)
         (setassoc rtc-val 'charge-fault true)
         (save-rtc-val)
     })
 
-    (if (and (assoc rtc-val 'charge-fault) (> (secs-since charge-dis-ts) 5.0)) {
-        (setassoc rtc-val 'charge-fault false)
-        (save-rtc-val)
-    })
-
-    (if (and charge-complete (> (secs-since charge-dis-ts) 5.0)) {
-        (setq charge-complete false)
-        (setq charge-complete-msg false)
-    })
-
-    (var charger-detected (test-chg 1))
-    (if (and charger-detected (not charger-detected-prev))
-        (setq charge-ts (systime))
+    ; Voltage end is a safety cutoff, not proof that enough charge flowed to set
+    ; SOC to 100%.
+    (if (and
+            charger-detected
+            is-charging
+            (not (charge-completion-latched))
+            pack-data-ok
+            (>= c-max (bms-get-param 'vc_charge_end))
+        )
+        (complete-charge-session false "VC_END")
     )
-    (setq charger-detected-prev charger-detected)
 
-    (if (and charger-detected charge-ok) {
-        (if (< (secs-since charge-ts) charger-max-delay)
+    ; Confirm only uninterrupted meaningful current; charger voltage and CHG_EN
+    ; alone do not qualify a real charge session.
+    (if (= charge-state charge-state-charger-present) {
+        (if (and
+                dt-ok
+                charger-detected
+                charge-ok
+                is-charging
+                (>= charge-current min-current)
+            )
+            (setq charge-confirm-elapsed (+ charge-confirm-elapsed dt))
+            (setq charge-confirm-elapsed 0.0)
+        )
+
+        (if (>= charge-confirm-elapsed (charge-confirm-time)) {
+            (setq charge-state charge-state-confirmed)
+            (setq charge-taper-elapsed 0.0)
+            (print "CHG: real current session confirmed")
+        })
+    })
+
+    ; Completion requires a confirmed session followed by continuous low-current
+    ; taper while all charge gates remain valid.
+    (if (= charge-state charge-state-confirmed) {
+        (if (and
+                dt-ok
+                charger-detected
+                charge-ok
+                is-charging
+                (< charge-current min-current)
+                (charge-taper-current-ok charge-current)
+            )
+            (setq charge-taper-elapsed (+ charge-taper-elapsed dt))
+            (setq charge-taper-elapsed 0.0)
+        )
+
+        (if (>= charge-taper-elapsed (charge-taper-time))
+            (complete-charge-session true "CURRENT_TAPER")
+        )
+    })
+
+    ; Charge has priority over balancing. It is enabled only after the checked
+    ; zero-mask handoff has released the balance inhibit.
+    (if (and charger-detected charge-ok (not (charge-completion-latched))) {
+        (var balance-stopped (if (balance-in-progress)
+            (stop-all-balancing)
+            true
+        ))
+        (if balance-stopped
             (set-chg true)
-            (set-chg (> (- iout) (bms-get-param 'min_charge_current)))
+            (set-chg false)
         )
     } {
-        (set-chg nil)
-
-        ; Reset coulomb SOC when battery is full.
-        (if (and pack-data-ok (>= c-max (bms-get-param 'vc_charge_start))) {
-            (setq ah-cnt-soc (bms-get-param 'batt_ah))
-            (setq trigger-bal-after-charge true)
-        })
+        (set-chg false)
     })
 
     (setq chg-status
         (cond
-            ((assoc rtc-val 'charge-fault) {
-                (setq charge-complete-msg false)
-                "FLT_CHG_OC"
-            })
-            (charge-complete-msg "CHG_DONE")
-            (is-charging {
-                (setq charge-complete-msg false)
-                "CHARGING"
-            })
+            ((assoc rtc-val 'charge-fault) "FLT_CHG_OC")
+            ((charge-completion-latched) "CHG_DONE")
+            ((= charge-state charge-state-confirmed) "CHARGING_OK")
+            (is-charging "CHARGING")
             (true "")
         )
     )
@@ -1118,15 +1352,16 @@ loopwhile-thd
     slave-data-fresh
     temp-data-ok
     (current-data-ok)
+    (charger-data-ok)
     (not is-charging)
-    ; A connected charger may only coexist with balancing after the existing
-    ; completion trigger is set and charge current has tapered below the
-    ; configured minimum. Full charge-session confirmation is item 3.
+    ; A connected charger is permitted only after a completed real session,
+    ; with CHG_EN low and measured current settled near zero.
     (or
-        (<= vt-vchg (bms-get-param 'v_charge_detect))
+        (not (test-chg 1))
         (and
-            trigger-bal-after-charge
-            (<= (abs iout) (bms-get-param 'min_charge_current))
+            (charge-completion-latched)
+            (<= (abs iout) balance-zero-current-a)
+            (>= balance-zero-elapsed balance-zero-settle-time-s)
         )
     )
     (<= (abs iout) (bms-get-param 'balance_max_current))
@@ -1220,12 +1455,10 @@ loopwhile-thd
 })
 
 (defun clear-balance-request () {
-    (setq trigger-bal-after-charge false)
     (if (balance-in-progress) (stop-all-balancing))
-})
-
-(defun defer-auto-balance-request () {
-    (setq bal-auto-retry-ts (systime))
+    (if (= charge-state charge-state-balance-pending)
+        (setq charge-state charge-state-complete)
+    )
 })
 
 (defun fail-close-active-balance () {
@@ -1284,9 +1517,8 @@ loopwhile-thd
     (print message)
     (fail-close-active-balance)
     (stop-all-balancing)
-    (if trigger-bal-after-charge
-        (defer-auto-balance-request)
-        (setq trigger-bal-after-charge false)
+    (if (= charge-state charge-state-balance-pending)
+        (setq bal-auto-retry-ts (systime))
     )
 })
 
@@ -1310,7 +1542,7 @@ loopwhile-thd
 
         (if (and
                 (balance-state-is bal-state-idle)
-                trigger-bal-after-charge
+                (= charge-state charge-state-balance-pending)
                 (not is-charging)
                 (> (secs-since bal-auto-retry-ts) 5.0)
             )
@@ -1576,7 +1808,7 @@ loopwhile-thd
             (update-soc-and-counters dt)
         )
 
-        (update-charge-control)
+        (update-charge-control dt)
         (update-sleep-shutdown-timer)
 
         (update-status)
@@ -1593,9 +1825,16 @@ loopwhile-thd
         )
 
         ; Set SOC to 0 below empty voltage and not under load.
-        (if (and pack-data-ok (> i-zero-time 10.0) (<= c-min (bms-get-param 'vc_empty)))
+        (if (and
+                pack-data-ok
+                (> i-zero-time 10.0)
+                (<= c-min (bms-get-param 'vc_empty))
+                (> ah-cnt-soc 0.0)
+            ) {
             (setq ah-cnt-soc 0.0)
-        )
+            (set-soc-value 0.0 "VOLTAGE" "EMPTY" true)
+            (checkpoint-soc true "EMPTY")
+        })
 
         (if (and (low-soc-unused) (> i-zero-time 1.0) (<= c-min (bms-get-param 'vc_empty)))
             (bms-shutdown-low-soc-main)
@@ -1616,8 +1855,13 @@ loopwhile-thd
 
     ; Reset values that must be relative to this boot, not image creation.
     (setq bal-auto-retry-ts (systime))
-    (setq charge-dis-ts (systime))
-    (setq charge-ts (systime))
+    (setq charge-state charge-state-idle)
+    (setq charger-presence charger-presence-unknown)
+    (setq charger-detected-prev false)
+    (setq charge-confirm-elapsed 0.0)
+    (setq charge-taper-elapsed 0.0)
+    (setq charger-absence-elapsed 0.0)
+    (setq balance-zero-elapsed 0.0)
     (setq t-last (systime))
     (setq loop-cnt 0)
 
@@ -1630,7 +1874,8 @@ loopwhile-thd
     (gpio-hold-deepsleep 0)
     (gpio-hold 6 0)
     (gpio-write 6 0)
-    (gpio-write 5 0)
+    (set-chg false)
+    (set-bms-val 'bms-can-id (can-local-id))
 
     ; Buzzer on GPIO8.
     (pwm-start 4000 0.0 0 8)

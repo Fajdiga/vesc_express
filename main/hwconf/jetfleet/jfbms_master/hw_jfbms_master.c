@@ -287,6 +287,7 @@ static SemaphoreHandle_t m_balance_tx_mutex;
 static volatile bool m_balance_inhibit;
 static volatile bool m_balance_requested;
 static uint32_t m_balance_stop_ms;
+static uint32_t m_pack_generation;
 
 static bool slave_cell_counts_valid_values(int cells_ic1, int cells_ic2) {
 	return cells_ic1 >= 3 && cells_ic1 <= 16 &&
@@ -834,6 +835,7 @@ static void parse_slave_message(uint32_t id, uint8_t *data, int len, uint8_t bus
 		stage->last_complete_ms = now_ms;
 		stage->complete_count++;
 		stage->generation++;
+		m_pack_generation++;
 		if (stage->balance_mask != 0 &&
 				(m_balance_stop_ms == 0 ||
 				(int32_t)(stage->start_ms - m_balance_stop_ms) >= 0)) {
@@ -1552,6 +1554,7 @@ static lbm_value ext_master_reset_slaves(lbm_value *args, lbm_uint argn) {
 	for (int s = 0; s < MAX_SLAVES; s++) {
 		clear_slave_data(s);
 	}
+	m_pack_generation = 0;
 
 	xSemaphoreGive(m_data_mutex);
 	xSemaphoreTake(m_balance_tx_mutex, portMAX_DELAY);
@@ -1595,6 +1598,19 @@ static lbm_value ext_master_get_cell_count(lbm_value *args, lbm_uint argn) {
 	xSemaphoreGive(m_data_mutex);
 
 	return lbm_enc_i(count);
+}
+
+// (master-get-pack-generation) - Monotonic generation of complete pack
+// snapshots. Lisp uses this in SOC diagnostics to identify the source sample.
+static lbm_value ext_master_get_pack_generation(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+
+	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
+	uint32_t generation = m_pack_generation;
+	xSemaphoreGive(m_data_mutex);
+
+	return lbm_enc_u32(generation);
 }
 
 // (master-get-cells-ic1 slave-id) - Get cells on BQ1 from slave
@@ -1820,11 +1836,9 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 	bms->temp_max_cell = have_cell_temp ? t_cell_max : 0.0f;
 	bms->data_version = 1;
 
-	// SOC estimate based on average cell voltage
-	float avg_v = (total_cells > 0) ? (v_tot / total_cells) : 3.7f;
-	bms->soc = (avg_v - 3.0f) / (4.2f - 3.0f);
-	if (bms->soc < 0.0f) bms->soc = 0.0f;
-	if (bms->soc > 1.0f) bms->soc = 1.0f;
+	// SOC is owned by the Lisp controller. Do not overwrite it from voltage here;
+	// that would race the coulomb/voltage policy and allow foreign BMS traffic to
+	// replace the local value.
 	bms->soh = 1.0f;
 
 	// Update timestamp
@@ -2180,6 +2194,7 @@ static void load_extensions(bool main_found) {
 	lbm_add_extension("master-get-slave-settled?", ext_master_get_slave_settled);
 	lbm_add_extension("master-get-active-slaves", ext_master_get_active_slaves);
 	lbm_add_extension("master-get-cell-count", ext_master_get_cell_count);
+	lbm_add_extension("master-get-pack-generation", ext_master_get_pack_generation);
 	lbm_add_extension("master-get-cells-ic1", ext_master_get_cells_ic1);
 	lbm_add_extension("master-get-cells-ic2", ext_master_get_cells_ic2);
 
@@ -2223,6 +2238,7 @@ void hw_init(void) {
 
 	// Initialize master slave data
 	memset(&m_bms_data, 0, sizeof(m_bms_data));
+	m_pack_generation = 0;
 	for (int s = 0; s < MAX_SLAVES; s++) {
 		clear_slave_data(s);
 	}
