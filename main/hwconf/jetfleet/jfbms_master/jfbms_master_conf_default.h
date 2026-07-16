@@ -205,7 +205,7 @@
 
 // Max Charge Current
 #ifndef CONF_MAX_CHARGE_CURRENT
-#define CONF_MAX_CHARGE_CURRENT 16
+#define CONF_MAX_CHARGE_CURRENT 12
 #endif
 
 // Sleep Time
@@ -236,6 +236,26 @@
 // Shutdown Time
 #ifndef CONF_SHUTDOWN
 #define CONF_SHUTDOWN 15
+#endif
+
+// Fast Charge Overcurrent Protection
+#ifndef CONF_FAST_CHARGE_OC_EN
+#define CONF_FAST_CHARGE_OC_EN 1
+#endif
+
+// Fast Charge Overcurrent
+#ifndef CONF_FAST_CHARGE_OC_A
+#define CONF_FAST_CHARGE_OC_A 15
+#endif
+
+// Charge Confirmation Time
+#ifndef CONF_CHARGE_CONFIRM_TIME_S
+#define CONF_CHARGE_CONFIRM_TIME_S 10
+#endif
+
+// Charge Taper Confirmation Time
+#ifndef CONF_CHARGE_TAPER_TIME_S
+#define CONF_CHARGE_TAPER_TIME_S 5
 #endif
 
 // JFBMS_MASTER_CONF_DEFAULT_H_

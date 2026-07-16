@@ -393,8 +393,8 @@ p, li { white-space: pre-wrap; }
             <editorDecimalsDouble>2</editorDecimalsDouble>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
-            <maxDouble>999</maxDouble>
-            <minDouble>0</minDouble>
+            <maxDouble>15</maxDouble>
+            <minDouble>0.01</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>1</stepDouble>
             <valDouble>10</valDouble>
@@ -679,8 +679,8 @@ p, li { white-space: pre-wrap; }
             <editorDecimalsDouble>3</editorDecimalsDouble>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
-            <maxDouble>999</maxDouble>
-            <minDouble>0</minDouble>
+            <maxDouble>15.9</maxDouble>
+            <minDouble>0.02</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>0.01</stepDouble>
             <valDouble>1</valDouble>
@@ -837,7 +837,7 @@ p, li { white-space: pre-wrap; }
             <minDouble>0</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>0.1</stepDouble>
-            <valDouble>16</valDouble>
+            <valDouble>12</valDouble>
             <vTxDoubleScale>1</vTxDoubleScale>
             <suffix> A</suffix>
             <vTx>9</vTx>
@@ -938,6 +938,68 @@ p, li { white-space: pre-wrap; }
             <cDefine>CONF_T_CHARGE_MON_EN</cDefine>
             <valInt>1</valInt>
         </t_charge_mon_en>
+        <fast_charge_oc_en>
+            <longName>Fast Charge Overcurrent Protection</longName>
+            <type>5</type>
+            <transmittable>1</transmittable>
+            <description>Enable the raw ADC monitor that latches CHG_EN off on excessive charge current.</description>
+            <cDefine>CONF_FAST_CHARGE_OC_EN</cDefine>
+            <valInt>1</valInt>
+        </fast_charge_oc_en>
+        <fast_charge_oc_a>
+            <longName>Fast Charge Overcurrent</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>Raw single-sample charge-current threshold that immediately latches CHG_EN off.</description>
+            <cDefine>CONF_FAST_CHARGE_OC_A</cDefine>
+            <editorDecimalsDouble>1</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>16</maxDouble>
+            <minDouble>0.03</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.1</stepDouble>
+            <valDouble>15</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> A</suffix>
+            <vTx>9</vTx>
+        </fast_charge_oc_a>
+        <charge_confirm_time_s>
+            <longName>Charge Confirmation Time</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>Continuous meaningful charge-current time required to confirm a real charge session.</description>
+            <cDefine>CONF_CHARGE_CONFIRM_TIME_S</cDefine>
+            <editorDecimalsDouble>1</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>120</maxDouble>
+            <minDouble>0.1</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.1</stepDouble>
+            <valDouble>10</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> s</suffix>
+            <vTx>9</vTx>
+        </charge_confirm_time_s>
+        <charge_taper_time_s>
+            <longName>Charge Taper Confirmation Time</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>Continuous low-current time required to complete a confirmed charge session.</description>
+            <cDefine>CONF_CHARGE_TAPER_TIME_S</cDefine>
+            <editorDecimalsDouble>1</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>120</maxDouble>
+            <minDouble>0.1</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.1</stepDouble>
+            <valDouble>5</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> s</suffix>
+            <vTx>9</vTx>
+        </charge_taper_time_s>
     </Params>
     <SerOrder>
         <ser>controller_id</ser>
@@ -987,6 +1049,10 @@ p, li { white-space: pre-wrap; }
         <ser>num_slaves</ser>
         <ser>t_charge_mon_en</ser>
         <ser>shutdown</ser>
+        <ser>fast_charge_oc_en</ser>
+        <ser>fast_charge_oc_a</ser>
+        <ser>charge_confirm_time_s</ser>
+        <ser>charge_taper_time_s</ser>
     </SerOrder>
     <Grouping>
         <group>
@@ -1059,6 +1125,10 @@ p, li { white-space: pre-wrap; }
                     <param>t_charge_mon_en</param>
                     <param>min_charge_current</param>
                     <param>max_charge_current</param>
+                    <param>fast_charge_oc_en</param>
+                    <param>fast_charge_oc_a</param>
+                    <param>charge_confirm_time_s</param>
+                    <param>charge_taper_time_s</param>
                 </subgroupParams>
             </subgroup>
             <subgroup>

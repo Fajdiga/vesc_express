@@ -184,7 +184,9 @@ loopwhile-thd
 ; Hardware-owned fast overcurrent status. Missing or malformed extensions fail
 ; closed: charging remains disabled until the ADC monitor reports armed.
 (defun fast-oc-status ()
-    (trap-value '(master-fast-oc-status) '(true nil 0 0.0 0))
+    ; C returns: (latched armed trip-count last-raw current-a trip-time-s).
+    ; A missing extension must fail closed without inventing a latched trip.
+    (trap-value '(master-fast-oc-status) '(nil nil 0 0 0.0 0.0))
 )
 
 (defun fast-oc-latched () {
@@ -246,7 +248,8 @@ loopwhile-thd
     (ah-cnt-soc  . (7 f))
 ))
 
-(def settings-version 243i32)
+(def settings-version-legacy 243i32)
+(def settings-version 244i32)
 
 (defun read-setting (name)
     (let (
@@ -308,8 +311,16 @@ loopwhile-thd
 })
 
 (defun load-settings () {
-    (if (not-eq (read-setting 'ver-code) settings-version)
-        (restore-settings)
+    ; Counter layout is unchanged in 244. Promote 243 in place so the safety
+    ; state-machine update does not erase customer Ah/Wh/SOC history.
+    (var stored-version (read-setting 'ver-code))
+    ; not-eq is used here because a fresh EEPROM can return nil for ver-code;
+    ; the numeric = operator raises a type error when comparing nil to i32.
+    (if (not-eq stored-version settings-version-legacy)
+        (if (not-eq stored-version settings-version)
+            (restore-settings)
+        )
+        (write-setting 'ver-code settings-version)
     )
 
     (setq ah-cnt (number-or (read-setting 'ah-cnt) 0.0))
@@ -556,8 +567,7 @@ loopwhile-thd
     (loopwhile (<= sid max-sid) {
         (if (master-slave-active? sid) {
             ; Slave temp order: BQ1 IC, BQ1 cell, BQ2 IC, BQ2 cell.
-            ; Status field 4 is the two-bit external-sensor enable mask. The
-            ; fallback requires both sensors if the status list is malformed.
+            ; Status field 4 is the two-bit external-sensor enable mask.
             (var status (master-get-slave-status sid))
             (var temp-flags (if (and status (>= (length status) 5))
                 (ix status 4)
@@ -569,37 +579,25 @@ loopwhile-thd
             (var expected (if (> (master-get-cells-ic2 sid) 0) 4 2))
 
             (if (and temps (>= (length temps) expected)) {
-                ; IC die temperatures are mandatory for every fitted BQ.
-                (if (temp-valid (ix temps 0))
-                    (if (> (ix temps 0) t-ic) (setq t-ic (ix temps 0)))
-                    (setq temps-ok false)
-                )
+                (looprange i 0 expected {
+                    (var is-ic (or (= i 0) (= i 2)))
+                    (var is-cell (= (mod i 2) 1))
+                    (var enabled (if (= i 1) bq1-cell-en bq2-cell-en))
+                    (var required (or is-ic enabled))
+                    (var temp (ix temps i))
 
-                ; External NTCs are mandatory only when explicitly enabled.
-                (if bq1-cell-en {
-                    (setq cell-temp-mon-en true)
-                    (if (temp-valid (ix temps 1)) {
-                        (if (< (ix temps 1) t-min) (setq t-min (ix temps 1)))
-                        (if (> (ix temps 1) t-max) (setq t-max (ix temps 1)))
-                    } {
-                        (setq temps-ok false)
-                    })
-                })
-
-                (if (= expected 4) {
-                    (if (temp-valid (ix temps 2))
-                        (if (> (ix temps 2) t-ic) (setq t-ic (ix temps 2)))
-                        (setq temps-ok false)
-                    )
-
-                    (if bq2-cell-en {
-                        (setq cell-temp-mon-en true)
-                        (if (temp-valid (ix temps 3)) {
-                            (if (< (ix temps 3) t-min) (setq t-min (ix temps 3)))
-                            (if (> (ix temps 3) t-max) (setq t-max (ix temps 3)))
+                    (if (and is-cell enabled) (setq cell-temp-mon-en true))
+                    (if (temp-valid temp) {
+                        (if is-ic {
+                            (if (> temp t-ic) (setq t-ic temp))
                         } {
-                            (setq temps-ok false)
+                            (if (and is-cell enabled) {
+                                (if (< temp t-min) (setq t-min temp))
+                                (if (> temp t-max) (setq t-max temp))
+                            })
                         })
+                    } {
+                        (if required (setq temps-ok false))
                     })
                 })
             } {
@@ -621,7 +619,6 @@ loopwhile-thd
 (defun scan-pack-from-slaves () {
     (var max-sid (cfg-num-slaves))
     (var sid 1)
-    (var active-count 0)
     (var missing false)
     (var slave-fault false)
     (var bad-cell false)
@@ -635,7 +632,6 @@ loopwhile-thd
 
     (loopwhile (<= sid max-sid) {
         (if (master-slave-active? sid) {
-            (setq active-count (+ active-count 1))
             (if (not (master-slave-fresh? sid))
                 (setq stale-slave true))
 
@@ -711,6 +707,10 @@ loopwhile-thd
     (trap (set-bms-val 'bms-v-cell-max c-max))
     (trap (set-bms-val 'bms-temp-ic (display-temp t-ic)))
     (trap (set-bms-val 'bms-temp-cell-max (display-temp t-max)))
+
+    ; The C master-update-vesc-bms extension owns the standard VESC
+    ; temperature array. Do not rewrite it from Lisp: that used to race the C
+    ; update and made T1/T2 appear briefly before being reset to fallback data.
 
     pack-data-ok
 })
@@ -1425,6 +1425,28 @@ loopwhile-thd
     all-fresh
 })
 
+(defun slave-balance-masks (sid threshold max-ch) {
+    (var cells (master-get-slave-cells sid))
+    (var ic1-cnt (master-get-cells-ic1 sid))
+    (var ic2-cnt (master-get-cells-ic2 sid))
+    (var cnt (+ ic1-cnt ic2-cnt))
+
+    (if (and cells (> cnt 0) (= (length cells) cnt)) {
+        (var ic1-volts (map (fn (i) (ix cells i)) (range ic1-cnt)))
+        (var ic2-volts (if (> ic2-cnt 0)
+            (map (fn (i) (ix cells (+ ic1-cnt i))) (range ic2-cnt))
+            '()
+        ))
+        (list
+            (balance-ic-group ic1-volts c-min threshold max-ch)
+            (if (> ic2-cnt 0)
+                (balance-ic-group ic2-volts c-min threshold max-ch)
+                0
+            )
+        )
+    } nil)
+})
+
 (defun balance-needed-now () {
     (var max-ch (bms-get-param 'max_bal_ch))
     (var threshold (bms-get-param 'vc_balance_start))
@@ -1434,24 +1456,9 @@ loopwhile-thd
 
     (loopwhile (<= sid max-sid) {
         (if (and (master-slave-active? sid) (master-slave-fresh? sid)) {
-            (var cells (master-get-slave-cells sid))
-            (var ic1-cnt (master-get-cells-ic1 sid))
-            (var ic2-cnt (master-get-cells-ic2 sid))
-            (var cnt (+ ic1-cnt ic2-cnt))
-
-            (if (and cells (> cnt 0) (= (length cells) cnt)) {
-                (var ic1-volts (map (fn (i) (ix cells i)) (range ic1-cnt)))
-                (var ic2-volts (if (> ic2-cnt 0)
-                    (map (fn (i) (ix cells (+ ic1-cnt i))) (range ic2-cnt))
-                    '()
-                ))
-                (var ic1-mask (balance-ic-group ic1-volts c-min threshold max-ch))
-                (var ic2-mask (if (> ic2-cnt 0)
-                    (balance-ic-group ic2-volts c-min threshold max-ch)
-                    0
-                ))
-
-                (if (or (> ic1-mask 0) (> ic2-mask 0))
+            (var masks (slave-balance-masks sid threshold max-ch))
+            (if masks {
+                (if (or (> (ix masks 0) 0) (> (ix masks 1) 0))
                     (setq needed true)
                 )
             })
@@ -1516,22 +1523,12 @@ loopwhile-thd
     (clear-cached-balancing)
     (loopwhile (<= sid max-sid) {
         (if (and (master-slave-active? sid) (master-slave-fresh? sid)) {
-            (var cells (master-get-slave-cells sid))
-            (var ic1-cnt (master-get-cells-ic1 sid))
-            (var ic2-cnt (master-get-cells-ic2 sid))
-            (var cnt (+ ic1-cnt ic2-cnt))
-
-            (if (and cells (> cnt 0) (= (length cells) cnt)) {
-                (var ic1-volts (map (fn (i) (ix cells i)) (range ic1-cnt)))
-                (var ic2-volts (if (> ic2-cnt 0)
-                    (map (fn (i) (ix cells (+ ic1-cnt i))) (range ic2-cnt))
-                    '()
-                ))
-                (var ic1-mask (balance-ic-group ic1-volts c-min threshold max-ch))
-                (var ic2-mask (if (> ic2-cnt 0)
-                    (balance-ic-group ic2-volts c-min threshold max-ch)
-                    0
-                ))
+            (var masks (slave-balance-masks sid threshold max-ch))
+            (if masks {
+                (var ic1-cnt (master-get-cells-ic1 sid))
+                (var ic2-cnt (master-get-cells-ic2 sid))
+                (var ic1-mask (ix masks 0))
+                (var ic2-mask (ix masks 1))
 
                 (if (or (> ic1-mask 0) (> ic2-mask 0)) {
                     (setq any-bal true)

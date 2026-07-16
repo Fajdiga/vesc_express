@@ -268,6 +268,7 @@ uint32_t main_task_wdt_get_timeout(void) {
 }
 
 void app_main(void) {
+	bool config_migrated = false;
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
 	tv.tv_sec = 0;
@@ -307,17 +308,30 @@ void app_main(void) {
 		}
 
 		if (backup.config_init_flag != MAIN_CONFIG_T_SIGNATURE) {
-#ifdef OVR_CONF_SET_DEFAULTS
-			OVR_CONF_SET_DEFAULTS((main_config_t*)(&backup.config));
-#else
-			confparser_set_defaults_main_config_t((main_config_t*)(&backup.config));
+			bool migrated = false;
+#ifdef OVR_CONF_MIGRATE_LEGACY
+			migrated = OVR_CONF_MIGRATE_LEGACY(backup.config_init_flag,
+					(main_config_t *)(&backup.config));
 #endif
-			backup.config_init_flag = MAIN_CONFIG_T_SIGNATURE;
-			backup.config.controller_id = backup.controller_id;
-			backup.config.can_baud_rate = backup.can_baud_rate;
+			if (migrated) {
+				backup.config_init_flag = MAIN_CONFIG_T_SIGNATURE;
+				config_migrated = true;
+			} else {
+#ifdef OVR_CONF_SET_DEFAULTS
+				OVR_CONF_SET_DEFAULTS((main_config_t*)(&backup.config));
+#else
+				confparser_set_defaults_main_config_t((main_config_t*)(&backup.config));
+#endif
+				backup.config_init_flag = MAIN_CONFIG_T_SIGNATURE;
+				backup.config.controller_id = backup.controller_id;
+				backup.config.can_baud_rate = backup.can_baud_rate;
+			}
 		}
 
 		nvs_close(my_handle);
+	}
+	if (config_migrated) {
+		main_store_backup_data();
 	}
 
 	(void)main_task_wdt_reset();

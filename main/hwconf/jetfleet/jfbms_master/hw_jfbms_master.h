@@ -30,6 +30,8 @@
 #include "driver/gpio.h"
 #include "datatypes.h"
 
+#include <stddef.h>
+
 #define HW_NAME						"JFBMS_MASTER"
 #define HW_TARGET					"esp32c6_fh4"
 
@@ -58,6 +60,12 @@
 #define OVR_CONF_SERIALIZE			jfbms_master_confparser_serialize_main_config_t
 #define OVR_CONF_DESERIALIZE		jfbms_master_confparser_deserialize_main_config_t
 #define OVR_CONF_SET_DEFAULTS		jfbms_master_confparser_set_defaults_main_config_t
+#define OVR_CONF_MIGRATE_LEGACY(signature, config) \
+	jfbms_master_migrate_legacy_config((signature), (config))
+#define OVR_CONF_VALIDATE(config) \
+	jfbms_master_validate_config((config))
+#define OVR_CONF_APPLY() \
+	jfbms_master_apply_config()
 #define OVR_CONF_MAIN_CONFIG
 #define VAR_INIT_CODE				259763463
 
@@ -172,29 +180,31 @@ typedef struct {
 	// Enable temperature monitoring during charging
 	bool t_charge_mon_en;
 
-	// Maximum precharge time
-	float psw_t_pchg;
-
-	// Shortcircuit protection enabled
-	bool psw_scd_en;
-
-	// Shortcircuit protection threshold
-	int psw_scd_tres;
-
-	// Enable overtemperature protection
-	bool t_psw_en;
-
-	// Turn off power switch when MOSFET temperature is above this value
-	float t_psw_max_mos;
-
-	// Wait for init done before enabling power switch
-	bool psw_wait_init;
+	// These fields deliberately reuse the raw-NVS offsets of the obsolete
+	// power-switch members. Do not reorder them: deployed settings blobs depend on
+	// the ESP32 4-byte ABI offsets documented by the static assertions below.
+	float fast_charge_oc_a;
+	bool fast_charge_oc_en;
+	float charge_confirm_time_s;
+	uint8_t config_reserved_0;
+	float charge_taper_time_s;
+	uint8_t config_reserved_1;
 
 	// --- Master-specific parameters ---
 
 	// Number of expected slave devices (1-8)
 	int num_slaves;
 } main_config_t;
+
+_Static_assert(sizeof(main_config_t) == 404,
+		"JFBMS master config ABI changed; add an explicit NVS migration");
+_Static_assert(offsetof(main_config_t, num_slaves) == 400,
+		"JFBMS master num_slaves offset changed; legacy NVS would be lost");
+
+#define JFBMS_MASTER_CONFIG_SIGNATURE_LEGACY 1155088901U
+bool jfbms_master_migrate_legacy_config(uint32_t signature, main_config_t *conf);
+bool jfbms_master_validate_config(const main_config_t *conf);
+bool jfbms_master_apply_config(void);
 
 // Default setting Overrides
 #define HW_DEFAULT_ID				3
@@ -237,9 +247,8 @@ typedef struct {
 #define HW_ADC_CH3					ADC_CHANNEL_3 // Charger voltage divider
 #define HW_ADC_CH4					ADC_CHANNEL_4 // PCB NTC
 
-// Fast hardware protection uses the existing max_charge_current setting plus
-// a fixed margin. The threshold is capped below the ADC full-scale current.
-#define JFBMS_FAST_OC_MARGIN_A		1.0f
+// Fast hardware protection is independently configured and capped below the
+// ADC full-scale current.
 #define JFBMS_FAST_OC_MAX_A		16.0f
 
 float hw_adc_get_voltage(adc_channel_t channel);

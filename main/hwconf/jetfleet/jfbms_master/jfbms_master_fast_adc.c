@@ -25,7 +25,10 @@
 #define JFBMS_ADC_FRAME_BYTES       256
 #define JFBMS_ADC_STORE_BYTES       2048
 #define JFBMS_ADC_PATTERN_LEN       8
-#define JFBMS_ADC_CACHE_MAX_AGE_MS  100
+// The control loop normally refreshes at 10 Hz, but Lisp scheduling and CAN
+// work can move an individual read just beyond 100 ms. Keep the same
+// fail-closed freshness model while allowing bounded scheduler jitter.
+#define JFBMS_ADC_CACHE_MAX_AGE_MS  300
 #define JFBMS_ADC_MAX_FRAMES_WAKE   8
 #define JFBMS_ADC_TASK_PRIORITY     7
 #define JFBMS_FAST_OC_RTC_MAGIC     0x4A464F43U
@@ -256,12 +259,18 @@ bool jfbms_fast_adc_set_current_offset(float offset_v) {
 		m_adc_monitor = NULL;
 	}
 
-	float max_current = ((main_config_t *)&backup.config)->max_charge_current;
-	float trip_current = max_current + JFBMS_FAST_OC_MARGIN_A;
-	if (!isfinite(max_current) || max_current <= 0.0f) trip_current = 0.0f;
-	if (trip_current > JFBMS_FAST_OC_MAX_A) trip_current = JFBMS_FAST_OC_MAX_A;
-	bool configured = trip_current > 0.0f && offset_v - (trip_current / ISENSE_SCALE) > 0.02f;
-	if (configured) {
+	main_config_t *cfg = (main_config_t *)&backup.config;
+	float trip_current = cfg->fast_charge_oc_a;
+	bool configured = !cfg->fast_charge_oc_en;
+	if (cfg->fast_charge_oc_en) {
+		configured = isfinite(cfg->max_charge_current) &&
+				isfinite(trip_current) &&
+				cfg->max_charge_current < trip_current &&
+				trip_current > 0.0f &&
+				trip_current <= JFBMS_FAST_OC_MAX_A &&
+				offset_v - (trip_current / ISENSE_SCALE) > 0.02f;
+	}
+	if (configured && cfg->fast_charge_oc_en) {
 		adc_monitor_config_t monitor_cfg = {
 			.adc_unit = ADC_UNIT_1,
 			.channel = HW_ADC_CH2,

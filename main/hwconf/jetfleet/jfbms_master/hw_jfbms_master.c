@@ -194,6 +194,52 @@ static bool bms_temp_valid(float temp_c) {
 // profile. The shared adc.c wrapper delegates to hw_adc_get_voltage().
 #include "jfbms_master_fast_adc.c"
 
+// Board-owned compatibility and safety hooks. These intentionally live
+// outside the VESC Tool-generated parser so regeneration cannot erase them.
+bool jfbms_master_migrate_legacy_config(uint32_t signature,
+		main_config_t *conf) {
+	if (signature != JFBMS_MASTER_CONFIG_SIGNATURE_LEGACY || !conf) {
+		return false;
+	}
+
+	conf->fast_charge_oc_en = CONF_FAST_CHARGE_OC_EN;
+	conf->fast_charge_oc_a = CONF_FAST_CHARGE_OC_A;
+	conf->charge_confirm_time_s = CONF_CHARGE_CONFIRM_TIME_S;
+	conf->charge_taper_time_s = CONF_CHARGE_TAPER_TIME_S;
+	if (conf->max_charge_current <= conf->min_charge_current ||
+			conf->max_charge_current >= conf->fast_charge_oc_a) {
+		conf->max_charge_current = CONF_MAX_CHARGE_CURRENT;
+	}
+	return true;
+}
+
+bool jfbms_master_validate_config(const main_config_t *conf) {
+	return conf && isfinite(conf->min_charge_current) &&
+			isfinite(conf->max_charge_current) &&
+			isfinite(conf->fast_charge_oc_a) &&
+			isfinite(conf->charge_confirm_time_s) &&
+			isfinite(conf->charge_taper_time_s) &&
+			conf->min_charge_current > 0.0f &&
+			conf->min_charge_current < conf->max_charge_current &&
+			conf->max_charge_current < conf->fast_charge_oc_a &&
+			conf->fast_charge_oc_a <= JFBMS_FAST_OC_MAX_A &&
+			conf->charge_confirm_time_s > 0.0f &&
+			conf->charge_confirm_time_s <= 120.0f &&
+			conf->charge_taper_time_s > 0.0f &&
+			conf->charge_taper_time_s <= 120.0f &&
+			conf->num_slaves >= 1 && conf->num_slaves <= MAX_SLAVES;
+}
+
+bool jfbms_master_apply_config(void) {
+	GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
+	if (!jfbms_master_validate_config((const main_config_t *)&backup.config)) {
+		return false;
+	}
+	// Rebuild the raw threshold immediately; a lower configured trip must never
+	// wait for a reboot or later calibration to become effective.
+	return jfbms_fast_adc_set_current_offset(m_current_offset);
+}
+
 // The configured topology is deliberately contiguous: slave IDs 1..N.
 // Frames from other IDs are rejected in the receive path and must never leak
 // into pack state or the UI.
@@ -987,12 +1033,10 @@ typedef struct {
 	lbm_uint t_bal_max_ic;
 	lbm_uint t_charge_min;
 	lbm_uint t_charge_mon_en;
-	lbm_uint psw_t_pchg;
-	lbm_uint psw_scd_en;
-	lbm_uint psw_scd_tres;
-	lbm_uint t_psw_en;
-	lbm_uint t_psw_max_mos;
-	lbm_uint psw_wait_init;
+	lbm_uint fast_charge_oc_en;
+	lbm_uint fast_charge_oc_a;
+	lbm_uint charge_confirm_time_s;
+	lbm_uint charge_taper_time_s;
 	// Master-specific
 	lbm_uint num_slaves;
 } vesc_syms;
@@ -1063,18 +1107,14 @@ static bool compare_symbol(lbm_uint sym, lbm_uint *comp) {
 			lbm_add_symbol_const("t_charge_min", comp);
 		} else if (comp == &syms_vesc.t_charge_mon_en) {
 			lbm_add_symbol_const("t_charge_mon_en", comp);
-		} else if (comp == &syms_vesc.psw_t_pchg) {
-			lbm_add_symbol_const("psw_t_pchg", comp);
-		} else if (comp == &syms_vesc.psw_scd_en) {
-			lbm_add_symbol_const("psw_scd_en", comp);
-		} else if (comp == &syms_vesc.psw_scd_tres) {
-			lbm_add_symbol_const("psw_scd_tres", comp);
-		} else if (comp == &syms_vesc.t_psw_en) {
-			lbm_add_symbol_const("t_psw_en", comp);
-		} else if (comp == &syms_vesc.t_psw_max_mos) {
-			lbm_add_symbol_const("t_psw_max_mos", comp);
-		} else if (comp == &syms_vesc.psw_wait_init) {
-			lbm_add_symbol_const("psw_wait_init", comp);
+		} else if (comp == &syms_vesc.fast_charge_oc_en) {
+			lbm_add_symbol_const("fast_charge_oc_en", comp);
+		} else if (comp == &syms_vesc.fast_charge_oc_a) {
+			lbm_add_symbol_const("fast_charge_oc_a", comp);
+		} else if (comp == &syms_vesc.charge_confirm_time_s) {
+			lbm_add_symbol_const("charge_confirm_time_s", comp);
+		} else if (comp == &syms_vesc.charge_taper_time_s) {
+			lbm_add_symbol_const("charge_taper_time_s", comp);
 		} else if (comp == &syms_vesc.num_slaves) {
 			lbm_add_symbol_const("num_slaves", comp);
 		}
@@ -1206,18 +1246,14 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 		res = get_or_set_float(set, &cfg->t_charge_min, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.t_charge_mon_en)) {
 		res = get_or_set_bool(set, &cfg->t_charge_mon_en, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.psw_t_pchg)) {
-		res = get_or_set_float(set, &cfg->psw_t_pchg, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.psw_scd_en)) {
-		res = get_or_set_bool(set, &cfg->psw_scd_en, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.psw_scd_tres)) {
-		res = get_or_set_i(set, &cfg->psw_scd_tres, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.t_psw_en)) {
-		res = get_or_set_bool(set, &cfg->t_psw_en, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.t_psw_max_mos)) {
-		res = get_or_set_float(set, &cfg->t_psw_max_mos, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.psw_wait_init)) {
-		res = get_or_set_bool(set, &cfg->psw_wait_init, &set_arg);
+	} else if (compare_symbol(name, &syms_vesc.fast_charge_oc_en)) {
+		res = get_or_set_bool(set, &cfg->fast_charge_oc_en, &set_arg);
+	} else if (compare_symbol(name, &syms_vesc.fast_charge_oc_a)) {
+		res = get_or_set_float(set, &cfg->fast_charge_oc_a, &set_arg);
+	} else if (compare_symbol(name, &syms_vesc.charge_confirm_time_s)) {
+		res = get_or_set_float(set, &cfg->charge_confirm_time_s, &set_arg);
+	} else if (compare_symbol(name, &syms_vesc.charge_taper_time_s)) {
+		res = get_or_set_float(set, &cfg->charge_taper_time_s, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.num_slaves)) {
 		res = get_or_set_i(set, &cfg->num_slaves, &set_arg);
 	}
@@ -2119,6 +2155,14 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 			(double)fast_oc.last_current_a,
 			(long)(fast_oc.trip_time_us / 1000),
 			m_pack_watchdog_ready ? 1 : 0);
+	commands_printf_lisp("ADC: status=0x%02X current_v=%.3f vchg_v=%.3f pcb_v=%.3f pcb_temp=%.1fC",
+			(m_current_valid ? 0x01 : 0) |
+			(m_vchg_valid ? 0x02 : 0) |
+			(m_temp_pcb_valid ? 0x04 : 0),
+			(double)hw_adc_get_voltage(HW_ADC_CH2),
+			(double)hw_adc_get_voltage(HW_ADC_CH3),
+			(double)hw_adc_get_voltage(HW_ADC_CH4),
+			(double)(m_temp_pcb_valid ? m_temp_pcb : -300.0f));
 
 	comm_can_debug_info_t can_dbg;
 	comm_can_get_debug_info(&can_dbg);
@@ -2210,7 +2254,7 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 		int32_t stage_age = m_slave_stage[i].in_progress ?
 				(int32_t)(now_ms - m_slave_stage[i].start_ms) : -1;
 
-		commands_printf_lisp("Slave %d: active=%d fresh=%d stale_checks=%u frames=%lu raw_status=%lu raw_status_rate=%.2fHz complete=%lu complete_rate=%.2fHz incomplete=%lu timeout=%lu restart=%lu orphan=%lu duplicate=%lu malformed=%lu invalid=%lu bus_mismatch=%lu generation=%lu commit_age=%ldms temp_age=%ldms stage_age=%ldms stage_mask=0x%03X last_missing=0x%03X ic1=%d ic2=%d faults=0x%02X bus=%s",
+		commands_printf_lisp("Slave %d: active=%d fresh=%d stale_checks=%u frames=%lu raw_status=%lu raw_status_rate=%.2fHz complete=%lu complete_rate=%.2fHz incomplete=%lu timeout=%lu restart=%lu orphan=%lu duplicate=%lu malformed=%lu invalid=%lu bus_mismatch=%lu generation=%lu commit_age=%ldms temp_age=%ldms stage_age=%ldms stage_mask=0x%03X last_missing=0x%03X ic1=%d ic2=%d faults=0x%02X temp_flags=0x%02X temps=%.1f,%.1f,%.1f,%.1f bus=%s",
 			i + 1, m_bms_data.active[i] ? 1 : 0,
 			m_bms_data.fresh[i] ? 1 : 0,
 			(unsigned int)m_bms_data.stale_checks[i],
@@ -2233,6 +2277,11 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 			(unsigned int)m_slave_stage[i].last_missing_mask,
 			m_bms_data.cells_ic1[i], m_bms_data.cells_ic2[i],
 			m_bms_data.fault_flags[i],
+			(unsigned int)m_bms_data.temp_sensor_flags[i],
+			(double)(m_bms_data.temperatures[i][0] == 0x7FFF ? -300.0f : (float)m_bms_data.temperatures[i][0] / 10.0f),
+			(double)(m_bms_data.temperatures[i][1] == 0x7FFF ? -300.0f : (float)m_bms_data.temperatures[i][1] / 10.0f),
+			(double)(m_bms_data.temperatures[i][2] == 0x7FFF ? -300.0f : (float)m_bms_data.temperatures[i][2] / 10.0f),
+			(double)(m_bms_data.temperatures[i][3] == 0x7FFF ? -300.0f : (float)m_bms_data.temperatures[i][3] / 10.0f),
 			slave_can_rx_bus[i] == SLAVE_CAN_BUS_ESC ? "primary/TWAI0" :
 			(slave_can_rx_bus[i] == SLAVE_CAN_BUS_PRIVATE ? "BMS/TWAI1" : "unknown"));
 		debug_status_last[i] = m_slave_stage[i].raw_status_count;

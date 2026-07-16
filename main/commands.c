@@ -444,13 +444,34 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 
 		int conf_ind = data[0];
 
+		bool decoded = false;
 #ifdef OVR_CONF_DESERIALIZE
-		if (conf_ind == 0 && OVR_CONF_DESERIALIZE(data + 1, conf)) {
+		decoded = conf_ind == 0 && OVR_CONF_DESERIALIZE(data + 1, conf);
 #else
-		if (conf_ind == 0 && confparser_deserialize_main_config_t(data + 1, conf)) {
+		decoded = conf_ind == 0 && confparser_deserialize_main_config_t(data + 1, conf);
 #endif
+	#ifdef OVR_CONF_VALIDATE
+		decoded = decoded && OVR_CONF_VALIDATE(conf);
+	#endif
+		if (decoded) {
+			main_config_t previous_conf = backup.config;
 			bool baud_changed = backup.config.can_baud_rate != conf->can_baud_rate;
 			backup.config = *conf;
+			bool applied = true;
+	#ifdef OVR_CONF_APPLY
+			applied = OVR_CONF_APPLY();
+	#endif
+			if (!applied) {
+				// Restore both the persisted candidate and any board-specific
+				// runtime protection derived from it.
+				backup.config = previous_conf;
+	#ifdef OVR_CONF_APPLY
+				(void)OVR_CONF_APPLY();
+	#endif
+				commands_printf("Warning: Configuration rejected while applying hardware safety settings");
+				free(conf);
+				break;
+			}
 
 			if (baud_changed) {
 				comm_can_update_baudrate(0);

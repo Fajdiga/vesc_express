@@ -65,6 +65,10 @@ int32_t jfbms_master_confparser_serialize_main_config_t(uint8_t *buffer, const m
 	buffer[ind++] = (uint8_t)conf->num_slaves;
 	buffer[ind++] = conf->t_charge_mon_en;
 	buffer_append_int16(buffer, conf->shutdown, &ind);
+	buffer[ind++] = conf->fast_charge_oc_en;
+	buffer_append_float32_auto(buffer, conf->fast_charge_oc_a, &ind);
+	buffer_append_float32_auto(buffer, conf->charge_confirm_time_s, &ind);
+	buffer_append_float32_auto(buffer, conf->charge_taper_time_s, &ind);
 
 	return ind;
 }
@@ -132,6 +136,10 @@ bool jfbms_master_confparser_deserialize_main_config_t(const uint8_t *buffer, ma
 	conf->num_slaves = buffer[ind++];
 	conf->t_charge_mon_en = buffer[ind++];
 	conf->shutdown = buffer_get_int16(buffer, &ind);
+	conf->fast_charge_oc_en = buffer[ind++];
+	conf->fast_charge_oc_a = buffer_get_float32_auto(buffer, &ind);
+	conf->charge_confirm_time_s = buffer_get_float32_auto(buffer, &ind);
+	conf->charge_taper_time_s = buffer_get_float32_auto(buffer, &ind);
 
 	return true;
 }
@@ -184,4 +192,8 @@ void jfbms_master_confparser_set_defaults_main_config_t(main_config_t *conf) {
 	conf->num_slaves = CONF_NUM_SLAVES;
 	conf->t_charge_mon_en = CONF_T_CHARGE_MON_EN;
 	conf->shutdown = CONF_SHUTDOWN;
+	conf->fast_charge_oc_en = CONF_FAST_CHARGE_OC_EN;
+	conf->fast_charge_oc_a = CONF_FAST_CHARGE_OC_A;
+	conf->charge_confirm_time_s = CONF_CHARGE_CONFIRM_TIME_S;
+	conf->charge_taper_time_s = CONF_CHARGE_TAPER_TIME_S;
 }
