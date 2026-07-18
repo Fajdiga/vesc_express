@@ -15,6 +15,7 @@
 #include "esp_attr.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "soc/gpio_struct.h"
 #include "soc/soc_caps.h"
@@ -42,6 +43,7 @@ static adc_continuous_handle_t m_adc_handle;
 static adc_monitor_handle_t m_adc_monitor;
 static adc_cali_handle_t m_adc_cali[5];
 static TaskHandle_t m_adc_task_handle;
+static SemaphoreHandle_t m_adc_mutex;
 static volatile bool m_adc_started;
 static volatile bool m_adc_reconfiguring;
 static volatile bool m_fast_oc_armed;
@@ -165,6 +167,11 @@ static void adc_reader_task(void *arg) {
 	while (true) {
 		(void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
 		if (m_adc_reconfiguring || !m_adc_started) continue;
+		if (!m_adc_mutex || xSemaphoreTake(m_adc_mutex, portMAX_DELAY) != pdTRUE) continue;
+		if (m_adc_reconfiguring || !m_adc_started) {
+			xSemaphoreGive(m_adc_mutex);
+			continue;
+		}
 
 		uint32_t frames_processed = 0;
 		while (!m_adc_reconfiguring && frames_processed < JFBMS_ADC_MAX_FRAMES_WAKE) {
@@ -175,6 +182,7 @@ static void adc_reader_task(void *arg) {
 			adc_process_frame(frame, length);
 			frames_processed++;
 		}
+		xSemaphoreGive(m_adc_mutex);
 		if (frames_processed == JFBMS_ADC_MAX_FRAMES_WAKE) vTaskDelay(1);
 	}
 }
@@ -182,6 +190,8 @@ static void adc_reader_task(void *arg) {
 bool jfbms_fast_adc_init(void) {
 	if (m_adc_handle) return m_adc_started;
 	if (m_fast_oc_rtc_magic == JFBMS_FAST_OC_RTC_MAGIC) m_fast_oc_latch = true;
+	if (!m_adc_mutex) m_adc_mutex = xSemaphoreCreateMutex();
+	if (!m_adc_mutex) return false;
 
 	adc_continuous_handle_cfg_t handle_cfg = {
 		.max_store_buf_size = JFBMS_ADC_STORE_BYTES,
@@ -247,7 +257,12 @@ bool jfbms_fast_adc_set_current_offset(float offset_v) {
 	m_fast_oc_armed = false;
 	m_adc_reconfiguring = true;
 	GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
+	if (!m_adc_mutex || xSemaphoreTake(m_adc_mutex, portMAX_DELAY) != pdTRUE) {
+		m_adc_reconfiguring = false;
+		return false;
+	}
 	if (adc_continuous_stop(m_adc_handle) != ESP_OK) {
+		xSemaphoreGive(m_adc_mutex);
 		m_adc_reconfiguring = false;
 		return false;
 	}
@@ -288,6 +303,7 @@ bool jfbms_fast_adc_set_current_offset(float offset_v) {
 
 	if (adc_continuous_start(m_adc_handle) == ESP_OK) m_adc_started = true;
 	else configured = false;
+	xSemaphoreGive(m_adc_mutex);
 	m_adc_reconfiguring = false;
 	m_fast_oc_armed = configured;
 	return m_fast_oc_armed;

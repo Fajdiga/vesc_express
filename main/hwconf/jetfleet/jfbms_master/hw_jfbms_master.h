@@ -51,6 +51,11 @@
 // CAN: Normal ACK mode for reliable master-slave communication
 #define HW_CAN_NO_ACK_MODE			0
 
+// This board is the pack BMS and owns the global VESC BMS value set. Do not
+// let received/echoed standard BMS CAN frames replace its locally assembled
+// slave snapshot (especially cell_num and v_cell[]).
+#define HW_BMS_CAN_VALUES_LOCAL_OWNER
+
 // Configuration overrides
 #define OVR_CONF_PARSER_C			"jfbms_master_confparser.c"
 #define OVR_CONF_PARSER_H			"jfbms_master_confparser.h"

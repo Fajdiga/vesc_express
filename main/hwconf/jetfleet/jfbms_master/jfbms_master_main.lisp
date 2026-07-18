@@ -10,8 +10,10 @@
 (def beep-duty-normal 0.5)
 (def sleep-unblock-en true)
 (def charger-max-delay 10.0)
+(def balance-settle-min-time-s 2.0)
 (def balance-settle-timeout-s 5.0)
 (def balance-active-time-s 30.0)
+(def balance-keepalive-period-s 1.0)
 (def control-max-qualify-dt 0.25)
 (def soc-checkpoint-min-time-s 10.0)
 (def soc-checkpoint-max-time-s 300.0)
@@ -32,8 +34,8 @@
 (def charge-ts (systime))
 
 (def bal-auto-retry-ts (systime))
-(def balance-cycle-start-ts (systime))
-(def balance-cycle-min 0.0)
+(def balance-active-start-ts (systime))
+(def balance-cycle-threshold 0.0)
 (def bal-status "")
 (def chg-status "")
 (def pack-status "")
@@ -704,16 +706,10 @@ loopwhile-thd
         temp-data-ok
     ))
 
-    (trap (set-bms-val 'bms-cell-num cell-num))
-    (trap (set-bms-val 'bms-v-tot vtot))
-    (trap (set-bms-val 'bms-v-cell-min c-min))
-    (trap (set-bms-val 'bms-v-cell-max c-max))
-    (trap (set-bms-val 'bms-temp-ic (display-temp t-ic)))
-    (trap (set-bms-val 'bms-temp-cell-max (display-temp t-max)))
-
-    ; The C master-update-vesc-bms extension owns the standard VESC
-    ; temperature array. Do not rewrite it from Lisp: that used to race the C
-    ; update and made T1/T2 appear briefly before being reset to fallback data.
+    ; The C master-update-vesc-bms extension is the single owner of standard
+    ; VESC cell topology, voltages, totals, extrema, and temperatures. Lisp
+    ; keeps its own scan values for control decisions but must not race the C
+    ; publication used by VESC Tool and standard BMS CAN frames.
 
     pack-data-ok
 })
@@ -1318,6 +1314,35 @@ loopwhile-thd
     (<= t-ic (bms-get-param 't_bal_max_ic))
 ))
 
+; Return the first safety condition that prevents balancing. Keep this aligned
+; with balance-safe-now so field logs identify the real cause instead of only
+; reporting the generic "pack conditions" message.
+(defun balance-block-reason ()
+    (cond
+        ((not pack-data-ok) (str-merge "pack data: " pack-status))
+        ((not slave-data-fresh) "slave data stale")
+        ((not temp-data-ok) "temperature data invalid")
+        ((not (current-data-ok)) "current sensor invalid")
+        ((not (charger-data-ok)) "charger-voltage sensor invalid")
+        (is-charging "charging is active")
+        ((> (* (abs iout)
+                (if (balance-state-is bal-state-active) 0.8 1.0))
+            (bms-get-param 'balance_max_current))
+            (str-merge "current=" (str-from-n iout "%.2f")
+                "A limit=" (str-from-n (bms-get-param 'balance_max_current) "%.2f") "A"))
+        ((< c-min (bms-get-param 'vc_balance_min))
+            (str-merge "cell-min=" (str-from-n c-min "%.3f")
+                "V limit=" (str-from-n (bms-get-param 'vc_balance_min) "%.3f") "V"))
+        ((and cell-temp-mon-en (> t-max (bms-get-param 't_bal_max_cell)))
+            (str-merge "cell-temp=" (str-from-n t-max "%.1f")
+                "C limit=" (str-from-n (bms-get-param 't_bal_max_cell) "%.1f") "C"))
+        ((> t-ic (bms-get-param 't_bal_max_ic))
+            (str-merge "ic-temp=" (str-from-n t-ic "%.1f")
+                "C limit=" (str-from-n (bms-get-param 't_bal_max_ic) "%.1f") "C"))
+        (true "")
+    )
+)
+
 (defun all-configured-slaves-fresh () {
     (var all-fresh true)
     (var sid 1)
@@ -1372,7 +1397,13 @@ loopwhile-thd
             )) {
             (setq keep-waiting false)
         } {
-            (if (all-configured-slaves-settled) {
+            ; A status frame that predates the zero-mask handoff can still say
+            ; settled. Enforce the physical two-second off interval before
+            ; accepting the per-slave flags and the associated voltage data.
+            (if (and
+                    (>= (secs-since started) balance-settle-min-time-s)
+                    (all-configured-slaves-settled)
+                ) {
                 (setq settled true)
                 (setq keep-waiting false)
             } {
@@ -1431,6 +1462,9 @@ loopwhile-thd
 (defun start-balance-request () {
     (if (and (balance-state-is bal-state-idle) (not (c-balance-inhibited))) {
         (if (set-c-balance-request true) {
+            ; A new manual or post-charge session uses the start threshold.
+            ; Repeated 30-second phases switch to the end threshold below.
+            (setq balance-cycle-threshold (bms-get-param 'vc_balance_start))
             (setix bal-state 0 bal-state-requested)
             (setq bal-status "BAL_REQ")
             true
@@ -1446,14 +1480,20 @@ loopwhile-thd
 
 (defun try-manual-balance-request () {
     (refresh-pack-data)
-    (if (and
-            (balance-safe-now)
+    (var block-reason (balance-block-reason))
+    (if (and (= (str-len block-reason) 0)
             (all-configured-slaves-fresh)
-            (balance-needed-now)
-        ) {
+            (balance-needed-now)) {
         (start-balance-request)
         true
     } {
+        (if (> (str-len block-reason) 0)
+            (print (str-merge "BAL CMD: blocked: " block-reason))
+            (if (not (all-configured-slaves-fresh))
+                (print "BAL CMD: blocked: configured slave data stale")
+                (print "BAL CMD: no cells above start threshold")
+            )
+        )
         false
     })
 })
@@ -1505,68 +1545,6 @@ loopwhile-thd
     any-bal
 })
 
-; Remove only cells that have reached the end threshold. Do not recompute or
-; add cells during an active session: vc_balance_start selects cells at the
-; beginning, while vc_balance_end removes them with hysteresis.
-(defun trim-balance-mask (mask voltages base threshold) {
-    (var trimmed 0)
-    (looprange i 0 (length voltages) {
-        (if (and
-                (> (bitwise-and mask (shl 1 i)) 0)
-                (> (- (ix voltages i) base) threshold)
-            )
-            (setq trimmed (+ trimmed (shl 1 i)))
-        )
-    })
-    trimmed
-})
-
-(defun trim-active-balance-masks () {
-    (var any-bal false)
-    (var sid 1)
-    (var max-sid (cfg-num-slaves))
-    (var end-threshold (bms-get-param 'vc_balance_end))
-
-    (loopwhile (<= sid max-sid) {
-        (if (and (master-slave-active? sid) (master-slave-fresh? sid)) {
-            (var cells (master-get-slave-cells sid))
-            (var ic1-cnt (master-get-cells-ic1 sid))
-            (var ic2-cnt (master-get-cells-ic2 sid))
-            (var cnt (+ ic1-cnt ic2-cnt))
-
-            (if (and cells (> cnt 0) (= (length cells) cnt)) {
-                (var ic1-volts (map (fn (i) (ix cells i)) (range ic1-cnt)))
-                (var ic2-volts (if (> ic2-cnt 0)
-                    (map (fn (i) (ix cells (+ ic1-cnt i))) (range ic2-cnt))
-                    '()
-                ))
-                (var old-ic1 (ix slave-bal-mask-ic1 (- sid 1)))
-                (var old-ic2 (ix slave-bal-mask-ic2 (- sid 1)))
-                (var new-ic1 (trim-balance-mask
-                    old-ic1 ic1-volts balance-cycle-min end-threshold))
-                (var new-ic2 (trim-balance-mask
-                    old-ic2 ic2-volts balance-cycle-min end-threshold))
-
-                (if (or (not-eq old-ic1 new-ic1) (not-eq old-ic2 new-ic2))
-                    (print (str-merge "BAL S" (str-from-n sid "%d")
-                        " trim IC1:" (mask-to-bin new-ic1 ic1-cnt)
-                        " IC2:" (mask-to-bin new-ic2 ic2-cnt)
-                        " end=" (str-from-n end-threshold "%.3f")))
-                )
-
-                (setix slave-bal-mask-ic1 (- sid 1) new-ic1)
-                (setix slave-bal-mask-ic2 (- sid 1) new-ic2)
-                (if (or (> new-ic1 0) (> new-ic2 0))
-                    (setq any-bal true)
-                )
-            })
-        })
-        (setq sid (+ sid 1))
-    })
-
-    any-bal
-})
-
 (defun balance-cycle-failed (message) {
     (print message)
     ; JFBMS32 cancels the automatic post-charge request when discharge current
@@ -1584,7 +1562,7 @@ loopwhile-thd
 ; Balance supervision runs at 20 Hz. Charge requests are handled by set-chg,
 ; while every nonzero keepalive is gated by fresh pack safety conditions.
 (defun balance-thd () {
-    (var keepalive-cnt 0)
+    (var keepalive-ts (systime))
 
     (loopwhile t {
         ; A late nonzero complete broadcast after a stop reasserts the C
@@ -1610,8 +1588,13 @@ loopwhile-thd
 
         (if (balance-state-is bal-state-requested) {
             (refresh-pack-data)
-            (if (not (and (balance-safe-now) (all-configured-slaves-fresh))) {
-                (balance-cycle-failed "BAL: blocked by pack conditions")
+            (var block-reason (balance-block-reason))
+            (if (or (> (str-len block-reason) 0)
+                    (not (all-configured-slaves-fresh))) {
+                (balance-cycle-failed (str-merge "BAL: blocked: "
+                    (if (> (str-len block-reason) 0)
+                        block-reason
+                        "configured slave data stale")))
             } {
                 ; The C request latch is held while the physical zero handoff
                 ; completes. No slave status acknowledgement is required.
@@ -1621,16 +1604,14 @@ loopwhile-thd
                     (if (not (wait-for-slave-settle)) {
                         (balance-cycle-failed "BAL: voltages did not settle after zero masks")
                     } {
-                        ; Freeze the pack minimum for this session. This keeps
-                        ; the start/end hysteresis reference stable while the
-                        ; selected cells are being discharged.
-                        (setq balance-cycle-min c-min)
-                        (if (update-balance-masks (bms-get-param 'vc_balance_start)) {
+                        ; Compute only from settled voltages. The first phase
+                        ; uses vc_balance_start; repeats use vc_balance_end.
+                        (if (update-balance-masks balance-cycle-threshold) {
                             (if (send-cached-balance-masks 0) {
                                 (setix bal-state 0 bal-state-active)
                                 (setq bal-status "BAL")
-                                (setq balance-cycle-start-ts (systime))
-                                (setq keepalive-cnt 0)
+                                (setq balance-active-start-ts (systime))
+                                (setq keepalive-ts (systime))
                             } {
                                 (balance-cycle-failed "BAL: initial transmit failed")
                             })
@@ -1644,44 +1625,40 @@ loopwhile-thd
         })
 
         (if (balance-state-is bal-state-active) {
-            (setq keepalive-cnt (+ keepalive-cnt 1))
             (refresh-pack-data)
-            (if (not (and (balance-safe-now) (all-configured-slaves-fresh))) {
-                (balance-cycle-failed "BAL: safety condition failed")
-                (setq keepalive-cnt 0)
+            (var block-reason (balance-block-reason))
+            (if (or (> (str-len block-reason) 0)
+                    (not (all-configured-slaves-fresh))) {
+                (balance-cycle-failed (str-merge "BAL: stopped: "
+                    (if (> (str-len block-reason) 0)
+                        block-reason
+                        "configured slave data stale")))
+                (setq keepalive-ts (systime))
             } {
-                ; Hold selected cells until they reach vc_balance_end. The
-                ; trim operation only removes cells, so vc_balance_start/end
-                ; provide real hysteresis and noise cannot re-add a cell.
-                (if (>= (secs-since balance-cycle-start-ts) balance-active-time-s) {
-                    (print "BAL: active cycle complete; stopping for settled measurements")
-                    (var cycle-stopped (stop-all-balancing))
-                    (if cycle-stopped {
-                        ; A 30-second request is one complete balance session.
-                        ; Leave every IC off; another explicit balance request
-                        ; is required to begin a new session.
-                        (setq trigger-bal-after-charge false)
-                        (setq bal-auto-retry-ts (systime))
-                    })
-                    (setq keepalive-cnt 0)
+                ; Keep the selected mask unchanged during the 30-second active
+                ; phase. Voltage readings under bleed load are not used for a
+                ; decision. At the phase boundary, send zero masks and return
+                ; to REQUESTED so all slaves settle and the pack is rescanned.
+                (if (>= (secs-since balance-active-start-ts) balance-active-time-s) {
+                    (print "BAL: 30s phase complete; settling and rescanning")
+                    (setq balance-cycle-threshold (bms-get-param 'vc_balance_end))
+                    (if (not (zero-balancing-preserve-request))
+                        (balance-cycle-failed "BAL: cycle zero-mask handoff failed")
+                    )
+                    (setq keepalive-ts (systime))
                 } {
-                    (if (>= keepalive-cnt 20) {
-                        (setq keepalive-cnt 0)
-                        (var any-bal (trim-active-balance-masks))
-                        (if any-bal {
-                            (if (not (send-cached-balance-masks 0))
-                                (balance-cycle-failed "BAL: keepalive transmit failed")
-                            )
-                        } {
-                            (print "BAL: all cells reached end threshold")
-                            (setq trigger-bal-after-charge false)
-                            (stop-all-balancing)
-                        })
+                    ; Refresh unchanged masks every second, well inside the
+                    ; slave's 10-second watchdog.
+                    (if (>= (secs-since keepalive-ts) balance-keepalive-period-s) {
+                        (setq keepalive-ts (systime))
+                        (if (not (send-cached-balance-masks 0))
+                            (balance-cycle-failed "BAL: keepalive transmit failed")
+                        )
                     })
                 })
             })
         } {
-            (setq keepalive-cnt 0)
+            (setq keepalive-ts (systime))
         })
 
         (sleep 0.05)
@@ -1731,7 +1708,12 @@ loopwhile-thd
             })
             (event-bms-zero-ofs {
                 (print "CAL: zero current")
-                (master-calibrate-current)
+                ; Calibration changes the hardware overcurrent threshold, so
+                ; first force both charge and balance outputs to a known state.
+                (if (fail-close-outputs true)
+                    (master-calibrate-current)
+                    (print "CAL: aborted because outputs could not be disabled")
+                )
             })
             ((event-data-rx ? data) (handle-app-data data))
             (_ nil)
@@ -1951,7 +1933,8 @@ loopwhile-thd
     ; Reset values that must be relative to this boot, not image creation.
     (setq bal-auto-retry-ts (systime))
     (setq trigger-bal-after-charge false)
-    (setq balance-cycle-start-ts (systime))
+    (setq balance-active-start-ts (systime))
+    (setq balance-cycle-threshold (bms-get-param 'vc_balance_start))
     (setq charge-session-valid false)
     (setq charge-complete false)
     (setq charge-complete-msg false)

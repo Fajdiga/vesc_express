@@ -21,7 +21,7 @@
 ; Master must send balance command at least every 10 seconds
 ; If no command received, stop all balancing for safety
 ; Using counter: 100 iterations × 100ms = 10 seconds
-(def bal-state (list 0))  ; state[0] = iterations since last balance command (0 = no cmd received)
+(def bal-state (list 0))  ; state[0] = iterations since last active balance command
 ; Flag: set to 1 when a balance command was received in process-can-messages
 (def bal-rx-flag (list 0))
 ; Previous balance masks for change detection (only print when mask changes)
@@ -152,10 +152,13 @@
                 (var result (trap-value `(bms-set-bal-bitmap ,ic1-mask ,ic2-mask) false))
                 (setix bal-rx-flag 0 1)
                 (if result {
-                    ; Reset watchdog counter (1 = command received, will increment each loop)
-                    (setix bal-state 0 1)
+                    ; Only nonzero masks need keepalives. A zero-mask command
+                    ; has already made the hardware safe and must not arm a
+                    ; watchdog that prints a false timeout ten seconds later.
+                    (setix bal-state 0 (if new-bal-active 1 0))
                 } {
                     (trap-value '(bms-stop-balancing) false)
+                    (setix bal-state 0 0)
                 })
 
                 ; Any transition into or out of active balancing makes voltages
@@ -205,6 +208,10 @@
         (if (> cnt bal-watchdog-limit) {
             (trap-value '(bms-stop-balancing) false)
             (setix bal-state 0 0)
+            (setix prev-ic1-mask 0 0)
+            (setix prev-ic2-mask 0 0)
+            (setix settle-counter 0 0)
+            (bms-set-settled-flag 0)
             (print "Balance watchdog triggered - stopped balancing")
         })
     })

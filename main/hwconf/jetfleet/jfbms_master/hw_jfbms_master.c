@@ -192,12 +192,10 @@ static bool  m_temp_pcb_valid = false;
 static bool m_fast_oc_config_valid = false;
 static bool m_fast_oc_config_en;
 static float m_fast_oc_config_trip_a;
-static float m_fast_oc_config_max_charge_a;
 
 static void remember_fast_oc_config(const main_config_t *cfg) {
 	m_fast_oc_config_en = cfg->fast_charge_oc_en;
 	m_fast_oc_config_trip_a = cfg->fast_charge_oc_a;
-	m_fast_oc_config_max_charge_a = cfg->max_charge_current;
 	m_fast_oc_config_valid = true;
 }
 
@@ -251,10 +249,9 @@ bool jfbms_master_apply_config(void) {
 		return false;
 	}
 
-	bool monitor_changed = !m_fast_oc_config_valid ||
+	bool monitor_changed = !m_fast_oc_config_valid || !jfbms_fast_adc_ready() ||
 			m_fast_oc_config_en != cfg->fast_charge_oc_en ||
-			m_fast_oc_config_trip_a != cfg->fast_charge_oc_a ||
-			m_fast_oc_config_max_charge_a != cfg->max_charge_current;
+			m_fast_oc_config_trip_a != cfg->fast_charge_oc_a;
 	if (!monitor_changed) {
 		return true;
 	}
@@ -1820,7 +1817,12 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 
 	volatile bms_values *bms = bms_get_values();
 
-	int total_cells = 0;
+	float staged_cells[BMS_MAX_CELLS];
+	bool staged_bal_state[BMS_MAX_CELLS];
+	float staged_external_temps[MAX_SLAVES * 2];
+	int staged_cell_count = 0;
+	int staged_external_temp_count = 0;
+	bool cell_snapshot_complete = true;
 	float v_tot = 0.0f;
 	float v_min = 9999.0f;
 	float v_max = 0.0f;
@@ -1831,31 +1833,51 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 	bool have_cell_temp = false;
 	int expected_slaves = configured_slave_count();
 
-	// Add slave cells
+	// Stage one complete, positional pack snapshot. Never compact invalid cells:
+	// doing so shifts every later cell index and makes cells appear/disappear in
+	// VESC Tool. If any configured slave is missing, stale, or unsafe, retain the
+	// last complete published cell snapshot instead.
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 
-	for (int s = 0; s < expected_slaves && total_cells < BMS_MAX_CELLS; s++) {
-		if (!m_bms_data.active[s]) continue;
-		if (!slave_cell_counts_valid_locked(s)) continue;
-
+	uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+	if (expected_slaves <= 0) cell_snapshot_complete = false;
+	for (int s = 0; s < expected_slaves; s++) {
+		if (!m_bms_data.active[s] ||
+				!slave_data_fresh_locked(s, now_ms, SLAVE_SAFETY_FRESHNESS_TIMEOUT_MS) ||
+				!m_slave_snapshot_safe[s] ||
+				!slave_snapshot_values_safe_locked(s)) {
+			cell_snapshot_complete = false;
+			break;
+		}
 		int num_cells = m_bms_data.cells_ic1[s] + m_bms_data.cells_ic2[s];
+		if (num_cells > (BMS_MAX_CELLS - staged_cell_count)) {
+			cell_snapshot_complete = false;
+			break;
+		}
+		staged_cell_count += num_cells;
+	}
 
-		int ic1_cnt = m_bms_data.cells_ic1[s];
-		for (int c = 0; c < num_cells && total_cells < BMS_MAX_CELLS; c++) {
-			int wire_index = slave_cell_wire_index(c, ic1_cnt);
-			uint16_t mv = m_bms_data.cell_voltages[s][wire_index];
-			if (mv != 0 && mv != 0xFFFF) {
-				float v = (float)mv / 1000.0f;
-				bms->v_cell[total_cells] = v;
-				bms->bal_state[total_cells] =
+	if (cell_snapshot_complete) {
+		staged_cell_count = 0;
+		for (int s = 0; s < expected_slaves; s++) {
+			int ic1_cnt = m_bms_data.cells_ic1[s];
+			int num_cells = ic1_cnt + m_bms_data.cells_ic2[s];
+			for (int c = 0; c < num_cells; c++) {
+				int wire_index = slave_cell_wire_index(c, ic1_cnt);
+				float v = (float)m_bms_data.cell_voltages[s][wire_index] / 1000.0f;
+				staged_cells[staged_cell_count] = v;
+				staged_bal_state[staged_cell_count] =
 						(m_bms_data.balance_mask[s] >> wire_index) & 1;
 				v_tot += v;
 				if (v < v_min) v_min = v;
 				if (v > v_max) v_max = v;
-				total_cells++;
+				staged_cell_count++;
 			}
 		}
+	}
 
+	for (int s = 0; s < expected_slaves; s++) {
+		if (!m_bms_data.active[s] || !slave_cell_counts_valid_locked(s)) continue;
 		// Aggregate slave temperatures for VESC 6.06 convention
 		// Temp order per slave: [0]=BQ1 IC, [1]=BQ1 TS1 (cell), [2]=BQ2 IC, [3]=BQ2 TS1 (cell)
 		for (int t = 0; t < TEMPS_PER_SLAVE; t++) {
@@ -1870,21 +1892,32 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 				if (temp_c < t_cell_min) t_cell_min = temp_c;
 				if (temp_c > t_cell_max) t_cell_max = temp_c;
 				have_cell_temp = true;
+				if (staged_external_temp_count < (MAX_SLAVES * 2)) {
+					staged_external_temps[staged_external_temp_count++] = temp_c;
+				}
 			}
 		}
 	}
 
 	xSemaphoreGive(m_data_mutex);
 
-	// Clear remaining cell slots
-	for (int i = total_cells; i < BMS_MAX_CELLS; i++) {
-		bms->v_cell[i] = 0.0f;
-		bms->bal_state[i] = 0;
+	if (cell_snapshot_complete) {
+		for (int i = 0; i < staged_cell_count; i++) {
+			bms->v_cell[i] = staged_cells[i];
+			bms->bal_state[i] = staged_bal_state[i];
+		}
+		for (int i = staged_cell_count; i < BMS_MAX_CELLS; i++) {
+			bms->v_cell[i] = 0.0f;
+			bms->bal_state[i] = 0;
+		}
+		bms->v_tot = v_tot;
+		bms->v_cell_min = staged_cell_count > 0 ? v_min : 0.0f;
+		bms->v_cell_max = staged_cell_count > 0 ? v_max : 0.0f;
+		// Publish the count last so readers never see a new topology before its
+		// positional voltage array has been fully populated.
+		bms->cell_num = staged_cell_count;
 	}
 
-	// Update BMS values
-	bms->cell_num = total_cells;
-	bms->v_tot = v_tot;
 	{
 		float v = adc_get_voltage(HW_ADC_CH3);
 		m_vchg_valid = v >= 0.0f && isfinite(v);
@@ -1924,7 +1957,10 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 						(double)(1.65f * ISENSE_SCALE), protection_armed ? "armed" : "OFF");
 				} else {
 					uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-					if ((now_ms - m_calibrate_settle.last_log_ms) >= ISENSE_OFFSET_LOG_PERIOD_MS) {
+					if ((now_ms - m_calibrate_settle.start_ms) > ISENSE_OFFSET_BOOT_TIMEOUT_MS) {
+						m_calibrate_pending = false;
+						commands_printf_lisp("Current calibration timed out; previous offset retained");
+					} else if ((now_ms - m_calibrate_settle.last_log_ms) >= ISENSE_OFFSET_LOG_PERIOD_MS) {
 						m_calibrate_settle.last_log_ms = now_ms;
 						commands_printf_lisp("Current calibration waiting for stable reference: %.4f V",
 							(double)v);
@@ -1969,8 +2005,6 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 		}
 	}
 
-	bms->v_cell_min = (total_cells > 0) ? v_min : 0.0f;
-	bms->v_cell_max = (total_cells > 0) ? v_max : 0.0f;
 	// VESC 6.06 temperature sensor convention (indices 0-4)
 	bms->temps_adc[0] = have_ic_temp ? t_ic_max : 0.0f;                 // Balance IC
 	bms->temps_adc[1] = have_cell_temp ? t_cell_min : 0.0f;             // Cell Min
@@ -1978,22 +2012,13 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 	bms->temps_adc[3] = m_temp_pcb_valid ? m_temp_pcb : 0.0f;           // Mosfet / PCB NTC
 	bms->temps_adc[4] = 0.0f;                                           // Ambient N/A
 	int temps_count = 5;
-	for (int s = 0; s < expected_slaves && temps_count < BMS_MAX_TEMPS; s++) {
-		if (!m_bms_data.active[s]) continue;
-		for (int t = 0; t < TEMPS_PER_SLAVE && temps_count < BMS_MAX_TEMPS; t++) {
-			int16_t raw = m_bms_data.temperatures[s][t];
-			if (raw == 0x7FFF) continue;
-			float temp_c = (float)raw / 10.0f;
-			if (!bms_temp_valid(temp_c)) continue;
-			if (t == 1 || t == 3) {
-				bms->temps_adc[temps_count] = temp_c;
-				temps_count++;
-			}
-		}
+	for (int i = 0; i < staged_external_temp_count && temps_count < BMS_MAX_TEMPS; i++) {
+		bms->temps_adc[temps_count++] = staged_external_temps[i];
 	}
 
 	bms->temp_adc_num = temps_count;
 
+	bms->temp_ic = have_ic_temp ? t_ic_max : 0.0f;
 	bms->temp_max_cell = have_cell_temp ? t_cell_max : 0.0f;
 	bms->data_version = 1;
 

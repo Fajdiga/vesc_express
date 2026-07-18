@@ -77,6 +77,33 @@ bool bms_process_can_frame(uint32_t can_id, uint8_t *data8, int len, bool is_ext
 		uint8_t id = can_id & 0xFF;
 		CAN_PACKET_ID cmd = can_id >> 8;
 
+#ifdef HW_BMS_CAN_VALUES_LOCAL_OWNER
+		// A pack-master board publishes the canonical BMS values itself. Consume
+		// received standard BMS value packets without applying them to m_values;
+		// otherwise an echoed frame or another node with the same controller ID
+		// can change cell_num and overwrite parts of v_cell[] asynchronously.
+		switch (cmd) {
+		case CAN_PACKET_BMS_V_TOT:
+		case CAN_PACKET_BMS_I:
+		case CAN_PACKET_BMS_AH_WH:
+		case CAN_PACKET_BMS_V_CELL:
+		case CAN_PACKET_BMS_BAL:
+		case CAN_PACKET_BMS_TEMPS:
+		case CAN_PACKET_BMS_HUM:
+		case CAN_PACKET_BMS_SOC_SOH_TEMP_STAT:
+		case CAN_PACKET_BMS_AH_WH_CHG_TOTAL:
+		case CAN_PACKET_BMS_AH_WH_DIS_TOTAL:
+		case CAN_PACKET_BMS_STATUS_1:
+		case CAN_PACKET_BMS_STATUS_2:
+		case CAN_PACKET_BMS_STATUS_3:
+		case CAN_PACKET_BMS_STATUS_4:
+		case CAN_PACKET_BMS_STATUS_5:
+			return true;
+		default:
+			break;
+		}
+#endif
+
 		switch (cmd) {
 		case CAN_PACKET_BMS_SOC_SOH_TEMP_STAT: {
 			used_data = true;
