@@ -53,7 +53,7 @@ p, li { white-space: pre-wrap; }
 &lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
 p, li { white-space: pre-wrap; }
 &lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;CAN Status message rate in Hertz for hardware that supports it (e.g. IO Boards). Setting this to 0 turns the status messages off. It is also the maximum rate at which GNSS-data is sent (although the GNSS output rate is limited to the rate of the GNSS module).&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;BMS status rate on the primary VESC CAN bus. Set to 0 only when CAN status broadcasting is intentionally disabled. This does not affect the slave BMS CAN bus.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_CAN_STATUS_RATE_HZ</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
@@ -806,7 +806,7 @@ p, li { white-space: pre-wrap; }
 &lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
 p, li { white-space: pre-wrap; }
 &lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Stop charging and disable charge port when the charge current goes below this value.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Meaningful charge-current threshold. It qualifies a real charge session and defines the taper-current threshold near full voltage.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_MIN_CHARGE_CURRENT</cDefine>
             <editorDecimalsDouble>2</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -968,7 +968,7 @@ p, li { white-space: pre-wrap; }
             <longName>Charge Session Confirmation Time</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>Continuous meaningful charge-current time required to confirm a real charge session. CHG_EN turns on immediately; this timer only qualifies the session for taper-complete and SOC logic.</description>
+            <description>Continuous meaningful charge-current time required to confirm a real charge session. An attempt that never establishes current is stopped and waits for charger disconnect.</description>
             <cDefine>CONF_CHARGE_CONFIRM_TIME_S</cDefine>
             <editorDecimalsDouble>1</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -986,7 +986,7 @@ p, li { white-space: pre-wrap; }
             <longName>Charge Taper Confirmation Time</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>Continuous low-current time required to complete a confirmed charge session.</description>
+            <description>Continuous low-current time required to complete a confirmed charge session while the highest cell is near the charge-start voltage.</description>
             <cDefine>CONF_CHARGE_TAPER_TIME_S</cDefine>
             <editorDecimalsDouble>1</editorDecimalsDouble>
             <editorScale>1</editorScale>

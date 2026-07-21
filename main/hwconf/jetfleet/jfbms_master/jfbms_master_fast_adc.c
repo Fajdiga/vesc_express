@@ -32,7 +32,11 @@
 #define JFBMS_ADC_CACHE_MAX_AGE_MS  300
 #define JFBMS_ADC_MAX_FRAMES_WAKE   8
 #define JFBMS_ADC_TASK_PRIORITY     7
+#define JFBMS_ADC_RECONFIG_TIMEOUT_MS 100U
 #define JFBMS_FAST_OC_RTC_MAGIC     0x4A464F43U
+#define JFBMS_CHARGER_CONNECT_DEBOUNCE_MS 75U
+#define JFBMS_CHARGER_DISCONNECT_DEBOUNCE_MS 250U
+#define JFBMS_CHARGER_HYSTERESIS_V  0.5f
 
 static const adc_channel_t m_adc_pattern_channels[JFBMS_ADC_PATTERN_LEN] = {
 	HW_ADC_CH2, HW_ADC_CH3, HW_ADC_CH2, HW_ADC_CH2,
@@ -44,10 +48,12 @@ static adc_monitor_handle_t m_adc_monitor;
 static adc_cali_handle_t m_adc_cali[5];
 static TaskHandle_t m_adc_task_handle;
 static SemaphoreHandle_t m_adc_mutex;
+static StaticSemaphore_t m_adc_mutex_storage;
 static volatile bool m_adc_started;
 static volatile bool m_adc_reconfiguring;
 static volatile bool m_fast_oc_armed;
 static volatile bool m_fast_oc_latch;
+static volatile int8_t m_fast_oc_direction;
 static volatile uint32_t m_fast_oc_trip_count;
 static volatile uint32_t m_fast_oc_diag_seq;
 static volatile uint32_t m_fast_oc_last_raw;
@@ -57,6 +63,11 @@ static volatile float m_fast_current_offset_v = 1.65f;
 static volatile uint32_t m_current_latest_raw;
 static volatile float m_current_latest_a;
 static volatile uint32_t m_charger_absent_since_ms;
+static volatile bool m_charger_valid;
+static volatile bool m_charger_detected;
+static volatile bool m_charger_candidate;
+static volatile uint32_t m_charger_candidate_since_ms;
+static volatile float m_charger_latest_v;
 
 static volatile float m_adc_voltage[5];
 static volatile uint32_t m_adc_voltage_time_ms[5];
@@ -94,17 +105,16 @@ static int adc_voltage_to_raw(adc_channel_t channel, float voltage) {
 	return low;
 }
 
-static bool IRAM_ATTR fast_oc_below_threshold_cb(adc_monitor_handle_t monitor,
-		const adc_monitor_evt_data_t *event_data, void *user_data) {
-	(void)monitor;
-	(void)event_data;
-	(void)user_data;
-
+static bool IRAM_ATTR fast_oc_trip(int8_t direction) {
 	// This must remain scheduler-, logging- and mutex-free.
+	// Ignore a stale comparator callback while the monitor is being removed or
+	// before a freshly calibrated threshold has been explicitly armed.
+	if (!m_fast_oc_armed || m_adc_reconfiguring) return false;
 	GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
 	m_fast_oc_rtc_magic = JFBMS_FAST_OC_RTC_MAGIC;
 	m_fast_oc_diag_seq++;
 	m_fast_oc_latch = true;
+	m_fast_oc_direction = direction;
 	m_charger_absent_since_ms = 0;
 	m_fast_oc_trip_count++;
 	m_fast_oc_last_raw = m_current_latest_raw;
@@ -112,6 +122,64 @@ static bool IRAM_ATTR fast_oc_below_threshold_cb(adc_monitor_handle_t monitor,
 	m_fast_oc_trip_time_us = esp_timer_get_time();
 	m_fast_oc_diag_seq++;
 	return false;
+}
+
+static bool IRAM_ATTR fast_oc_below_threshold_cb(adc_monitor_handle_t monitor,
+		const adc_monitor_evt_data_t *event_data, void *user_data) {
+	(void)monitor;
+	(void)event_data;
+	(void)user_data;
+	return fast_oc_trip(-1);
+}
+
+static bool IRAM_ATTR fast_oc_above_threshold_cb(adc_monitor_handle_t monitor,
+		const adc_monitor_evt_data_t *event_data, void *user_data) {
+	(void)monitor;
+	(void)event_data;
+	(void)user_data;
+	return fast_oc_trip(1);
+}
+
+static void charger_detector_update(float voltage_v, uint32_t now_ms) {
+	main_config_t *cfg = (main_config_t *)&backup.config;
+	float threshold = cfg->v_charge_detect;
+	if (!isfinite(voltage_v) || !isfinite(threshold) || threshold <= 0.0f) {
+		m_charger_valid = false;
+		m_charger_candidate_since_ms = 0;
+		return;
+	}
+
+	m_charger_latest_v = voltage_v;
+	m_charger_valid = true;
+	// Maintain physical-absence time continuously, not only when the user asks
+	// to clear a fault. This makes the first reset request work after the port
+	// has already been safely disconnected for five seconds.
+	if (voltage_v < (threshold - JFBMS_CHARGER_HYSTERESIS_V)) {
+		if (m_charger_absent_since_ms == 0) m_charger_absent_since_ms = now_ms;
+	} else {
+		m_charger_absent_since_ms = 0;
+	}
+	float edge = threshold + (m_charger_detected ?
+			-JFBMS_CHARGER_HYSTERESIS_V : JFBMS_CHARGER_HYSTERESIS_V);
+	bool candidate = voltage_v > edge;
+	if (candidate == m_charger_detected) {
+		m_charger_candidate = candidate;
+		m_charger_candidate_since_ms = now_ms;
+		return;
+	}
+
+	if (candidate != m_charger_candidate || m_charger_candidate_since_ms == 0) {
+		m_charger_candidate = candidate;
+		m_charger_candidate_since_ms = now_ms;
+		return;
+	}
+
+	uint32_t debounce_ms = candidate ? JFBMS_CHARGER_CONNECT_DEBOUNCE_MS :
+			JFBMS_CHARGER_DISCONNECT_DEBOUNCE_MS;
+	if ((now_ms - m_charger_candidate_since_ms) >= debounce_ms) {
+		m_charger_detected = candidate;
+		m_charger_candidate_since_ms = now_ms;
+	}
 }
 
 static bool IRAM_ATTR adc_conversion_done_cb(adc_continuous_handle_t handle,
@@ -156,6 +224,8 @@ static void adc_process_frame(const uint8_t *data, uint32_t length) {
 		if (channel == HW_ADC_CH2) {
 			m_current_latest_a =
 					(voltage - m_fast_current_offset_v) * ISENSE_SCALE;
+		} else if (channel == HW_ADC_CH3) {
+			charger_detector_update(voltage * VCHG_DIV_SCALE, now_ms);
 		}
 	}
 }
@@ -187,10 +257,38 @@ static void adc_reader_task(void *arg) {
 	}
 }
 
+static void adc_init_cleanup(void) {
+	m_adc_reconfiguring = true;
+	if (m_adc_started && m_adc_handle) (void)adc_continuous_stop(m_adc_handle);
+	m_adc_started = false;
+	if (m_adc_task_handle) {
+		vTaskDelete(m_adc_task_handle);
+		m_adc_task_handle = NULL;
+	}
+	if (m_adc_monitor) {
+		(void)adc_continuous_monitor_disable(m_adc_monitor);
+		(void)adc_del_continuous_monitor(m_adc_monitor);
+		m_adc_monitor = NULL;
+	}
+	for (int channel = 0; channel < 5; channel++) {
+		if (m_adc_cali[channel]) {
+			(void)adc_cali_delete_scheme_curve_fitting(m_adc_cali[channel]);
+			m_adc_cali[channel] = NULL;
+		}
+	}
+	if (m_adc_handle) {
+		(void)adc_continuous_deinit(m_adc_handle);
+		m_adc_handle = NULL;
+	}
+	m_fast_oc_armed = false;
+	m_adc_reconfiguring = false;
+}
+
 bool jfbms_fast_adc_init(void) {
-	if (m_adc_handle) return m_adc_started;
+	if (m_adc_handle && m_adc_started) return true;
+	if (m_adc_handle) adc_init_cleanup();
 	if (m_fast_oc_rtc_magic == JFBMS_FAST_OC_RTC_MAGIC) m_fast_oc_latch = true;
-	if (!m_adc_mutex) m_adc_mutex = xSemaphoreCreateMutex();
+	if (!m_adc_mutex) m_adc_mutex = xSemaphoreCreateMutexStatic(&m_adc_mutex_storage);
 	if (!m_adc_mutex) return false;
 
 	adc_continuous_handle_cfg_t handle_cfg = {
@@ -216,7 +314,10 @@ bool jfbms_fast_adc_init(void) {
 		.conv_mode = ADC_CONV_SINGLE_UNIT_1,
 		.format = ADC_DIGI_OUTPUT_FORMAT_TYPE2,
 	};
-	if (adc_continuous_config(m_adc_handle, &continuous_cfg) != ESP_OK) return false;
+	if (adc_continuous_config(m_adc_handle, &continuous_cfg) != ESP_OK) {
+		adc_init_cleanup();
+		return false;
+	}
 
 	const adc_channel_t calibrated_channels[] = {HW_ADC_CH2, HW_ADC_CH3, HW_ADC_CH4};
 	for (size_t i = 0; i < sizeof(calibrated_channels) / sizeof(calibrated_channels[0]); i++) {
@@ -228,17 +329,27 @@ bool jfbms_fast_adc_init(void) {
 			.bitwidth = ADC_BITWIDTH_DEFAULT,
 		};
 		if (adc_cali_create_scheme_curve_fitting(&cali_cfg, &m_adc_cali[channel]) != ESP_OK ||
-				adc_raw_to_voltage(channel, 2048) <= 0.0f) return false;
+				adc_raw_to_voltage(channel, 2048) <= 0.0f) {
+			adc_init_cleanup();
+			return false;
+		}
 	}
 
 	adc_continuous_evt_cbs_t adc_callbacks = {.on_conv_done = adc_conversion_done_cb};
-	if (adc_continuous_register_event_callbacks(m_adc_handle, &adc_callbacks, NULL) != ESP_OK) return false;
+	if (adc_continuous_register_event_callbacks(m_adc_handle, &adc_callbacks, NULL) != ESP_OK) {
+		adc_init_cleanup();
+		return false;
+	}
 	if (xTaskCreate(adc_reader_task, "jfbms-adc", 4096, NULL,
 			JFBMS_ADC_TASK_PRIORITY, &m_adc_task_handle) != pdPASS) {
 		m_adc_task_handle = NULL;
+		adc_init_cleanup();
 		return false;
 	}
-	if (adc_continuous_start(m_adc_handle) != ESP_OK) return false;
+	if (adc_continuous_start(m_adc_handle) != ESP_OK) {
+		adc_init_cleanup();
+		return false;
+	}
 	m_adc_started = true;
 	return true;
 }
@@ -250,14 +361,15 @@ float hw_adc_get_voltage(adc_channel_t channel) {
 	return m_adc_voltage[channel];
 }
 
-bool jfbms_fast_adc_set_current_offset(float offset_v) {
+static bool adc_reconfigure_current_monitor(float offset_v, bool arm_protection) {
 	if (!m_adc_handle || !m_adc_started || !isfinite(offset_v)) return false;
 
-	m_fast_current_offset_v = offset_v;
 	m_fast_oc_armed = false;
 	m_adc_reconfiguring = true;
 	GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
-	if (!m_adc_mutex || xSemaphoreTake(m_adc_mutex, portMAX_DELAY) != pdTRUE) {
+	TickType_t lock_wait = pdMS_TO_TICKS(JFBMS_ADC_RECONFIG_TIMEOUT_MS);
+	if (lock_wait == 0) lock_wait = 1;
+	if (!m_adc_mutex || xSemaphoreTake(m_adc_mutex, lock_wait) != pdTRUE) {
 		m_adc_reconfiguring = false;
 		return false;
 	}
@@ -274,6 +386,15 @@ bool jfbms_fast_adc_set_current_offset(float offset_v) {
 		m_adc_monitor = NULL;
 	}
 
+	if (!arm_protection) {
+		bool restarted = adc_continuous_start(m_adc_handle) == ESP_OK;
+		m_adc_started = restarted;
+		xSemaphoreGive(m_adc_mutex);
+		m_adc_reconfiguring = false;
+		return restarted;
+	}
+
+	m_fast_current_offset_v = offset_v;
 	main_config_t *cfg = (main_config_t *)&backup.config;
 	float trip_current = cfg->fast_charge_oc_a;
 	bool configured = !cfg->fast_charge_oc_en;
@@ -286,15 +407,22 @@ bool jfbms_fast_adc_set_current_offset(float offset_v) {
 				offset_v - (trip_current / ISENSE_SCALE) > 0.02f;
 	}
 	if (configured && cfg->fast_charge_oc_en) {
+		float low_voltage = offset_v - (trip_current / ISENSE_SCALE);
+		float high_voltage = offset_v + (trip_current / ISENSE_SCALE);
+		configured = low_voltage > 0.02f && high_voltage < 3.28f;
 		adc_monitor_config_t monitor_cfg = {
 			.adc_unit = ADC_UNIT_1,
 			.channel = HW_ADC_CH2,
-			.h_threshold = -1,
-			.l_threshold = adc_voltage_to_raw(HW_ADC_CH2,
-					offset_v - (trip_current / ISENSE_SCALE)),
+			.h_threshold = configured ? adc_voltage_to_raw(HW_ADC_CH2,
+					high_voltage) : -1,
+			.l_threshold = configured ? adc_voltage_to_raw(HW_ADC_CH2,
+					low_voltage) : -1,
 		};
-		adc_monitor_evt_cbs_t monitor_callbacks = {.on_below_low_thresh = fast_oc_below_threshold_cb};
-		configured = adc_new_continuous_monitor(m_adc_handle, &monitor_cfg,
+		adc_monitor_evt_cbs_t monitor_callbacks = {
+			.on_below_low_thresh = fast_oc_below_threshold_cb,
+			.on_over_high_thresh = fast_oc_above_threshold_cb,
+		};
+		configured = configured && adc_new_continuous_monitor(m_adc_handle, &monitor_cfg,
 				&m_adc_monitor) == ESP_OK &&
 				adc_continuous_monitor_register_event_callbacks(m_adc_monitor,
 				&monitor_callbacks, NULL) == ESP_OK &&
@@ -307,6 +435,14 @@ bool jfbms_fast_adc_set_current_offset(float offset_v) {
 	m_adc_reconfiguring = false;
 	m_fast_oc_armed = configured;
 	return m_fast_oc_armed;
+}
+
+bool jfbms_fast_adc_disarm_current_monitor(void) {
+	return adc_reconfigure_current_monitor(m_fast_current_offset_v, false);
+}
+
+bool jfbms_fast_adc_set_current_offset(float offset_v) {
+	return adc_reconfigure_current_monitor(offset_v, true);
 }
 
 bool jfbms_fast_adc_ready(void) {
@@ -354,6 +490,7 @@ void jfbms_fast_oc_get_status(jfbms_fast_oc_status_t *status) {
 		if (before & 1U) continue;
 		status->latched = m_fast_oc_latch;
 		status->armed = m_fast_oc_armed;
+		status->direction = m_fast_oc_direction;
 		status->trip_count = m_fast_oc_trip_count;
 		status->last_raw = m_fast_oc_last_raw;
 		status->last_current_a = m_fast_oc_last_current_a;
@@ -361,4 +498,16 @@ void jfbms_fast_oc_get_status(jfbms_fast_oc_status_t *status) {
 		uint32_t after = m_fast_oc_diag_seq;
 		if (before == after && !(after & 1U)) return;
 	}
+}
+
+void jfbms_charger_get_status(jfbms_charger_status_t *status) {
+	if (!status) return;
+	uint32_t now_ms = adc_now_ms();
+	uint32_t sample_ms = m_adc_voltage_time_ms[HW_ADC_CH3];
+	bool fresh = sample_ms != 0 &&
+			(now_ms - sample_ms) <= JFBMS_ADC_CACHE_MAX_AGE_MS;
+	status->valid = m_adc_started && m_charger_valid && fresh;
+	status->detected = status->valid && m_charger_detected;
+	status->voltage_v = status->valid ? m_charger_latest_v : 0.0f;
+	status->sample_age_ms = sample_ms == 0 ? UINT32_MAX : now_ms - sample_ms;
 }

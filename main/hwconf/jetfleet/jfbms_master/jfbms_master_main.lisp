@@ -5,13 +5,10 @@
 
 ;;;;;;;;;; User settings ;;;;;;;;;;
 
-(def app-wdt-timeout 120)    ; Seconds. Set to 0 to disable the app watchdog.
+(def app-wdt-timeout 10)     ; Recover a wedged controller quickly; C cuts charge in 300 ms.
 (def user-beeps-en true)
 (def beep-duty-normal 0.5)
 (def sleep-unblock-en true)
-(def charger-max-delay 10.0)
-(def balance-settle-min-time-s 2.0)
-(def balance-settle-timeout-s 5.0)
 (def balance-active-time-s 30.0)
 (def balance-keepalive-period-s 1.0)
 (def control-max-qualify-dt 0.25)
@@ -21,17 +18,20 @@
 
 ;;;;;;;;;; State ;;;;;;;;;;
 
-(def slave-timeout-ms 300)
+; Operational pack data may tolerate BQ/CAN jitter while balancing. The
+; independent C charge watchdog still cuts CHG_EN after 300 ms without a fresh
+; complete safe snapshot.
+(def slave-control-timeout-ms 1000)
 (def chg-allowed true)
 (def charge-ok false)
 (def is-charging false)
 (def charger-detected-prev false)
+(def charge-block-beeped false)
+(def charge-enable-beeped false)
 (def trigger-bal-after-charge false)
-(def charge-session-valid false)
 (def charge-complete false)
-(def charge-complete-msg false)
 (def charge-dis-ts (systime))
-(def charge-ts (systime))
+(def last-fast-trip-count -1)
 
 (def bal-auto-retry-ts (systime))
 (def balance-active-start-ts (systime))
@@ -60,6 +60,9 @@
 (def bal-off-failed false)
 (def fail-close-failed false)
 (def control-crash-count 0)
+(def manual-bal-active false)
+(def calibration-running false)
+(def current-zero-ready false)
 
 (def ah-cnt 0.0)
 (def wh-cnt 0.0)
@@ -70,10 +73,14 @@
 (def ah-cnt-soc -1.0)
 (def soc-checkpoint-ah -1.0)
 (def soc-checkpoint-ts (systime))
+(def primary-can-status-ts (systime))
 
 (def t-last (systime))
 (def rtc-val '(
     (charge-fault . false)
+    (charge-complete . false)
+    (short-count . 0)
+    (short-service . false)
     (sleep-enter-time-s . 0)
     (sleep-total-time-s . 0)
 ))
@@ -100,6 +107,7 @@
 
 (def loop-cnt 0)
 (def buz-mutex (mutex-create))
+(def pack-refresh-mutex (mutex-create))
 
 @const-start
 
@@ -166,6 +174,21 @@ loopwhile-thd
 
 (defun cfg-num-slaves () (truncate (param-or 'num_slaves 1) 1 8))
 
+; The primary VESC CAN connector is optional. A zero status rate is standalone
+; mode and must result in no transmit attempts: an empty acknowledged CAN bus
+; otherwise enters bus-off recovery and can stall the controller repeatedly.
+; TWAI1 slave traffic is independent and remains enabled.
+(defun update-primary-can-status () {
+    (var rate (truncate (param-or 'can_status_rate_hz 0) 0 200))
+    (if (and
+            (> rate 0)
+            (>= (secs-since primary-can-status-ts) (/ 1.0 rate))
+        ) {
+        (setq primary-can-status-ts (systime))
+        (send-bms-can)
+    })
+})
+
 (defun bool-int (v) (if v 1 0))
 
 (defun balance-state-is (state) (= (ix bal-state 0) state))
@@ -173,9 +196,9 @@ loopwhile-thd
 ; Hardware-owned fast overcurrent status. Missing or malformed extensions fail
 ; closed: charging remains disabled until the ADC monitor reports armed.
 (defun fast-oc-status ()
-    ; C returns: (latched armed trip-count last-raw current-a trip-time-s).
+    ; C returns: (latched armed trip-count last-raw current-a trip-time-s direction).
     ; A missing extension must fail closed without inventing a latched trip.
-    (trap-value '(master-fast-oc-status) '(nil nil 0 0 0.0 0.0))
+    (trap-value '(master-fast-oc-status) '(nil nil 0 0 0.0 0.0 0))
 )
 
 (defun fast-oc-latched () {
@@ -198,6 +221,10 @@ loopwhile-thd
 
 (defun c-balance-inhibited ()
     (trap-value '(master-balance-inhibited?) false)
+)
+
+(defun charge-pack-fresh ()
+    (trap-value '(master-pack-charge-fresh?) false)
 )
 
 (defun balance-in-progress () (or
@@ -271,6 +298,10 @@ loopwhile-thd
 )
 
 (defun sanitize-rtc-val () {
+    (setassoc rtc-val 'charge-fault (if (assoc rtc-val 'charge-fault) true false))
+    (setassoc rtc-val 'charge-complete (if (assoc rtc-val 'charge-complete) true false))
+    (setassoc rtc-val 'short-count (truncate (rtc-number 'short-count 0) 0 1000))
+    (setassoc rtc-val 'short-service (if (assoc rtc-val 'short-service) true false))
     (setassoc rtc-val 'sleep-enter-time-s (rtc-number 'sleep-enter-time-s 0))
     ; Older images stored this counter as a float. Keep accumulated time while
     ; migrating to exact integer seconds.
@@ -334,7 +365,7 @@ loopwhile-thd
 })
 
 ; Persist SOC periodically without writing EEPROM at the 10 Hz control rate.
-; Anchors (confirmed current taper) call this with force=true.
+; Charge-complete and empty-voltage anchors call this with force=true.
 (defun checkpoint-soc (force reason) {
     (var batt-ah (bms-get-param 'batt_ah))
     (var age (secs-since soc-checkpoint-ts))
@@ -432,23 +463,22 @@ loopwhile-thd
     )
 })
 
+(defun charger-status () {
+    ; C continuously debounces independent raw ADC frames. The returned list is
+    ; (valid detected voltage sample-age-ms).
+    (trap-value '(master-charger-status) '(nil nil 0.0 999999))
+})
+
 (defun test-chg (samples) {
-    ; Many chargers pulse before starting, so sample a few times.
-    (var vchg 0.0)
-
-    (looprange i 0 samples {
-        (if (> i 0) (sleep 0.01))
-        (setq vchg (master-get-vchg))
-        (if (> vchg (bms-get-param 'v_charge_detect)) (break))
-    })
-
+    (var status (charger-status))
     (var detected (and
-        (charger-data-ok)
-        (> vchg (bms-get-param 'v_charge_detect))
+        status
+        (>= (length status) 2)
+        (not (eq (ix status 0) nil))
+        (not (eq (ix status 1) nil))
     ))
 
-    ; Keep the same disconnect timer semantics as JFBMS32: this timestamp is
-    ; refreshed for as long as valid charger voltage is present.
+    ; Keep JFBMS32 disconnect semantics: refresh for the whole detected period.
     (if detected (setq charge-dis-ts (systime)))
     detected
 })
@@ -500,6 +530,11 @@ loopwhile-thd
     (if (and requested (fast-oc-latched))
         (setq allowed false)
     )
+    ; Current is deliberately 0 A until the one-second zero capture completes.
+    ; Never let a direct caller bypass that pre-charge step.
+    (if (and requested (not current-zero-ready))
+        (setq allowed false)
+    )
     (if (and requested (balance-in-progress))
         (setq allowed (stop-all-balancing))
     )
@@ -513,28 +548,15 @@ loopwhile-thd
     })
 
     (if (and requested ok) {
-        (if (not was-charging) (setq charge-ts (systime)))
         (setq is-charging true)
+        (if (not was-charging) {
+            (if (not charge-enable-beeped) {
+                (setq charge-enable-beeped true)
+                (spawn (fn () (user-beep 2 0.07)))
+            })
+        })
     } {
         (if requested (trap (master-set-chg 0)))
-
-        ; Match JFBMS32: any fault-free stop after meaningful charge current
-        ; requests a balance cycle. Charger voltage alone does not qualify a
-        ; real charge session.
-        (if (and
-                (not requested)
-                was-charging
-                charge-session-valid
-                pack-data-ok
-                slave-data-fresh
-                (not (assoc rtc-val 'charge-fault))
-                (not (fast-oc-latched))
-            ) {
-            (setq trigger-bal-after-charge true)
-            (setq bal-auto-retry-ts (systime))
-        })
-
-        (if (not requested) (setq charge-session-valid false))
         (setq is-charging false)
     })
 
@@ -647,7 +669,7 @@ loopwhile-thd
             (var cnt (+ s-ic1 s-ic2))
             (var cells (master-get-slave-cells sid))
 
-            (if (> (bitwise-and faults 0x03) 0)
+            (if (> (bitwise-and faults 0x0B) 0)
                 (setq slave-fault true)
             )
 
@@ -724,15 +746,29 @@ loopwhile-thd
 })
 
 (defun refresh-pack-data () {
-    (master-can-read-all)
-    (master-check-timeouts slave-timeout-ms)
-    (check-can-health)
-    (master-update-vesc-bms)
-
-    (setq vt-vchg (master-get-vchg))
-    (setq iout (master-get-current))
-    (update-temp-globals)
-    (scan-pack-from-slaves)
+    ; Main and balance contexts share these globals. Serialize the full refresh
+    ; so neither context can observe a half-updated pack generation.
+    (mutex-lock pack-refresh-mutex)
+    (var result (trap (progn
+        (master-can-read-all)
+        (master-check-timeouts slave-control-timeout-ms)
+        (check-can-health)
+        (master-update-vesc-bms)
+        (setq vt-vchg (master-get-vchg))
+        (setq iout (master-get-current))
+        (update-temp-globals)
+        (scan-pack-from-slaves)
+        true
+    )))
+    (mutex-unlock pack-refresh-mutex)
+    (match result
+        ((exit-ok _) true)
+        (_ {
+            (setq pack-data-ok false)
+            (setq slave-data-fresh false)
+            false
+        })
+    )
 })
 
 ;;;;;;;;;; Shutdown and sleep ;;;;;;;;;;
@@ -765,7 +801,6 @@ loopwhile-thd
 
     (setq is-charging false)
     (setq charge-ok false)
-    (setq charge-session-valid false)
     (if clear-bal-trigger (clear-balance-request))
     (var bal-close-ok (stop-all-balancing))
     (var close-ok (and local-ok bal-close-ok))
@@ -779,6 +814,46 @@ loopwhile-thd
     })
 
     close-ok
+})
+
+(defun capture-current-zero () {
+    (print "CAL: CHG_EN off, waiting 1 second for zero current")
+    ; Calibration only needs the charger switch open. Do not enter the balance
+    ; shutdown/CAN handoff here: that path can wait on a missing slave and has
+    ; nothing to do with measuring the local current-sense zero.
+    (master-set-chg 0)
+    (setq is-charging false)
+    (setq charge-ok false)
+    ; Lisp sleep yields, so VESC Tool and CAN processing remain responsive.
+    (sleep 1.0)
+    (print "CAL: sampling current ADC")
+    (master-calibrate-current)
+})
+
+(defun current-calibration-thd () {
+    (setq current-zero-ready false)
+    ; Trap the whole sequence so the running latch is always released after an
+    ; extension or CAN failure; charging simply remains locked off.
+    (var calibrated (trap-value '(capture-current-zero) false))
+    (setq current-zero-ready calibrated)
+    (setq calibration-running false)
+    (if calibrated {
+        (print "CAL: zero captured and stored")
+        (spawn (fn () (user-beep 2 0.08)))
+    } {
+        (print "CAL: failed; charging remains off")
+        (spawn (fn () (user-beep 1 0.35)))
+    })
+})
+
+(defun start-current-calibration () {
+    (if (not calibration-running) {
+        ; Set the latch before spawning so repeated 10 Hz charge checks cannot
+        ; queue several calibration contexts.
+        (setq calibration-running true)
+        (spawn 160 current-calibration-thd)
+        true
+    } false)
 })
 
 (defun bms-shutdown-impl (reason) {
@@ -1028,142 +1103,188 @@ loopwhile-thd
     (set-bms-val 'bms-wh-cnt-dis-total wh-dis-tot)
 })
 
-(defun charge-temp-ok () (or
-    (= (param-or 't_charge_mon_en 1) 0)
-    (and
-        temp-data-ok
-        (< t-mos (bms-get-param 't_charge_max_mos))
-        (or
-            (not cell-temp-mon-en)
-            (and
-                (< t-max (bms-get-param 't_charge_max))
-                (> t-min (bms-get-param 't_charge_min))
-            )
-        )
+(defun fast-oc-direction () {
+    (var status (fast-oc-status))
+    (if (and status (>= (length status) 7)) (ix status 6) 0)
+})
+
+(defun record-fast-oc () {
+    (var status (fast-oc-status))
+    (if (and status (>= (length status) 3) (not (eq (ix status 0) nil))) {
+        (var trips (ix status 2))
+        (if (not-eq trips last-fast-trip-count) {
+            (setq last-fast-trip-count trips)
+            (var count (+ (rtc-number 'short-count 0) 1))
+            (setassoc rtc-val 'short-count count)
+            (if (>= count 3) (setassoc rtc-val 'short-service true))
+            (save-rtc-val)
+            (spawn (fn () (user-beep 1 0.45)))
+        })
+    })
+})
+
+(defun finish-charge (reason) {
+    (if (not charge-complete) {
+        (set-chg false)
+        (setq charge-complete true)
+        (setassoc rtc-val 'charge-complete true)
+        (save-rtc-val)
+        (setq ah-cnt-soc (bms-get-param 'batt_ah))
+        (set-soc-value 1.0 "CHARGE" reason true)
+        (checkpoint-soc true reason)
+        (setq trigger-bal-after-charge true)
+        (setq bal-auto-retry-ts (systime))
+        (send-slave-beep 0x03)
+        (spawn (fn () (user-beep 3 0.10)))
+        (print (str-merge "CHG complete: " reason))
+    })
+})
+
+(defun clear-session-after-disconnect () {
+    (var changed false)
+    (if (fast-oc-latched) (trap (master-clear-fast-oc)))
+    (if (and (assoc rtc-val 'charge-fault) (not (assoc rtc-val 'short-service))) {
+        (setassoc rtc-val 'charge-fault false)
+        (setq changed true)
+    })
+    (if (assoc rtc-val 'charge-complete) {
+        (setassoc rtc-val 'charge-complete false)
+        (setq changed true)
+    })
+    ; A completed, fault-free charge proves the current path is healthy.
+    (if (and charge-complete (> (rtc-number 'short-count 0) 0)
+            (not (assoc rtc-val 'short-service))) {
+        (setassoc rtc-val 'short-count 0)
+        (setq changed true)
+    })
+    (if changed (save-rtc-val))
+
+    (setq charge-complete false)
+    (setq charge-block-beeped false)
+    (setq charge-enable-beeped false)
+})
+
+(defun clear-service-faults () {
+    (if (and
+            (not (test-chg 1))
+            (> (secs-since charge-dis-ts) 5.0)
+            (current-data-ok)
+            (< (abs iout) 1.0)
+            (trap-value '(master-clear-fast-oc) false)
+        ) {
+        (setassoc rtc-val 'charge-fault false)
+        (setassoc rtc-val 'short-count 0)
+        (setassoc rtc-val 'short-service false)
+        (save-rtc-val)
+        (print "CHG faults cleared safely")
+        true
+    } {
+        (print "CHG fault clear rejected: unplug charger for 5s and remove current")
+        false
+    })
+})
+
+(defun charge-block-reason (charger-detected) {
+    (cond
+        ((assoc rtc-val 'short-service) "FLT_SHORT_LOCK")
+        ((fast-oc-latched) (if (> (fast-oc-direction) 0) "FLT_FAST_OC_REV" "FLT_FAST_OC_CHG"))
+        ((not (fast-oc-armed)) "FLT_FAST_ADC")
+        ((assoc rtc-val 'charge-fault) "FLT_CHG_OC")
+        (charge-complete "CHG_COMPLETE")
+        ((not chg-allowed) "CHG_DISABLED")
+        ((not pack-data-ok) "WAIT_SLAVE")
+        ((not slave-data-fresh) "CAN_STALE")
+        ((and charger-detected (not (charge-pack-fresh))) "CAN_CHG_STALE")
+        ; Calibration is charge-related status. Do not show CAL_ZERO while the
+        ; charger is absent.
+        ((not charger-detected) "")
+        ((not current-zero-ready) "CAL_ZERO")
+        ((not (current-data-ok)) "ADC_CURRENT")
+        ((not (charger-data-ok)) "ADC_CHARGER")
+        ((>= c-max (if is-charging
+            (bms-get-param 'vc_charge_end)
+            (bms-get-param 'vc_charge_start))) "CELL_HIGH")
+        ((<= c-min (bms-get-param 'vc_charge_min)) "CELL_LOW")
+        ((and (= (param-or 't_charge_mon_en 1) 1) (not temp-data-ok)) "TEMP_DATA")
+        ((and (= (param-or 't_charge_mon_en 1) 1)
+            (>= t-mos (bms-get-param 't_charge_max_mos))) "TEMP_MOS_HIGH")
+        ((and (= (param-or 't_charge_mon_en 1) 1) cell-temp-mon-en
+            (>= t-max (bms-get-param 't_charge_max))) "TEMP_CELL_HIGH")
+        ((and (= (param-or 't_charge_mon_en 1) 1) cell-temp-mon-en
+            (<= t-min (bms-get-param 't_charge_min))) "TEMP_CELL_LOW")
+        (true "")
     )
-))
+})
 
 (defun update-charge-control (dt) {
     (var charger-detected (test-chg 1))
     (var charge-current (- iout))
 
+    (record-fast-oc)
+
+    ; The first plug-in captures and stores zero. Later sessions reuse it.
     (if (and charger-detected (not charger-detected-prev)) {
-        (setq charge-ts (systime))
+        (setq charge-block-beeped false)
+        (setq charge-enable-beeped false)
+        (spawn (fn () (user-beep 1 0.08)))
+        (print "CHG: charger detected")
     })
-    ; Invalid charger ADC data is not proof of removal, so preserve the last
-    ; edge state until the local sensor becomes valid again.
-    (if (charger-data-ok)
-        (setq charger-detected-prev charger-detected)
+    (setq charger-detected-prev charger-detected)
+
+    (if (and charger-detected (not current-zero-ready) (not calibration-running))
+        (start-current-calibration)
     )
 
-    ; Meaningful current while CHG_EN is on qualifies the session for the same
-    ; automatic post-charge balancing behavior as JFBMS32.
-    (if (and is-charging (> charge-current (bms-get-param 'min_charge_current)))
-        (setq charge-session-valid true)
-    )
-
-    ; Reaching the configured end voltage latches charging off until the
-    ; charger has been absent continuously for five seconds. This prevents
-    ; relaxation below vc_charge_start from cycling the charger.
-    (if (and
-            is-charging
-            pack-data-ok
-            (>= c-max (bms-get-param 'vc_charge_end))
-        ) {
-        (setq charge-complete true)
-        (setq charge-complete-msg true)
-    })
-
-    (setq charge-ok (and
-        charger-detected
-        pack-data-ok
-        slave-data-fresh
-        (current-data-ok)
-        (charger-data-ok)
-        (< c-max (if is-charging
-            (bms-get-param 'vc_charge_end)
-            (bms-get-param 'vc_charge_start)
-        ))
-        (> c-min (bms-get-param 'vc_charge_min))
-        (charge-temp-ok)
-        chg-allowed
-        (fast-oc-armed)
-        (not (fast-oc-latched))
-        (not (assoc rtc-val 'charge-fault))
-        (not charge-complete)
-    ))
-
-    ; Slow filtered overcurrent protection remains independent of session
-    ; qualification.
+    ; Same simple slow-current guard as JFBMS32. The C fast comparator remains
+    ; an independent backstop.
     (if (and is-charging (> charge-current (bms-get-param 'max_charge_current))) {
         (setq charge-ok false)
-        (setassoc rtc-val 'charge-fault true)
-        (save-rtc-val)
+        (if (not (assoc rtc-val 'charge-fault)) {
+            (setassoc rtc-val 'charge-fault true)
+            (save-rtc-val)
+        })
+        (set-chg false)
     })
 
-    ; Reset both software and hardware charge-fault latches only after five
-    ; seconds of valid, continuous charger absence.
+    ; Five seconds unplugged starts a completely new session.
     (if (and (charger-data-ok) (not charger-detected)) {
-        (if (fast-oc-latched) (trap (master-clear-fast-oc)))
-
         (if (> (secs-since charge-dis-ts) 5.0) {
-            (if (assoc rtc-val 'charge-fault) {
-                (setassoc rtc-val 'charge-fault false)
-                (save-rtc-val)
-            })
-            (setq charge-complete false)
-            (setq charge-complete-msg false)
+            (set-chg false)
+            (clear-session-after-disconnect)
         })
     })
 
-    ; Match JFBMS32 start/stop behavior: allow up to ten seconds for a charger
-    ; to establish current, then keep CHG_EN on only while current remains above
-    ; min_charge_current. A new attempt requires a charger disconnect/reconnect.
-    (if (and charger-detected charge-ok) {
+    ; Cell voltage is the charge-complete decision, as in JFBMS32.
+    (if (and is-charging pack-data-ok
+            (>= c-max (bms-get-param 'vc_charge_end)))
+        (finish-charge "CELL_LIMIT")
+    )
+
+    (var block-reason (charge-block-reason charger-detected))
+    (setq charge-ok (and charger-detected (= (str-len block-reason) 0)))
+
+    (if charge-ok {
         (var balance-stopped (if (balance-in-progress)
             (stop-all-balancing)
             true
         ))
         (if balance-stopped {
-            (if (< (secs-since charge-ts) charger-max-delay)
-                (set-chg true)
-                (set-chg (> charge-current (bms-get-param 'min_charge_current)))
-            )
+            (set-chg true)
         } {
             (set-chg false)
         })
     } {
         (set-chg false)
-
-        ; Keep the JFBMS32 full-counter anchoring behavior. This is intentionally
-        ; based on vc_charge_start and occurs after charging has stopped.
-        (if (and pack-data-ok (>= c-max (bms-get-param 'vc_charge_start)))
-            (setq ah-cnt-soc (bms-get-param 'batt_ah))
-        )
     })
 
-    (setq chg-status
-        (cond
-            ((fast-oc-latched) {
-                (setq charge-complete-msg false)
-                "FLT_CHG_FAST_OC"
-            })
-            ((not (fast-oc-armed)) {
-                (setq charge-complete-msg false)
-                "FLT_FAST_ADC"
-            })
-            ((assoc rtc-val 'charge-fault) {
-                (setq charge-complete-msg false)
-                "FLT_CHG_OC"
-            })
-            (charge-complete-msg "CHG_COMPLETE")
-            (is-charging {
-                (setq charge-complete-msg false)
-                "CHARGING"
-            })
-            (true "")
-        )
-    )
+    (setq chg-status (if is-charging "CHARGING" block-reason))
+
+    (if (and charger-detected (not is-charging)
+            (> (str-len block-reason) 0) (not charge-block-beeped)) {
+        (setq charge-block-beeped true)
+        (spawn (fn () (user-beep 1 0.30)))
+        (print (str-merge "CHG blocked: " block-reason))
+    })
 
     (set-bms-val 'bms-chg-allowed (bool-int chg-allowed))
 })
@@ -1238,6 +1359,122 @@ loopwhile-thd
     })
 })
 
+(defun any-cached-balancing () {
+    (var any false)
+    (looprange i 0 8 {
+        (if (or (> (ix slave-bal-mask-ic1 i) 0)
+                (> (ix slave-bal-mask-ic2 i) 0))
+            (setq any true)
+        )
+    })
+    any
+})
+
+(defun mask-bit-count (mask) {
+    (var count 0)
+    (looprange i 0 16 {
+        (if (!= (bitwise-and mask (shl 1 i)) 0)
+            (setq count (+ count 1))
+        )
+    })
+    count
+})
+
+(defun manual-balance-cell (cell enable) {
+    ; VESC Tool overrides should be immediate. Map the pack cell index to one
+    ; slave/IC, update the cached mask, and send it once. The balance thread
+    ; supplies the one-second keepalive and applies the same safety gate.
+    (var sid 1)
+    (var base 0)
+    (var found false)
+    (var target-sid 0)
+    (var target-ic 0)
+    (var target-bit 0)
+    (var target-v 0.0)
+
+    (loopwhile (and (<= sid (cfg-num-slaves)) (not found)) {
+        (var ic1-cnt (master-get-cells-ic1 sid))
+        (var ic2-cnt (master-get-cells-ic2 sid))
+        (var count (+ ic1-cnt ic2-cnt))
+        (if (and (>= cell base) (< cell (+ base count))) {
+            (var local (- cell base))
+            (var cells (master-get-slave-cells sid))
+            (if (and cells (= (length cells) count)) {
+                (setq target-sid sid)
+                (setq target-v (ix cells local))
+                (if (< local ic1-cnt) {
+                    (setq target-ic 1)
+                    (setq target-bit (shl 1 local))
+                } {
+                    (setq target-ic 2)
+                    (setq target-bit (shl 1 (- local ic1-cnt)))
+                })
+                (setq found true)
+            })
+        })
+        (setq base (+ base count))
+        (setq sid (+ sid 1))
+    })
+
+    (if (or (not found) (and (> enable 0) (not (balance-safe-now)))) {
+        ; A disable request is always safe. If topology disappeared, fail
+        ; closed by clearing every slave instead of leaving an unknown mask on.
+        (if (= enable 0) (stop-all-balancing))
+        (print "BAL OVR blocked: invalid cell or unsafe pack state")
+        false
+    } {
+        (if (not manual-bal-active) {
+            (setq trigger-bal-after-charge false)
+            (clear-cached-balancing)
+        })
+        (var index (- target-sid 1))
+        (var old-mask (if (= target-ic 1)
+            (ix slave-bal-mask-ic1 index)
+            (ix slave-bal-mask-ic2 index)))
+        (var new-mask (if (> enable 0)
+            (if (= (bitwise-and old-mask target-bit) 0)
+                (+ old-mask target-bit)
+                old-mask)
+            (if (> (bitwise-and old-mask target-bit) 0)
+                (- old-mask target-bit)
+                old-mask)))
+        (var mask-safe (and
+            (= (bitwise-and new-mask (shr new-mask 1)) 0)
+            (<= (mask-bit-count new-mask) (bms-get-param 'max_bal_ch))
+            (or (= enable 0) (>= target-v (bms-get-param 'vc_balance_min)))
+        ))
+
+        (if (not mask-safe) {
+            (print "BAL OVR blocked: voltage, adjacency, or channel limit")
+            false
+        } {
+            (if (= target-ic 1)
+                (setix slave-bal-mask-ic1 index new-mask)
+                (setix slave-bal-mask-ic2 index new-mask)
+            )
+            (if (any-cached-balancing) {
+                (master-set-chg 0)
+                (setq is-charging false)
+                (setq manual-bal-active true)
+                (set-c-balance-request true)
+                (if (send-cached-balance-masks 0) {
+                    (setix bal-state 0 bal-state-active)
+                    (setq bal-status "BAL_OVR")
+                    (print (str-merge "BAL OVR cell " (str-from-n cell "%d")
+                        (if (> enable 0) " on" " off")))
+                    true
+                } {
+                    (stop-all-balancing)
+                    false
+                })
+            } {
+                (stop-all-balancing)
+                true
+            })
+        })
+    })
+})
+
 (defun send-cached-balance-masks (beep-code) {
     (var sid 1)
     (var max-sid (cfg-num-slaves))
@@ -1264,6 +1501,7 @@ loopwhile-thd
 })
 
 (defun stop-all-balancing () {
+    (setq manual-bal-active false)
     (setix bal-state 0 bal-state-stopping)
     (clear-cached-balancing)
     ; C reports success only after all three physical zero-mask passes finish.
@@ -1300,8 +1538,6 @@ loopwhile-thd
     pack-data-ok
     slave-data-fresh
     temp-data-ok
-    (current-data-ok)
-    (charger-data-ok)
     (not is-charging)
     (<= (* (abs iout)
             (if (balance-state-is bal-state-active) 0.8 1.0))
@@ -1322,8 +1558,6 @@ loopwhile-thd
         ((not pack-data-ok) (str-merge "pack data: " pack-status))
         ((not slave-data-fresh) "slave data stale")
         ((not temp-data-ok) "temperature data invalid")
-        ((not (current-data-ok)) "current sensor invalid")
-        ((not (charger-data-ok)) "charger-voltage sensor invalid")
         (is-charging "charging is active")
         ((> (* (abs iout)
                 (if (balance-state-is bal-state-active) 0.8 1.0))
@@ -1355,64 +1589,6 @@ loopwhile-thd
     })
 
     all-fresh
-})
-
-; JFBMS32 disables balancing and waits two seconds before making a new balance
-; decision. Both ICs on each slave are synchronized, but different slaves can
-; settle at different times, so require the combined settled flag from every
-; configured slave independently.
-(defun all-configured-slaves-settled () {
-    (var all-settled true)
-    (var sid 1)
-    (var max-sid (cfg-num-slaves))
-
-    (loopwhile (<= sid max-sid) {
-        (if (not (and
-                (master-slave-active? sid)
-                (master-slave-fresh? sid)
-                (master-get-slave-settled? sid)
-            ))
-            (setq all-settled false)
-        )
-        (setq sid (+ sid 1))
-    })
-
-    all-settled
-})
-
-(defun wait-for-slave-settle () {
-    (var started (systime))
-    (var settled false)
-    (var keep-waiting true)
-
-    ; Two seconds are measured by each slave; the additional margin allows
-    ; the settled status to arrive over CAN even when the slave loop is
-    ; running slightly below its nominal rate.
-    (loopwhile (and keep-waiting (< (secs-since started) balance-settle-timeout-s)) {
-        (refresh-pack-data)
-        (if (not (and
-                (balance-state-is bal-state-requested)
-                (balance-safe-now)
-                (all-configured-slaves-fresh)
-            )) {
-            (setq keep-waiting false)
-        } {
-            ; A status frame that predates the zero-mask handoff can still say
-            ; settled. Enforce the physical two-second off interval before
-            ; accepting the per-slave flags and the associated voltage data.
-            (if (and
-                    (>= (secs-since started) balance-settle-min-time-s)
-                    (all-configured-slaves-settled)
-                ) {
-                (setq settled true)
-                (setq keep-waiting false)
-            } {
-                (sleep 0.1)
-            })
-        })
-    })
-
-    settled
 })
 
 (defun slave-balance-masks (sid threshold max-ch) {
@@ -1559,15 +1735,14 @@ loopwhile-thd
     )
 })
 
-; Balance supervision runs at 20 Hz. Charge requests are handled by set-chg,
-; while every nonzero keepalive is gated by fresh pack safety conditions.
+; Same basic loop as JFBMS32: turn all channels off, wait two seconds for clean
+; voltages, select non-adjacent high cells, then refresh the same masks once per
+; second. No acknowledgement/settled state machine is needed; the slave status
+; bitmap is the source used by VESC Tool, and each slave has its own watchdog.
 (defun balance-thd () {
     (var keepalive-ts (systime))
 
     (loopwhile t {
-        ; A late nonzero complete broadcast after a stop reasserts the C
-        ; inhibit. Convert that asynchronous condition back into STOPPING so
-        ; the zero-mask transaction is retried instead of blocking charging.
         (if (and (balance-state-is bal-state-idle) (c-balance-inhibited)) {
             (setix bal-state 0 bal-state-stopping)
             (setq bal-status "BAL_STOP")
@@ -1596,16 +1771,15 @@ loopwhile-thd
                         block-reason
                         "configured slave data stale")))
             } {
-                ; The C request latch is held while the physical zero handoff
-                ; completes. No slave status acknowledgement is required.
                 (if (not (zero-balancing-preserve-request)) {
-                    (balance-cycle-failed "BAL: zero-mask handoff failed")
+                    (balance-cycle-failed "BAL: could not send zero masks")
                 } {
-                    (if (not (wait-for-slave-settle)) {
-                        (balance-cycle-failed "BAL: voltages did not settle after zero masks")
+                    (setq bal-status "BAL_SETTLE")
+                    (sleep 2.0)
+                    (refresh-pack-data)
+                    (if (not (balance-safe-now)) {
+                        (balance-cycle-failed "BAL: unsafe after settle")
                     } {
-                        ; Compute only from settled voltages. The first phase
-                        ; uses vc_balance_start; repeats use vc_balance_end.
                         (if (update-balance-masks balance-cycle-threshold) {
                             (if (send-cached-balance-masks 0) {
                                 (setix bal-state 0 bal-state-active)
@@ -1613,7 +1787,7 @@ loopwhile-thd
                                 (setq balance-active-start-ts (systime))
                                 (setq keepalive-ts (systime))
                             } {
-                                (balance-cycle-failed "BAL: initial transmit failed")
+                                (balance-cycle-failed "BAL: transmit failed")
                             })
                         } {
                             (print "BAL: target reached")
@@ -1635,25 +1809,24 @@ loopwhile-thd
                         "configured slave data stale")))
                 (setq keepalive-ts (systime))
             } {
-                ; Keep the selected mask unchanged during the 30-second active
-                ; phase. Voltage readings under bleed load are not used for a
-                ; decision. At the phase boundary, send zero masks and return
-                ; to REQUESTED so all slaves settle and the pack is rescanned.
-                (if (>= (secs-since balance-active-start-ts) balance-active-time-s) {
-                    (print "BAL: 30s phase complete; settling and rescanning")
-                    (setq balance-cycle-threshold (bms-get-param 'vc_balance_end))
-                    (if (not (zero-balancing-preserve-request))
-                        (balance-cycle-failed "BAL: cycle zero-mask handoff failed")
-                    )
-                    (setq keepalive-ts (systime))
-                } {
-                    ; Refresh unchanged masks every second, well inside the
-                    ; slave's 10-second watchdog.
+                (if manual-bal-active {
                     (if (>= (secs-since keepalive-ts) balance-keepalive-period-s) {
                         (setq keepalive-ts (systime))
                         (if (not (send-cached-balance-masks 0))
-                            (balance-cycle-failed "BAL: keepalive transmit failed")
+                            (balance-cycle-failed "BAL OVR: keepalive transmit failed")
                         )
+                    })
+                } {
+                    (if (>= (secs-since balance-active-start-ts) balance-active-time-s) {
+                        (setq balance-cycle-threshold (bms-get-param 'vc_balance_end))
+                        (setix bal-state 0 bal-state-requested)
+                    } {
+                        (if (>= (secs-since keepalive-ts) balance-keepalive-period-s) {
+                            (setq keepalive-ts (systime))
+                            (if (not (send-cached-balance-masks 0))
+                                (balance-cycle-failed "BAL: keepalive transmit failed")
+                            )
+                        })
                     })
                 })
             })
@@ -1661,7 +1834,7 @@ loopwhile-thd
             (setq keepalive-ts (systime))
         })
 
-        (sleep 0.05)
+        (sleep 0.1)
     })
 })
 
@@ -1670,8 +1843,12 @@ loopwhile-thd
 (defun event-handler ()
     (loopwhile t
         (recv
+            ((event-bms-bal-ovr (? cell) (? enable)) {
+                (manual-balance-cell cell (if (> enable 0) 1 0))
+            })
             ((event-bms-force-bal (? v)) {
                 (if (= v 1) {
+                    (if manual-bal-active (stop-all-balancing))
                     (if (try-manual-balance-request)
                         (print "BAL CMD: start")
                         (print "BAL CMD: ignored")
@@ -1685,6 +1862,12 @@ loopwhile-thd
             ((event-bms-chg-allow (? allow)) {
                 (setq chg-allowed (= allow 1))
                 (if (not chg-allowed) (set-chg nil))
+                (if (and chg-allowed (or
+                        (assoc rtc-val 'short-service)
+                        (assoc rtc-val 'charge-fault)
+                        (fast-oc-latched)))
+                    (clear-service-faults)
+                )
                 (set-bms-val 'bms-chg-allowed (bool-int chg-allowed))
                 (print (str-merge "CHG: " (if chg-allowed "allowed" "blocked")))
             })
@@ -1705,15 +1888,14 @@ loopwhile-thd
                     (set-bms-val 'bms-wh-cnt-chg-total 0.0)
                     (set-bms-val 'bms-wh-cnt-dis-total 0.0)
                 })
+                (if (or (= ah 1) (= wh 1)) {
+                    (save-settings)
+                    (print "BMS counters reset and stored")
+                })
             })
             (event-bms-zero-ofs {
-                (print "CAL: zero current")
-                ; Calibration changes the hardware overcurrent threshold, so
-                ; first force both charge and balance outputs to a known state.
-                (if (fail-close-outputs true)
-                    (master-calibrate-current)
-                    (print "CAL: aborted because outputs could not be disabled")
-                )
+                (print "CAL: zero-current calibration requested")
+                (start-current-calibration)
             })
             ((event-data-rx ? data) (handle-app-data data))
             (_ nil)
@@ -1731,24 +1913,15 @@ loopwhile-thd
 (defun update-status () {
     (var s "")
 
-    ; As on JFBMS32, a pack/output fault takes precedence over the one-shot
-    ; charge-complete message.
-    (if (and
-            charge-complete-msg
-            (or
-                (> (str-len pack-status) 0)
-                bal-off-failed
-                fail-close-failed
-            )
-        ) {
-        (setq charge-complete-msg false)
-        (setq chg-status "")
-    })
-
     (setq s (status-append s chg-status))
     (setq s (status-append s bal-status))
     (setq s (status-append s pack-status))
-    (if (not (master-local-sensors-valid?))
+    (if calibration-running
+        (setq s (status-append s "CALIBRATING"))
+    )
+    ; An uncaptured current zero is an intentional 0 A startup state, not an
+    ; ADC fault. Charger voltage and PCB temperature must still be valid.
+    (if (or (not (charger-data-ok)) (not (pcb-temp-data-ok)))
         (setq s (status-append s "ADC_FAULT"))
     )
     (if bal-off-failed
@@ -1889,7 +2062,7 @@ loopwhile-thd
         (update-sleep-shutdown-timer)
 
         (update-status)
-        (send-bms-can)
+        (update-primary-can-status)
         (update-slave-presence)
 
         ; Measure idle time for sleep and shutdown decisions.
@@ -1929,20 +2102,42 @@ loopwhile-thd
 
 (defun main () {
     (print "=== JFBMS Master ===")
+    (var boot-status (trap-value '(master-boot-status) '(0 0)))
+    (if (and boot-status (>= (length boot-status) 2))
+        (print (str-merge "Boot count=" (str-from-n (ix boot-status 0) "%d")
+            " reset-reason=" (str-from-n (ix boot-status 1) "%d")))
+    )
 
     ; Reset values that must be relative to this boot, not image creation.
     (setq bal-auto-retry-ts (systime))
     (setq trigger-bal-after-charge false)
     (setq balance-active-start-ts (systime))
     (setq balance-cycle-threshold (bms-get-param 'vc_balance_start))
-    (setq charge-session-valid false)
     (setq charge-complete false)
-    (setq charge-complete-msg false)
     (setq charger-detected-prev false)
+    (setq charge-block-beeped false)
+    (setq charge-enable-beeped false)
+    (setq manual-bal-active false)
+    (setq calibration-running false)
+    (var current-cal (trap-value '(master-current-calibration) '(nil 1.65 0.0 nil)))
+    (setq current-zero-ready (and current-cal (>= (length current-cal) 1)
+        (ix current-cal 0)))
+    (if current-zero-ready
+        (print (str-merge "CAL: using stored zero "
+            (str-from-n (ix current-cal 1) "%.4f") " V"))
+    )
+    (setq last-fast-trip-count -1)
     (setq charge-dis-ts (systime))
-    (setq charge-ts (systime))
     (setq t-last (systime))
+    (setq primary-can-status-ts (systime))
     (setq loop-cnt 0)
+
+    (var primary-can-rate (truncate (param-or 'can_status_rate_hz 0) 0 200))
+    (if (= primary-can-rate 0)
+        (print "Primary CAN status disabled (standalone mode)")
+        (print (str-merge "Primary CAN status enabled at "
+            (str-from-n primary-can-rate "%d") " Hz"))
+    )
 
     (if (> app-wdt-timeout 0)
         (wdt-configure true app-wdt-timeout)
@@ -1960,22 +2155,12 @@ loopwhile-thd
     (pwm-start 4000 0.0 0 8)
 
     (load-rtc-val)
-
-    ; Match JFBMS32 boot behavior: a valid charger-absent reading clears the
-    ; persisted slow overcurrent fault immediately. Invalid ADC data remains
-    ; fail-closed and is handled by the normal five-second absence path.
-    (if (and (charger-data-ok) (not (test-chg 5))) {
-        (if (assoc rtc-val 'charge-fault) {
-            (setassoc rtc-val 'charge-fault false)
-            (save-rtc-val)
-        })
-        (setq charge-complete false)
-        (setq charge-complete-msg false)
-    })
+    (setq charge-complete (if (assoc rtc-val 'charge-complete) true false))
 
     (master-reset-slaves)
 
     (event-register-handler (spawn 200 event-supervisor))
+    (event-enable 'event-bms-bal-ovr)
     (event-enable 'event-bms-force-bal)
     (event-enable 'event-bms-chg-allow)
     (event-enable 'event-bms-reset-cnt)

@@ -13,15 +13,17 @@
 ; ============================================================================
 (def cells-ic1 (bms-get-param 'cells_ic1))
 (def cells-ic2 (bms-get-param 'cells_ic2))
+(def temp-bq1-en (bms-get-param 'temp_bq1_en))
+(def temp-bq2-en (bms-get-param 'temp_bq2_en))
 (def total-cells (+ cells-ic1 cells-ic2))
 
 ; ============================================================================
-; Balance Watchdog (counter-based; loop pacing uses systime separately)
+; Balance watchdog and local measurement gate
 ; ============================================================================
-; Master must send balance command at least every 10 seconds
+; Master must send balance command at least every 3 seconds
 ; If no command received, stop all balancing for safety
-; Using counter: 100 iterations × 100ms = 10 seconds
-(def bal-state (list 0))  ; state[0] = iterations since last active balance command
+(def bal-state (list 0))  ; state[0] = 1 while a nonzero mask is active
+(def bal-last-rx-ts (list (systime)))
 ; Flag: set to 1 when a balance command was received in process-can-messages
 (def bal-rx-flag (list 0))
 ; Previous balance masks for change detection (only print when mask changes)
@@ -33,6 +35,9 @@
 ; After 20 loops (2s at 10Hz) voltages are considered settled for master
 ; balance decisions. Each slave reports this flag independently.
 (def settle-counter (list 20))  ; Start settled (no balancing at boot)
+(def last-cells '())
+(def last-temps '())
+(def last-data-ts (systime))
 (defun trap-value (expr fallback) {
     (match (trap (eval expr))
         ((exit-ok (? value)) value)
@@ -49,6 +54,39 @@
     (if (> remaining 0.0)
         (sleep remaining)
     )
+})
+
+(defun local-balance-safe () {
+    (var safe (and
+        (= (length last-cells) total-cells)
+        (>= (length last-temps) (if (> cells-ic2 0) 4 2))
+        (< (secs-since last-data-ts) 0.5)
+    ))
+    (if safe {
+        (loopforeach v last-cells {
+            (if (or (< v 2.5) (> v 5.0)) (setq safe false))
+        })
+        ; IC die temperatures (indices 0 and 2) are mandatory. External
+        ; NTCs (indices 1 and 3) are checked only when configured; disabled
+        ; sensors intentionally carry the invalid -273 C marker.
+        (var die1 (ix last-temps 0))
+        (if (or (< die1 -40.0) (> die1 100.0)) (setq safe false))
+        ; bms-get-param returns numeric 0/1. In LispBM, numeric 0 is still
+        ; truthy, so compare explicitly before validating an external NTC.
+        (if (= temp-bq1-en 1) {
+            (var ext1 (ix last-temps 1))
+            (if (or (< ext1 -40.0) (> ext1 60.0)) (setq safe false))
+        })
+        (if (> cells-ic2 0) {
+            (var die2 (ix last-temps 2))
+            (if (or (< die2 -40.0) (> die2 100.0)) (setq safe false))
+            (if (= temp-bq2-en 1) {
+                (var ext2 (ix last-temps 3))
+                (if (or (< ext2 -40.0) (> ext2 60.0)) (setq safe false))
+            })
+        })
+    })
+    safe
 })
 
 ; Balance visualization: show which cells are balancing per IC
@@ -148,14 +186,19 @@
                 (var new-bal-active (or (> ic1-mask 0) (> ic2-mask 0)))
                 (var mask-changed (or (not-eq ic1-mask (ix prev-ic1-mask 0))
                                       (not-eq ic2-mask (ix prev-ic2-mask 0))))
-                ; Apply to BQ immediately
-                (var result (trap-value `(bms-set-bal-bitmap ,ic1-mask ,ic2-mask) false))
+                ; Nonzero commands require a recent local voltage/temperature
+                ; sample. A zero command is always accepted as the safe action.
+                (var result (if (or (not new-bal-active) (local-balance-safe))
+                    (trap-value `(bms-set-bal-bitmap ,ic1-mask ,ic2-mask) false)
+                    false
+                ))
                 (setix bal-rx-flag 0 1)
                 (if result {
                     ; Only nonzero masks need keepalives. A zero-mask command
                     ; has already made the hardware safe and must not arm a
-                    ; watchdog that prints a false timeout ten seconds later.
+                    ; watchdog that prints a false timeout later.
                     (setix bal-state 0 (if new-bal-active 1 0))
+                    (if new-bal-active (setix bal-last-rx-ts 0 (systime)))
                 } {
                     (trap-value '(bms-stop-balancing) false)
                     (setix bal-state 0 0)
@@ -193,26 +236,21 @@
 })
 
 ; ============================================================================
-; Balance Watchdog Check (counter-based)
+; Balance watchdog check
 ; ============================================================================
-; 100 iterations × 100ms = 10 seconds timeout
-(def bal-watchdog-limit 100)
-
+; Three-second elapsed-time timeout, independent of loop execution time.
+(def bal-watchdog-timeout-s 3.0)
 (defun check-bal-watchdog () {
-    (var cnt (ix bal-state 0))
-    ; Only check if we ever received a command (cnt > 0)
-    (if (> cnt 0) {
-        ; Increment counter
-        (setix bal-state 0 (+ cnt 1))
-        ; Check if timeout exceeded
-        (if (> cnt bal-watchdog-limit) {
+    (if (> (ix bal-state 0) 0) {
+        (if (or (> (secs-since (ix bal-last-rx-ts 0)) bal-watchdog-timeout-s)
+                (not (local-balance-safe))) {
             (trap-value '(bms-stop-balancing) false)
             (setix bal-state 0 0)
             (setix prev-ic1-mask 0 0)
             (setix prev-ic2-mask 0 0)
             (setix settle-counter 0 0)
             (bms-set-settled-flag 0)
-            (print "Balance watchdog triggered - stopped balancing")
+            (print "Balance watchdog/safety gate triggered - stopped balancing")
         })
     })
 })
@@ -226,6 +264,7 @@
     (var bq1-ok true)
     (var bq2-ok true)
     (var loop-count 0)
+    (var bq-fail-count 0)
 
     (loopwhile t {
         (var loop-start (systime))
@@ -249,17 +288,41 @@
         (if (eq temps nil)
             (setq temps '(-273.0 -273.0 -273.0 -273.0)))
 
+        ; Cell reads alone do not prove BQ1 health. Its mandatory internal
+        ; temperature must also be present so persistent temperature-bus
+        ; failures enter the same supervised hardware reinitialization path.
+        (setq bq1-ok (and bq1-ok (>= (length temps) 2)
+            (> (ix temps 0) -200.0)))
+
+        (if (and (= (length cells) total-cells)
+                (>= (length temps) (if (> cells-ic2 0) 4 2))) {
+            (setq last-cells cells)
+            (setq last-temps temps)
+            (setq last-data-ts (systime))
+        })
+
         ; Check CAN again after temperature I2C reads
         (process-can-messages)
 
-        ; Check BQ2 status from temperature (invalid if < -200)
+        ; Check BQ2 status from its mandatory IC die temperature. Index 3 is
+        ; the optional external sensor and is intentionally invalid when off.
         (if (> cells-ic2 0) {
-            (if (and (>= (length temps) 4) (> (ix temps 3) -200.0))
+            (if (and (>= (length temps) 4) (> (ix temps 2) -200.0))
                 (setq bq2-ok true)
                 (setq bq2-ok false))
         } {
             ; Single-chip slaves report CellsIC2 = 0, not a BQ2 fault.
             (setq bq2-ok true)
+        })
+
+        (if (and bq1-ok bq2-ok)
+            (setq bq-fail-count 0)
+            (setq bq-fail-count (+ bq-fail-count 1))
+        )
+        (if (>= bq-fail-count 20) {
+            (trap-value '(bms-stop-balancing) false)
+            (print "Persistent BQ communication fault - reinitializing")
+            (exit-error 1)
         })
 
         ; Track settle state for master balance synchronization. Both ICs on
@@ -323,7 +386,19 @@
             ((exit-ok _) (print "main-thd exited - restarting"))
             (_ (print "main-thd crashed - restarting"))
         )
-        (sleep 0.1)
+        (trap-value '(bms-stop-balancing) false)
+        (bms-set-fault-flags (if (> cells-ic2 0) 0x03 0x01))
+        (var recovered false)
+        (loopwhile (not recovered) {
+            (if (trap-value `(bms-init ,cells-ic1 ,cells-ic2) false) {
+                (setq recovered true)
+                (bms-set-fault-flags 0)
+                (print "BMS hardware recovered")
+            } {
+                (bms-broadcast-all slave-id '() '() 0 (if (> cells-ic2 0) 0 1))
+                (sleep 2.0)
+            })
+        })
     })
 })
 
@@ -376,6 +451,17 @@
     (var diag-count 0)
     (loopwhile t {
         (var loop-start (systime))
+        (if (= (mod diag-count 100) 0) {
+            (if (trap-value `(bms-init ,cells-ic1 ,cells-ic2) false) {
+                (setq init-ok true)
+                (setq bq1-init-ok true)
+                (setq bq2-init-ok (if (> cells-ic2 0) true false))
+                (bms-set-fault-flags 0)
+                (print "BMS recovered from diagnostic mode")
+                (spawn 200 main-supervisor)
+                (break)
+            })
+        })
         (if (= (mod diag-count 10) 0)
             (print (str-merge "I2C detect 0x08: " (if (i2c-detect-addr 0x08) "OK" "FAIL"))))
         ; Broadcast empty data with fault flags

@@ -43,6 +43,8 @@
 #define BQ_ADDR_2 0x08  // BQ2 stays at default address
 #define I2C_SPEED 100000
 #define I2C_MUTEX_TIMEOUT_MS 500
+#define BALANCE_WATCHDOG_TIMEOUT_MS 3000U
+#define MAX_BALANCE_CHANNELS_PER_IC 8
 
 // Macros
 #define M_CELLS (m_cells_ic1 + m_cells_ic2)
@@ -50,14 +52,28 @@
 // Variables
 static SemaphoreHandle_t i2c_mutex;
 static SemaphoreHandle_t bq_mutex;
+static StaticSemaphore_t i2c_mutex_storage;
+static StaticSemaphore_t bq_mutex_storage;
 static unsigned int m_cells_ic1 = 16;
 static unsigned int m_cells_ic2 = 0;
 static uint16_t m_bal_state_ic1 = 0;
 static uint16_t m_bal_state_ic2 = 0;
+static volatile uint32_t m_bal_last_command_ms;
+static volatile bool m_balance_fault;
+static TaskHandle_t m_balance_watchdog_task_handle;
 
 static bool cell_counts_valid(unsigned int cells_ic1, unsigned int cells_ic2) {
 	return cells_ic1 >= 3 && cells_ic1 <= 16 &&
 			(cells_ic2 == 0 || (cells_ic2 >= 3 && cells_ic2 <= 16));
+}
+
+static int balance_channel_count(uint16_t mask) {
+	int count = 0;
+	while (mask) {
+		count += mask & 1U;
+		mask >>= 1;
+	}
+	return count;
 }
 
 // Error messages
@@ -238,7 +254,9 @@ static bool apply_bal_bitmap(uint32_t bitmap) {
 	uint16_t new_bal_ic2 = ((bitmap >> 16) & 0xFFFF) & configured_cell_mask(m_cells_ic2);
 	bool res = true;
 	bool invalid_mask = balance_mask_has_adjacent_cells(new_bal_ic1) ||
-			(m_cells_ic2 > 0 && balance_mask_has_adjacent_cells(new_bal_ic2));
+			(m_cells_ic2 > 0 && balance_mask_has_adjacent_cells(new_bal_ic2)) ||
+			balance_channel_count(new_bal_ic1) > MAX_BALANCE_CHANNELS_PER_IC ||
+			balance_channel_count(new_bal_ic2) > MAX_BALANCE_CHANNELS_PER_IC;
 
 	if (invalid_mask) {
 		new_bal_ic1 = 0;
@@ -246,32 +264,70 @@ static bool apply_bal_bitmap(uint32_t bitmap) {
 		res = false;
 	}
 
-	// BQ1: Toggle - write 0 first, then actual value to reset internal timer
-	subcommands_write16(BQ_ADDR_1, CB_ACTIVE_CELLS, 0);  // Clear first
-	if (subcommands_write16(BQ_ADDR_1, CB_ACTIVE_CELLS, new_bal_ic1)) {
-		m_bal_state_ic1 = new_bal_ic1;
-	} else {
-		res = false;
-	}
+	// Every toggle write is checked. Any failure triggers a best-effort clear on
+	// both ICs and reports zero state; stale requested masks are never published
+	// as though they were still safely active.
+	bool clear1 = subcommands_write16(BQ_ADDR_1, CB_ACTIVE_CELLS, 0);
+	bool set1 = clear1 && subcommands_write16(BQ_ADDR_1,
+			CB_ACTIVE_CELLS, new_bal_ic1);
+	res = res && clear1 && set1;
 
 	// BQ2: Toggle if present
 	if (m_cells_ic2 > 0) {
-		subcommands_write16(BQ_ADDR_2, CB_ACTIVE_CELLS, 0);  // Clear first
-		if (subcommands_write16(BQ_ADDR_2, CB_ACTIVE_CELLS, new_bal_ic2)) {
-			m_bal_state_ic2 = new_bal_ic2;
-		} else {
-			res = false;
-		}
-	} else {
-		m_bal_state_ic2 = 0;
+		bool clear2 = subcommands_write16(BQ_ADDR_2, CB_ACTIVE_CELLS, 0);
+		bool set2 = clear2 && subcommands_write16(BQ_ADDR_2,
+				CB_ACTIVE_CELLS, new_bal_ic2);
+		res = res && clear2 && set2;
 	}
 
-	return res && !invalid_mask;
+	if (!res || invalid_mask) {
+		(void)subcommands_write16(BQ_ADDR_1, CB_ACTIVE_CELLS, 0);
+		if (m_cells_ic2 > 0) {
+			(void)subcommands_write16(BQ_ADDR_2, CB_ACTIVE_CELLS, 0);
+		}
+		m_bal_state_ic1 = 0;
+		m_bal_state_ic2 = 0;
+		m_bal_last_command_ms = 0;
+		if (!invalid_mask) m_balance_fault = true;
+		return false;
+	}
+
+	m_bal_state_ic1 = new_bal_ic1;
+	m_bal_state_ic2 = m_cells_ic2 > 0 ? new_bal_ic2 : 0;
+	m_bal_last_command_ms = (new_bal_ic1 != 0 || new_bal_ic2 != 0) ?
+			xTaskGetTickCount() * portTICK_PERIOD_MS : 0;
+	// A fully verified zero write proves that both balance outputs are off and
+	// is the safe recovery mechanism for a transient balance-control fault.
+	if (new_bal_ic1 == 0 && new_bal_ic2 == 0) m_balance_fault = false;
+	return true;
 }
 
 // Stop all balancing
 static bool stop_all_balancing(void) {
 	return apply_bal_bitmap(0);
+}
+
+static void balance_watchdog_task(void *arg) {
+	(void)arg;
+	while (true) {
+		vTaskDelay(pdMS_TO_TICKS(100));
+		uint32_t last_ms = m_bal_last_command_ms;
+		uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+		if (last_ms == 0 || (now_ms - last_ms) <= BALANCE_WATCHDOG_TIMEOUT_MS) continue;
+		if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+			m_balance_fault = true;
+			continue;
+		}
+		last_ms = m_bal_last_command_ms;
+		now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+		if (last_ms != 0 && (now_ms - last_ms) > BALANCE_WATCHDOG_TIMEOUT_MS) {
+			bool stopped = stop_all_balancing();
+			if (!stopped) m_balance_fault = true;
+			commands_printf("Balance hardware watchdog stopped outputs (ok=%d)",
+					stopped ? 1 : 0);
+		}
+		xSemaphoreGive(bq_mutex);
+	}
 }
 
 static esp_err_t i2c_tx_rx(
@@ -740,6 +796,7 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 
 	m_bal_state_ic1 = 0;
 	m_bal_state_ic2 = 0;
+	m_bal_last_command_ms = 0;
 
 	unsigned int cells_ic1 = 16;
 	if (argn >= 1) {
@@ -852,6 +909,7 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 	}
 
 	xSemaphoreGive(bq_mutex);
+	if (res) m_balance_fault = false;
 
 	return res ? ENC_SYM_TRUE : ENC_SYM_NIL;
 }
@@ -900,6 +958,7 @@ static lbm_value ext_hw_sleep(lbm_value *args, lbm_uint argn) {
 			goto exit_error2;
 		}
 	}
+	m_bal_last_command_ms = 0;
 
 	// Configure BQ1 for sleep (disable temp pull-ups, keep regulator on)
 	if (!command_subcommands(BQ_ADDR_1, SET_CFGUPDATE)
@@ -1126,35 +1185,29 @@ static lbm_value ext_set_bal(lbm_value *args, lbm_uint argn) {
 
 	unsigned int ch = lbm_dec_as_u32(args[0]);
 	int state       = lbm_dec_as_i32(args[1]);
-	bool res        = false;
+	if (ch >= M_CELLS) return ENC_SYM_EERROR;
 
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+		lbm_set_error_reason("bq_mutex timeout in bms-set-bal");
+		return ENC_SYM_EERROR;
+	}
+	uint16_t requested_ic1 = m_bal_state_ic1;
+	uint16_t requested_ic2 = m_bal_state_ic2;
 	if (ch < m_cells_ic1) {
-		// Control BQ1 (at address 0x10)
-		if (state) {
-			m_bal_state_ic1 |= (1 << ch);
-		} else {
-			m_bal_state_ic1 &= ~(1 << ch);
-		}
-
-		res = subcommands_write16(BQ_ADDR_1, CB_ACTIVE_CELLS, m_bal_state_ic1);
-		if (!res) {
-			lbm_set_error_reason(error_comm_bq1);
-		}
-	} else if ((ch - m_cells_ic1) < m_cells_ic2) {
-		// Control BQ2 (at address 0x08)
+		uint16_t bit = (uint16_t)(1U << ch);
+		if (state) requested_ic1 |= bit;
+		else requested_ic1 &= (uint16_t)~bit;
+	} else {
 		unsigned int local_ch = ch - m_cells_ic1;
-		if (state) {
-			m_bal_state_ic2 |= (1 << local_ch);
-		} else {
-			m_bal_state_ic2 &= ~(1 << local_ch);
-		}
-
-		res = subcommands_write16(BQ_ADDR_2, CB_ACTIVE_CELLS, m_bal_state_ic2);
-		if (!res) {
-			lbm_set_error_reason(error_comm_bq2);
-		}
+		uint16_t bit = (uint16_t)(1U << local_ch);
+		if (state) requested_ic2 |= bit;
+		else requested_ic2 &= (uint16_t)~bit;
 	}
 
+	bool res = apply_bal_bitmap((uint32_t)requested_ic1 |
+			((uint32_t)requested_ic2 << 16));
+	xSemaphoreGive(bq_mutex);
+	if (!res) lbm_set_error_reason(ch < m_cells_ic1 ? error_comm_bq1 : error_comm_bq2);
 	return res ? ENC_SYM_TRUE : ENC_SYM_EERROR;
 }
 
@@ -1606,10 +1659,11 @@ static lbm_value ext_broadcast_all(lbm_value *args, lbm_uint argn) {
 			}
 		}
 	}
+	if (m_balance_fault || !m_balance_watchdog_task_handle) faults |= 0x08;
 
 	// Include voltage-settled flag (bit 2).
 	if (m_settled_flag) faults |= 0x04;
-	faults &= 0x07;
+	faults &= 0x0F;
 
 	uint8_t temp_sensor_flags = 0;
 	if (cfg->temp_bq1_en) temp_sensor_flags |= STATUS_TEMP_BQ1_ENABLED;
@@ -2044,8 +2098,8 @@ static void load_extensions(bool main_found) {
 }
 
 void hw_init(void) {
-	i2c_mutex = xSemaphoreCreateMutex();
-	bq_mutex  = xSemaphoreCreateMutex();
+	i2c_mutex = xSemaphoreCreateMutexStatic(&i2c_mutex_storage);
+	bq_mutex  = xSemaphoreCreateMutexStatic(&bq_mutex_storage);
 
 	// Disable VESC CAN protocol decoder - we only use our 11-bit protocol
 	comm_can_use_vesc_decoder(false);
@@ -2076,6 +2130,12 @@ void hw_init(void) {
 
 	// Create buzzer beep task
 	xTaskCreate(buzzer_task, "buzzer", 1024, NULL, 5, &buzzer_task_handle);
+	if (xTaskCreate(balance_watchdog_task, "bal-watchdog", 2048, NULL, 8,
+			&m_balance_watchdog_task_handle) != pdPASS) {
+		m_balance_watchdog_task_handle = NULL;
+		m_balance_fault = true;
+		commands_printf("Balance watchdog task creation failed");
+	}
 
 	// Initialize I2C
 	i2c_config_t conf = {

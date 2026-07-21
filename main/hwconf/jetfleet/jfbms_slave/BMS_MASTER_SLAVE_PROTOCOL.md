@@ -240,7 +240,8 @@ Byte:   0      1      2      3      4      5      6      7
 | 0 | BQ1 initialization/communication fault |
 | 1 | BQ2 initialization/communication fault |
 | 2 | Voltage-settled flag (1 = balance FETs off >= 2 s, voltages are accurate) |
-| 3-7 | Reserved (set to 0) |
+| 3 | Balance-control write/watchdog fault; master must stop charge and balance |
+| 4-7 | Reserved (set to 0) |
 
 For a single-BQ slave, bit 1 remains clear and `CellsIC2` is zero.
 
@@ -319,7 +320,7 @@ Master is responsible for respecting BQ chip limits - only set bits for cells th
 
 All nonzero beep codes play once per received command. For sustained error alerts, the master re-sends the error beep code with each balance command.
 
-**Balance Watchdog:** Slave stops all balancing if no balance command is received for **10 seconds**. Master must periodically resend the balance command (even if unchanged) to maintain balancing.
+**Balance Watchdog:** Slave stops all balancing if no balance command is received for **3 seconds**. A C-side watchdog is independent of the Lisp control loop, and Lisp also checks elapsed monotonic time and local cell/temperature safety. Master must resend active balance commands every second.
 
 ---
 
@@ -332,7 +333,7 @@ All nonzero beep codes play once per received command. For sustained error alert
 | Slave freshness timeout | 1000 ms | A required frame older than this is considered stale |
 | Slave offline debounce | 3 stale checks | Master marks slave offline only after consecutive stale checks |
 | Balance update | As needed | Master sends when balance mask changes |
-| Balance watchdog | 10 s | Slave stops balancing if no command received |
+| Balance watchdog | 3 s | Slave C and Lisp watchdogs stop balancing if no command is received |
 
 ### Transmission Sequence (per slave, every 100 ms)
 
@@ -482,7 +483,7 @@ The current wire format has no broadcast sequence number. Therefore the master c
 - Ignores disabled external NTC slots only when they are `0x7FFF`
 - Separates strict freshness from debounced presence so short gaps do not clear last-good display data
 - Global min/max voltage across all slaves for balancing decisions
-- Resends balance commands periodically (<10 s) to maintain balancing
+- Resends active balance commands every second to maintain balancing
 - Retries balance command if status doesn't match expected
 
 ### Slave Implementation
@@ -494,7 +495,7 @@ The current wire format has no broadcast sequence number. Therefore the master c
 - Sends disabled external NTC slots as `0x7FFF`
 - Listens for balance commands matching its ID (`0x501`-`0x508`)
 - Applies balance mask to BQ76952 `CB_ACTIVE_CELLS` register
-- Stops balancing if no command received for 10 seconds (watchdog)
+- Stops balancing if no command is received for 3 seconds (independent C and Lisp watchdogs)
 
 ### Error Handling
 
@@ -506,7 +507,7 @@ The current wire format has no broadcast sequence number. Therefore the master c
 | External NTC intentionally absent | Send `0x7FFF`, clear enable bit | Ignore only that disabled external channel |
 | Fitted BQ die temperature invalid | Send `0x7FFF` | Set temperature-data fault; block charge/balance |
 | Malformed status DLC | N/A | Reject frame; do not refresh slave status |
-| No balance cmd (10 s) | Stop all balancing | N/A (master should resend periodically) |
+| No active balance cmd (3 s) | Stop all balancing and report bit 3 if the hardware clear fails | N/A (master resends every second) |
 | Slave data older than 300 ms | N/A | Immediately block charge/balance; retain last complete values for display only |
 | Slave offline | N/A | Mark display/presence offline after 3 stale checks |
 | Single-chip slave | BQ2 temps = `0x7FFF`, TempSensorMask bit 1 = 0, fault bit 1 = 0 | Normal operation (not an error) |

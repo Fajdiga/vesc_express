@@ -45,8 +45,8 @@
 #define USER_EXTENSION_STORAGE_SIZE	50
 // The Lisp application is stored in the flash image. Keep only enough runtime
 // space for controller state and transient multi-slave data.
-#define HW_LBM_HEAP_CELLS			6144
-#define HW_LBM_MEMORY_KB			64
+#define HW_LBM_HEAP_CELLS			8192
+#define HW_LBM_MEMORY_KB			96
 
 // CAN: Normal ACK mode for reliable master-slave communication
 #define HW_CAN_NO_ACK_MODE			0
