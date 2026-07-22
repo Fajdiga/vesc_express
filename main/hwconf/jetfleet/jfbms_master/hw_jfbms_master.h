@@ -48,6 +48,14 @@
 #define HW_LBM_HEAP_CELLS			8192
 #define HW_LBM_MEMORY_KB			96
 
+// BLE connection leases keep a stale Android GATT link from hiding the BMS
+// from subsequent scans. A connection must subscribe and exchange a valid VESC
+// packet within 15 seconds, then keep sending valid packets at least once per
+// minute. The advertiser is independently checked once per second.
+#define HW_BLE_QUALIFY_TIMEOUT_MS	15000U
+#define HW_BLE_IDLE_TIMEOUT_MS		60000U
+#define HW_BLE_ADV_WATCHDOG_MS		1000U
+
 // CAN: Normal ACK mode for reliable master-slave communication
 #define HW_CAN_NO_ACK_MODE			0
 

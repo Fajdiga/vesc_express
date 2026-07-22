@@ -12,12 +12,14 @@
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "esp_bt.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
@@ -37,6 +39,21 @@
 #define BLE_NOTIFY_MAX_RETRIES  8
 #define BLE_NOTIFY_RETRY_MS     5
 #define BLE_NOTIFY_CHUNK_GAP_MS 3
+
+// Hardware profiles opt in to the connection leases and advertising watchdog.
+#ifndef HW_BLE_QUALIFY_TIMEOUT_MS
+#define HW_BLE_QUALIFY_TIMEOUT_MS 0U
+#endif
+#ifndef HW_BLE_IDLE_TIMEOUT_MS
+#define HW_BLE_IDLE_TIMEOUT_MS 0U
+#endif
+#ifndef HW_BLE_ADV_WATCHDOG_MS
+#define HW_BLE_ADV_WATCHDOG_MS 0U
+#endif
+
+#define BLE_SUPERVISOR_POLL_MS  1000U
+#define BLE_TERMINATE_GRACE_MS  5000U
+#define BLE_TERMINATE_RETRY_MS  1000U
 
 #ifndef HW_BLE_PWR_LVL
 #if CONFIG_IDF_TARGET_ESP32C6
@@ -60,11 +77,47 @@
 
 void ble_store_config_init(void);
 
-static bool is_connected            = false;
-static uint16_t ble_current_mtu     = DEFAULT_BLE_MTU;
-static uint16_t conn_handle         = 0;
+typedef enum {
+	BLE_LINK_DOWN,
+	BLE_LINK_QUALIFYING,
+	BLE_LINK_ACTIVE,
+	BLE_LINK_TERMINATING,
+} ble_link_phase_t;
+
+typedef struct {
+	bool connected;
+	bool subscribed;
+	bool terminating;
+	uint16_t conn_handle;
+	uint16_t mtu;
+	uint32_t generation;
+} ble_link_snapshot_t;
+
+static const char *TAG = "comm_ble";
+static bool host_synced             = false;
+static bool identity_ready          = false;
+static bool supervisor_initialized  = false;
+static bool notify_subscribed       = false;
+static bool valid_packet_seen       = false;
+static bool reset_pending           = false;
+static uint16_t ble_current_mtu      = DEFAULT_BLE_MTU;
+static uint16_t conn_handle          = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t tx_char_val_handle  = 0;
 static uint8_t own_addr_type        = 0;
+static uint32_t connection_started_ms = 0;
+static uint32_t last_valid_packet_ms  = 0;
+static uint32_t termination_started_ms = 0;
+static uint32_t last_terminate_try_ms  = 0;
+static uint32_t connection_generation  = 0;
+static ble_link_phase_t link_phase     = BLE_LINK_DOWN;
+static struct ble_npl_callout supervisor_callout;
+static portMUX_TYPE link_mux = portMUX_INITIALIZER_UNLOCKED;
+static ble_link_snapshot_t link_snapshot = {
+	.conn_handle = BLE_HS_CONN_HANDLE_NONE,
+	.mtu = DEFAULT_BLE_MTU,
+};
+static SemaphoreHandle_t tx_mutex = NULL;
+static StaticSemaphore_t tx_mutex_storage;
 static PACKET_STATE_t *packet_state = NULL;
 
 /*
@@ -95,8 +148,9 @@ static int gatt_access_cb(
 	void *arg
 );
 static int gap_event_cb(struct ble_gap_event *event, void *arg);
+static void supervisor_cb(struct ble_npl_event *event);
 
-static const struct ble_gatt_chr_def gatt_chrs[] = {
+static struct ble_gatt_chr_def gatt_chrs[] = {
 	{
 		.uuid      = &rx_uuid.u,
 		.access_cb = gatt_access_cb,
@@ -120,6 +174,96 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
 	{0},
 };
 
+static uint32_t now_ms(void) {
+	return (uint32_t)(esp_timer_get_time() / 1000ULL);
+}
+
+static bool timeout_expired(uint32_t now, uint32_t since, uint32_t timeout) {
+	return timeout != 0U && (uint32_t)(now - since) >= timeout;
+}
+
+static void publish_link_state(void) {
+	portENTER_CRITICAL(&link_mux);
+	link_snapshot.connected = link_phase == BLE_LINK_QUALIFYING
+		|| link_phase == BLE_LINK_ACTIVE;
+	link_snapshot.subscribed = link_snapshot.connected && notify_subscribed;
+	link_snapshot.terminating = link_phase == BLE_LINK_TERMINATING;
+	link_snapshot.conn_handle = conn_handle;
+	link_snapshot.mtu = ble_current_mtu;
+	link_snapshot.generation = connection_generation;
+	portEXIT_CRITICAL(&link_mux);
+}
+
+static ble_link_snapshot_t get_link_state(void) {
+	ble_link_snapshot_t state;
+	portENTER_CRITICAL(&link_mux);
+	state = link_snapshot;
+	portEXIT_CRITICAL(&link_mux);
+	return state;
+}
+
+static void schedule_supervisor(uint32_t delay_ms) {
+	if (!supervisor_initialized) {
+		return;
+	}
+
+	int rc = ble_npl_callout_reset(
+		&supervisor_callout, ble_npl_time_ms_to_ticks32(delay_ms)
+	);
+	if (rc != 0) {
+		ESP_LOGE(TAG, "BLE supervisor schedule failed: %d", rc);
+	}
+}
+
+static void stop_supervisor(void) {
+	if (supervisor_initialized) {
+		ble_npl_callout_stop(&supervisor_callout);
+	}
+}
+
+static void reset_packet_parser(void) {
+	if (packet_state) {
+		packet_reset(packet_state);
+	}
+}
+
+static void clear_connection(void) {
+	link_phase = BLE_LINK_DOWN;
+	conn_handle = BLE_HS_CONN_HANDLE_NONE;
+	ble_current_mtu = DEFAULT_BLE_MTU;
+	notify_subscribed = false;
+	valid_packet_seen = false;
+	reset_pending = false;
+	connection_started_ms = 0;
+	last_valid_packet_ms = 0;
+	termination_started_ms = 0;
+	last_terminate_try_ms = 0;
+	reset_packet_parser();
+	publish_link_state();
+	LED_BLUE_OFF();
+}
+
+static void schedule_connection_supervisor(void) {
+	bool needed = link_phase == BLE_LINK_TERMINATING
+		|| (link_phase == BLE_LINK_QUALIFYING
+			&& HW_BLE_QUALIFY_TIMEOUT_MS != 0U)
+		|| (link_phase == BLE_LINK_ACTIVE && HW_BLE_IDLE_TIMEOUT_MS != 0U);
+	if (needed) {
+		schedule_supervisor(BLE_SUPERVISOR_POLL_MS);
+	} else {
+		stop_supervisor();
+	}
+}
+
+static void qualify_connection_if_ready(void) {
+	if (link_phase == BLE_LINK_QUALIFYING && notify_subscribed
+		&& valid_packet_seen) {
+		link_phase = BLE_LINK_ACTIVE;
+	}
+	publish_link_state();
+	schedule_connection_supervisor();
+}
+
 static void apply_tx_power(void) {
 	esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, HW_BLE_PWR_LVL_ADV);
 	esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, HW_BLE_PWR_LVL_SCAN);
@@ -138,7 +282,7 @@ static uint8_t ble_name_len(void) {
 	return len;
 }
 
-static void start_advertising(void) {
+static int start_advertising(void) {
 	struct ble_gap_adv_params adv_params = {0};
 	struct ble_hs_adv_fields adv_fields  = {0};
 	struct ble_hs_adv_fields rsp_fields  = {0};
@@ -159,7 +303,8 @@ static void start_advertising(void) {
 
 	int rc = ble_gap_adv_set_fields(&adv_fields);
 	if (rc != 0) {
-		return;
+		ESP_LOGE(TAG, "Advertising data setup failed: %d", rc);
+		return rc;
 	}
 
 	rsp_fields.tx_pwr_lvl_is_present = 1;
@@ -167,43 +312,182 @@ static void start_advertising(void) {
 	rsp_fields.name                  = (uint8_t *)name;
 	rsp_fields.name_len              = name_len;
 	rsp_fields.name_is_complete      = 1;
-	ble_gap_adv_rsp_set_fields(&rsp_fields);
+	rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
+	if (rc != 0) {
+		ESP_LOGE(TAG, "Scan response setup failed: %d", rc);
+		return rc;
+	}
 
 	adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
 	adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
 	adv_params.itvl_min  = 0x20;
 	adv_params.itvl_max  = 0x40;
 
-	ble_gap_adv_start(
+	rc = ble_gap_adv_start(
 		own_addr_type, NULL, BLE_HS_FOREVER, &adv_params, gap_event_cb, NULL
 	);
+	if (rc != 0) {
+		ESP_LOGE(TAG, "Advertising start failed: %d", rc);
+	}
+	return rc;
+}
+
+static void ensure_advertising(void) {
+	if (!host_synced || link_phase != BLE_LINK_DOWN) {
+		return;
+	}
+
+	if (!identity_ready) {
+		int rc = ble_hs_util_ensure_addr(0);
+		if (rc == 0) {
+			rc = ble_hs_id_infer_auto(0, &own_addr_type);
+		}
+		if (rc != 0) {
+			ESP_LOGE(TAG, "BLE identity setup failed: %d", rc);
+			schedule_supervisor(BLE_SUPERVISOR_POLL_MS);
+			return;
+		}
+		identity_ready = true;
+	}
+
+	if (!ble_gap_adv_active() && start_advertising() != 0) {
+		schedule_supervisor(BLE_SUPERVISOR_POLL_MS);
+		return;
+	}
+
+	if (HW_BLE_ADV_WATCHDOG_MS != 0U) {
+		schedule_supervisor(HW_BLE_ADV_WATCHDOG_MS);
+	} else {
+		stop_supervisor();
+	}
+}
+
+static void begin_termination(const char *reason) {
+	if (link_phase == BLE_LINK_DOWN || link_phase == BLE_LINK_TERMINATING) {
+		return;
+	}
+
+	link_phase = BLE_LINK_TERMINATING;
+	termination_started_ms = now_ms();
+	last_terminate_try_ms = termination_started_ms;
+	reset_packet_parser();
+	publish_link_state();
+	ESP_LOGW(TAG, "Terminating BLE connection: %s", reason);
+
+	int rc = ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+	if (rc == BLE_HS_ENOTCONN) {
+		clear_connection();
+		ensure_advertising();
+		return;
+	}
+	if (rc != 0) {
+		ESP_LOGW(TAG, "BLE terminate request failed: %d", rc);
+	}
+	schedule_supervisor(BLE_SUPERVISOR_POLL_MS);
+}
+
+static void supervisor_cb(struct ble_npl_event *event) {
+	(void)event;
+
+	if (!host_synced) {
+		return;
+	}
+	if (link_phase == BLE_LINK_DOWN) {
+		ensure_advertising();
+		return;
+	}
+
+	uint32_t now = now_ms();
+	if (link_phase == BLE_LINK_QUALIFYING
+		&& timeout_expired(now, connection_started_ms,
+			HW_BLE_QUALIFY_TIMEOUT_MS)) {
+		begin_termination("qualification timeout");
+		return;
+	}
+	if (link_phase == BLE_LINK_ACTIVE
+		&& timeout_expired(now, last_valid_packet_ms, HW_BLE_IDLE_TIMEOUT_MS)) {
+		begin_termination("protocol idle timeout");
+		return;
+	}
+	if (link_phase == BLE_LINK_TERMINATING) {
+		if (timeout_expired(now, termination_started_ms,
+			BLE_TERMINATE_GRACE_MS)) {
+			struct ble_gap_conn_desc desc;
+			if (ble_gap_conn_find(conn_handle, &desc) == BLE_HS_ENOTCONN) {
+				clear_connection();
+				ensure_advertising();
+				return;
+			}
+			if (!reset_pending) {
+				reset_pending = true;
+				ESP_LOGE(TAG, "BLE disconnect stuck; resetting NimBLE host");
+				ble_hs_sched_reset(BLE_HS_ECONTROLLER);
+			}
+		} else if (timeout_expired(now, last_terminate_try_ms,
+			BLE_TERMINATE_RETRY_MS)) {
+			last_terminate_try_ms = now;
+			int rc = ble_gap_terminate(
+				conn_handle, BLE_ERR_REM_USER_CONN_TERM
+			);
+			if (rc == BLE_HS_ENOTCONN) {
+				clear_connection();
+				ensure_advertising();
+				return;
+			}
+		}
+	}
+
+	schedule_supervisor(BLE_SUPERVISOR_POLL_MS);
 }
 
 static int gap_event_cb(struct ble_gap_event *event, void *arg) {
+	(void)arg;
+
 	switch (event->type) {
 		case BLE_GAP_EVENT_CONNECT:
 			if (event->connect.status == 0) {
-				conn_handle     = event->connect.conn_handle;
-				is_connected    = true;
+				stop_supervisor();
+				conn_handle = event->connect.conn_handle;
 				ble_current_mtu = DEFAULT_BLE_MTU;
+				notify_subscribed = false;
+				valid_packet_seen = false;
+				reset_pending = false;
+				connection_started_ms = now_ms();
+				last_valid_packet_ms = 0;
+				connection_generation++;
+				link_phase = BLE_LINK_QUALIFYING;
+				reset_packet_parser();
+				publish_link_state();
 				LED_BLUE_ON();
 				apply_tx_power();
 
 				if (backup.config.ble_mode == BLE_MODE_ENCRYPTED) {
-					ble_gap_security_initiate(conn_handle);
+					int rc = ble_gap_security_initiate(conn_handle);
+					if (rc != 0) {
+						ESP_LOGE(TAG, "BLE security start failed: %d", rc);
+						begin_termination("security start failed");
+						return 0;
+					}
 				}
+				schedule_connection_supervisor();
 			} else {
-				start_advertising();
+				ensure_advertising();
 			}
 			return 0;
 
 		case BLE_GAP_EVENT_DISCONNECT:
-			is_connected = false;
-			LED_BLUE_OFF();
-			start_advertising();
+			if (conn_handle == BLE_HS_CONN_HANDLE_NONE
+				|| event->disconnect.conn.conn_handle == conn_handle) {
+				clear_connection();
+			}
+			ensure_advertising();
 			return 0;
 
 		case BLE_GAP_EVENT_MTU:
+			if (event->mtu.conn_handle != conn_handle
+				|| link_phase == BLE_LINK_DOWN) {
+				return 0;
+			}
 			if (event->mtu.value <= 3) {
 				ble_current_mtu = DEFAULT_BLE_MTU;
 			} else {
@@ -211,6 +495,45 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg) {
 				ble_current_mtu      = payload_mtu > MAX_BLE_PAYLOAD
 						 ? MAX_BLE_PAYLOAD
 						 : payload_mtu;
+			}
+			publish_link_state();
+			return 0;
+
+		case BLE_GAP_EVENT_SUBSCRIBE:
+			if (event->subscribe.conn_handle != conn_handle
+				|| event->subscribe.attr_handle != tx_char_val_handle
+				|| link_phase == BLE_LINK_DOWN
+				|| link_phase == BLE_LINK_TERMINATING) {
+				return 0;
+			}
+			notify_subscribed = event->subscribe.cur_notify != 0;
+			if (!notify_subscribed && link_phase == BLE_LINK_ACTIVE) {
+				link_phase = BLE_LINK_QUALIFYING;
+				valid_packet_seen = false;
+				connection_started_ms = now_ms();
+			}
+			qualify_connection_if_ready();
+			return 0;
+
+		case BLE_GAP_EVENT_ENC_CHANGE:
+			if (event->enc_change.conn_handle == conn_handle
+				&& event->enc_change.status == 0
+				&& link_phase == BLE_LINK_QUALIFYING) {
+				// Pairing time is not charged against protocol qualification.
+				connection_started_ms = now_ms();
+			}
+			return 0;
+
+		case BLE_GAP_EVENT_ADV_COMPLETE:
+			ensure_advertising();
+			return 0;
+
+		case BLE_GAP_EVENT_TERM_FAILURE:
+			if (event->term_failure.conn_handle == conn_handle
+				&& link_phase == BLE_LINK_TERMINATING) {
+				ESP_LOGW(TAG, "BLE termination failed: %d",
+					event->term_failure.status);
+				schedule_connection_supervisor();
 			}
 			return 0;
 
@@ -234,7 +557,6 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg) {
 			return BLE_GAP_REPEAT_PAIRING_RETRY;
 		}
 
-		case BLE_GAP_EVENT_SUBSCRIBE:
 		case BLE_GAP_EVENT_NOTIFY_TX:
 		case BLE_GAP_EVENT_CONN_UPDATE:
 		default:
@@ -247,26 +569,32 @@ static int gatt_access_cb(
 	void *arg
 ) {
 	(void)arg;
+	(void)attr_h;
 
 	switch (ctxt->op) {
 		case BLE_GATT_ACCESS_OP_WRITE_CHR: {
-			// Feed packet bytes regardless of which char (RX char in practice;
-			// the TX char declares WRITE so VESC Tool can negotiate, but writes
-			// to TX are ignored at the protocol layer).
+			if (conn_h != conn_handle || link_phase == BLE_LINK_DOWN
+				|| link_phase == BLE_LINK_TERMINATING
+				|| ble_uuid_cmp(ctxt->chr->uuid, &rx_uuid.u) != 0) {
+				return 0;
+			}
+
 			uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
 			uint8_t buf[MAX_BLE_PAYLOAD];
 			if (len > sizeof(buf))
 				len = sizeof(buf);
 
 			uint16_t out_len = 0;
-			ble_hs_mbuf_to_flat(ctxt->om, buf, len, &out_len);
+			int rc = ble_hs_mbuf_to_flat(ctxt->om, buf, len, &out_len);
+			if (rc != 0) {
+				return BLE_ATT_ERR_UNLIKELY;
+			}
 
-			if (packet_state && ble_uuid_cmp(ctxt->chr->uuid, &rx_uuid.u) == 0) {
+			if (packet_state) {
 				for (uint16_t i = 0; i < out_len; i++) {
 					packet_process_byte(buf[i], packet_state);
 				}
 			}
-			conn_handle = conn_h;
 			return 0;
 		}
 		case BLE_GATT_ACCESS_OP_READ_CHR:
@@ -280,31 +608,39 @@ static int gatt_access_cb(
 }
 
 static void on_sync(void) {
-	int rc = ble_hs_util_ensure_addr(0);
-	if (rc != 0) {
-		return;
-	}
-
-	rc = ble_hs_id_infer_auto(0, &own_addr_type);
-	if (rc != 0) {
-		return;
-	}
-
+	host_synced = true;
+	identity_ready = false;
+	reset_pending = false;
 	apply_tx_power();
-	start_advertising();
+	ensure_advertising();
 }
 
 static void on_reset(int reason) {
-	(void)reason;
+	ESP_LOGW(TAG, "NimBLE host reset: %d", reason);
+	stop_supervisor();
+	host_synced = false;
+	identity_ready = false;
+	clear_connection();
 }
 
 static void host_task(void *param) {
 	(void)param;
 	nimble_port_run();
+	if (supervisor_initialized) {
+		ble_npl_callout_deinit(&supervisor_callout);
+		supervisor_initialized = false;
+	}
 	nimble_port_freertos_deinit();
 }
 
 static void process_packet(unsigned char *data, unsigned int len) {
+	if (link_phase != BLE_LINK_QUALIFYING && link_phase != BLE_LINK_ACTIVE) {
+		return;
+	}
+
+	last_valid_packet_ms = now_ms();
+	valid_packet_seen = true;
+	qualify_connection_if_ready();
 	commands_process_packet(data, len, comm_ble_send_packet);
 }
 
@@ -316,20 +652,38 @@ static void free_packet_state(void) {
 }
 
 static void send_packet_raw(unsigned char *buffer, unsigned int len) {
-	if (!is_connected || tx_char_val_handle == 0) {
+	ble_link_snapshot_t initial = get_link_state();
+	if (!initial.connected || !initial.subscribed || initial.terminating
+		|| initial.conn_handle == BLE_HS_CONN_HANDLE_NONE
+		|| tx_char_val_handle == 0) {
 		return;
 	}
 
 	uint16_t bytes_sent = 0;
 	while (bytes_sent < len) {
+		ble_link_snapshot_t current = get_link_state();
+		if (!current.connected || !current.subscribed || current.terminating
+			|| current.conn_handle != initial.conn_handle
+			|| current.generation != initial.generation) {
+			return;
+		}
+
 		uint16_t chunk = len - bytes_sent;
-		if (chunk > ble_current_mtu) {
-			chunk = ble_current_mtu;
+		if (chunk > current.mtu) {
+			chunk = current.mtu;
 		}
 
 		bool sent = false;
 
 		for (int attempt = 0; attempt <= BLE_NOTIFY_MAX_RETRIES; attempt++) {
+			current = get_link_state();
+			if (!current.connected || !current.subscribed
+				|| current.terminating
+				|| current.conn_handle != initial.conn_handle
+				|| current.generation != initial.generation) {
+				return;
+			}
+
 			struct os_mbuf *om =
 				ble_hs_mbuf_from_flat(buffer + bytes_sent, chunk);
 			if (om == NULL) {
@@ -337,8 +691,9 @@ static void send_packet_raw(unsigned char *buffer, unsigned int len) {
 				continue;
 			}
 
-			int rc =
-				ble_gattc_notify_custom(conn_handle, tx_char_val_handle, om);
+			int rc = ble_gattc_notify_custom(
+				current.conn_handle, tx_char_val_handle, om
+			);
 			if (rc == 0) {
 				sent = true;
 				break;
@@ -362,6 +717,11 @@ static void send_packet_raw(unsigned char *buffer, unsigned int len) {
 }
 
 void comm_ble_init(void) {
+	tx_mutex = xSemaphoreCreateMutexStatic(&tx_mutex_storage);
+	if (!tx_mutex) {
+		return;
+	}
+
 	packet_state = calloc(1, sizeof(PACKET_STATE_t));
 	if (!packet_state) {
 		return;
@@ -399,6 +759,10 @@ void comm_ble_init(void) {
 	ble_svc_gap_init();
 	ble_svc_gatt_init();
 	ble_store_config_init();
+	if (backup.config.ble_mode == BLE_MODE_ENCRYPTED) {
+		gatt_chrs[0].flags |= BLE_GATT_CHR_F_WRITE_ENC;
+		gatt_chrs[1].flags |= BLE_GATT_CHR_F_READ_ENC;
+	}
 
 	int rc = ble_gatts_count_cfg(gatt_svcs);
 	if (rc != 0) {
@@ -413,23 +777,40 @@ void comm_ble_init(void) {
 		return;
 	}
 
-	ble_svc_gap_device_name_set((const char *)backup.config.ble_name);
+	rc = ble_svc_gap_device_name_set((const char *)backup.config.ble_name);
+	if (rc != 0) {
+		nimble_port_deinit();
+		free_packet_state();
+		return;
+	}
+
+	rc = ble_npl_callout_init(
+		&supervisor_callout, nimble_port_get_dflt_eventq(), supervisor_cb, NULL
+	);
+	if (rc == 0) {
+		supervisor_initialized = true;
+	} else {
+		ESP_LOGE(TAG, "BLE supervisor initialization failed: %d", rc);
+	}
 
 	nimble_port_freertos_init(host_task);
 }
 
-bool comm_ble_is_connected() {
-	return is_connected;
+bool comm_ble_is_connected(void) {
+	return get_link_state().connected;
 }
 
 int comm_ble_mtu_now(void) {
-	return ble_current_mtu;
+	return get_link_state().mtu;
 }
 
 void comm_ble_send_packet(unsigned char *data, unsigned int len) {
-	if (!packet_state) {
+	if (!packet_state || !tx_mutex) {
 		return;
 	}
 
-	packet_send_packet(data, len, packet_state);
+	if (xSemaphoreTake(tx_mutex, portMAX_DELAY) == pdTRUE) {
+		packet_send_packet(data, len, packet_state);
+		xSemaphoreGive(tx_mutex);
+	}
 }
