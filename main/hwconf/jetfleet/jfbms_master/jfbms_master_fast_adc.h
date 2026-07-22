@@ -29,6 +29,8 @@ float hw_adc_get_voltage(adc_channel_t channel);
 bool jfbms_fast_adc_disarm_current_monitor(void);
 bool jfbms_fast_adc_set_current_offset(float offset_v);
 bool jfbms_fast_adc_ready(void);
+bool jfbms_fast_oc_sleep_disarm(void);
+bool jfbms_fast_oc_sleep_rearm(void);
 bool jfbms_fast_oc_latched(void);
 bool jfbms_fast_oc_clear_allowed(float charger_detect_v);
 bool jfbms_fast_oc_clear_if_unchanged(uint32_t expected_trip_count);

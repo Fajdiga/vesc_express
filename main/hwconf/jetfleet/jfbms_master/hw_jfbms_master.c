@@ -2291,6 +2291,22 @@ static lbm_value ext_master_clear_fast_oc(lbm_value *args, lbm_uint argn) {
 	return ENC_SYM_TRUE;
 }
 
+// Suspend only the fast comparator callback while COM_EN is powered down for
+// deep sleep. The ADC driver, thresholds and any existing fault latch remain.
+static lbm_value ext_master_sleep_disarm_fast_oc(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	return jfbms_fast_oc_sleep_disarm() ? ENC_SYM_TRUE : ENC_SYM_NIL;
+}
+
+// Rearm after a cancelled sleep. Lisp restores COM_EN and waits for the
+// current-reference settling interval before calling this extension.
+static lbm_value ext_master_sleep_rearm_fast_oc(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	return jfbms_fast_oc_sleep_rearm() ? ENC_SYM_TRUE : ENC_SYM_NIL;
+}
+
 // (master-fast-oc-status) --
 // (latched armed trip-count raw current trip-time-s direction)
 static lbm_value ext_master_fast_oc_status(lbm_value *args, lbm_uint argn) {
@@ -2760,6 +2776,8 @@ static void load_extensions(bool main_found) {
 	lbm_add_extension("master-current-calibration", ext_master_current_calibration);
 	lbm_add_extension("master-boot-status", ext_master_boot_status);
 	lbm_add_extension("master-clear-fast-oc", ext_master_clear_fast_oc);
+	lbm_add_extension("master-sleep-disarm-fast-oc", ext_master_sleep_disarm_fast_oc);
+	lbm_add_extension("master-sleep-rearm-fast-oc", ext_master_sleep_rearm_fast_oc);
 	lbm_add_extension("master-fast-oc-status", ext_master_fast_oc_status);
 	lbm_add_extension("master-charger-status", ext_master_charger_status);
 	lbm_add_extension("master-set-chg", ext_master_set_chg);

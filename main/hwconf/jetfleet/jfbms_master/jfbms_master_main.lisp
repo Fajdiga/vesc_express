@@ -984,22 +984,35 @@ loopwhile-thd
             (setassoc rtc-val 'sleep-enter-time-s (master-get-time-of-day-s))
             (save-rtc-val)
 
-            (gpio-write 6 1) ; COM off, active low.
-            (gpio-hold 6 1)
-            (gpio-hold-deepsleep 1)
-            (prepare-external-wakeup)
-            (sleep 0.05)
+            ; Suppress only the fast comparator before its 1.65 V reference is
+            ; powered down. Keep the original COM_EN and wake-source ordering.
+            (if (trap-value '(master-sleep-disarm-fast-oc) false) {
+                (gpio-write 6 1) ; COM off, active low.
+                (gpio-hold 6 1)
+                (gpio-hold-deepsleep 1)
+                (prepare-external-wakeup)
+                (sleep 0.05)
 
-            ; Do not enter deep sleep if ENABLE changed during preparation.
-            (if (external-wake-active) {
-                (gpio-hold-deepsleep 0)
-                (gpio-hold 6 0)
-                (gpio-write 6 0)
+                ; Do not enter deep sleep if ENABLE changed during preparation.
+                (if (external-wake-active) {
+                    (gpio-hold-deepsleep 0)
+                    (gpio-hold 6 0)
+                    (gpio-write 6 0)
+                    ; Let the current reference settle before callbacks can trip.
+                    (sleep 0.15)
+                    (if (not (trap-value '(master-sleep-rearm-fast-oc) false))
+                        (print "Fast OC rearm failed after sleep cancellation")
+                    )
+                    (setassoc rtc-val 'sleep-enter-time-s 0)
+                    (save-rtc-val)
+                    (print "Sleep cancelled by ENABLE")
+                } {
+                    (sleep-deep dur)
+                })
+            } {
                 (setassoc rtc-val 'sleep-enter-time-s 0)
                 (save-rtc-val)
-                (print "Sleep cancelled by ENABLE")
-            } {
-                (sleep-deep dur)
+                (print "Sleep deferred because fast OC disarm failed")
             })
         } {
             (print "Sleep deferred because fail-close did not complete")

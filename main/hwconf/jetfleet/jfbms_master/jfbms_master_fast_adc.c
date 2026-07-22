@@ -449,6 +449,27 @@ bool jfbms_fast_adc_ready(void) {
 	return m_adc_started && m_fast_oc_armed;
 }
 
+bool jfbms_fast_oc_sleep_disarm(void) {
+	// CHG_EN is already fail-closed here. Leave the continuous ADC and its
+	// monitor configured; only prevent callbacks caused by the powered-down
+	// current reference from being treated as real overcurrent events.
+	if (!m_adc_started || m_adc_reconfiguring || !m_fast_oc_armed) return false;
+	m_fast_oc_armed = false;
+	return true;
+}
+
+bool jfbms_fast_oc_sleep_rearm(void) {
+	// The caller must restore COM_EN and wait for the 1.65 V reference to settle
+	// before rearming. If protection is enabled, its monitor must still exist.
+	main_config_t *cfg = (main_config_t *)&backup.config;
+	if (!m_adc_started || m_adc_reconfiguring ||
+			(cfg->fast_charge_oc_en && !m_adc_monitor)) {
+		return false;
+	}
+	m_fast_oc_armed = true;
+	return true;
+}
+
 bool jfbms_fast_oc_latched(void) {
 	return m_fast_oc_latch;
 }
