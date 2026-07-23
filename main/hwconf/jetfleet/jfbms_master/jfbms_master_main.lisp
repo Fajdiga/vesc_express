@@ -1153,6 +1153,19 @@ loopwhile-thd
     })
 })
 
+(defun rearm-charge-hysteresis () {
+    ; Keep the charge-complete latch set for the whole existing balance cycle:
+    ; 30 seconds active, two seconds settled, and repeat until balancing is done.
+    ; Only the clean, post-balance voltage can rearm charging.
+    (if (and charge-complete pack-data-ok (not (balance-in-progress))
+            (< c-max (bms-get-param 'vc_charge_start))) {
+        (setq charge-complete false)
+        (setassoc rtc-val 'charge-complete false)
+        (save-rtc-val)
+        (print "CHG rearmed below vc_charge_start")
+    })
+})
+
 (defun clear-session-after-disconnect () {
     (var changed false)
     (if (fast-oc-latched) (trap (master-clear-fast-oc)))
@@ -1214,6 +1227,7 @@ loopwhile-thd
         ((not current-zero-ready) "CAL_ZERO")
         ((not (current-data-ok)) "ADC_CURRENT")
         ((not (charger-data-ok)) "ADC_CHARGER")
+        ((balance-in-progress) "BALANCING")
         ((>= c-max (if is-charging
             (bms-get-param 'vc_charge_end)
             (bms-get-param 'vc_charge_start))) "CELL_HIGH")
@@ -1273,18 +1287,20 @@ loopwhile-thd
         (finish-charge "CELL_LIMIT")
     )
 
+    (rearm-charge-hysteresis)
+
     (var block-reason (charge-block-reason charger-detected))
     (setq charge-ok (and charger-detected (= (str-len block-reason) 0)))
 
     (if charge-ok {
-        (var balance-stopped (if (balance-in-progress)
-            (stop-all-balancing)
-            true
-        ))
-        (if balance-stopped {
-            (set-chg true)
-        } {
+        ; The balance controller owns an armed balance cycle. Charging waits
+        ; until it completes instead of interrupting its 30 s / 2 s phases.
+        (if (balance-in-progress) {
+            (setq charge-ok false)
+            (setq block-reason "BALANCING")
             (set-chg false)
+        } {
+            (set-chg true)
         })
     } {
         (set-chg false)

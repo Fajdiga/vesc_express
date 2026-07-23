@@ -198,10 +198,7 @@ typedef struct {
 	// the ESP32 4-byte ABI offsets documented by the static assertions below.
 	float fast_charge_oc_a;
 	bool fast_charge_oc_en;
-	float charge_confirm_time_s;
-	uint8_t config_reserved_0;
-	float charge_taper_time_s;
-	uint8_t config_reserved_1;
+	uint8_t config_reserved[19];
 
 	// --- Master-specific parameters ---
 
@@ -215,6 +212,7 @@ _Static_assert(offsetof(main_config_t, num_slaves) == 400,
 		"JFBMS master num_slaves offset changed; legacy NVS would be lost");
 
 #define JFBMS_MASTER_CONFIG_SIGNATURE_LEGACY 1155088901U
+#define JFBMS_MASTER_CONFIG_SIGNATURE_WITH_CHARGE_TIMERS 2475902502U
 bool jfbms_master_migrate_legacy_config(uint32_t signature, main_config_t *conf);
 bool jfbms_master_validate_config(const main_config_t *conf);
 bool jfbms_master_apply_config(void);

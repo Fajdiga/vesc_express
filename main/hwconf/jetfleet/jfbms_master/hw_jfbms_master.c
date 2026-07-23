@@ -209,18 +209,20 @@ static bool bms_temp_valid(float temp_c) {
 // outside the VESC Tool-generated parser so regeneration cannot erase them.
 bool jfbms_master_migrate_legacy_config(uint32_t signature,
 		main_config_t *conf) {
-	if (signature != JFBMS_MASTER_CONFIG_SIGNATURE_LEGACY || !conf) {
+	if (!conf || (signature != JFBMS_MASTER_CONFIG_SIGNATURE_LEGACY &&
+			signature != JFBMS_MASTER_CONFIG_SIGNATURE_WITH_CHARGE_TIMERS)) {
 		return false;
 	}
 
-	conf->fast_charge_oc_en = CONF_FAST_CHARGE_OC_EN;
-	conf->fast_charge_oc_a = CONF_FAST_CHARGE_OC_A;
-	conf->charge_confirm_time_s = CONF_CHARGE_CONFIRM_TIME_S;
-	conf->charge_taper_time_s = CONF_CHARGE_TAPER_TIME_S;
-	if (conf->max_charge_current <= conf->min_charge_current ||
-			conf->max_charge_current >= conf->fast_charge_oc_a) {
-		conf->max_charge_current = CONF_MAX_CHARGE_CURRENT;
+	if (signature == JFBMS_MASTER_CONFIG_SIGNATURE_LEGACY) {
+		conf->fast_charge_oc_en = CONF_FAST_CHARGE_OC_EN;
+		conf->fast_charge_oc_a = CONF_FAST_CHARGE_OC_A;
+		if (conf->max_charge_current <= conf->min_charge_current ||
+				conf->max_charge_current >= conf->fast_charge_oc_a) {
+			conf->max_charge_current = CONF_MAX_CHARGE_CURRENT;
+		}
 	}
+	memset(conf->config_reserved, 0, sizeof(conf->config_reserved));
 	return true;
 }
 
@@ -237,8 +239,7 @@ bool jfbms_master_validate_config(const main_config_t *conf) {
 		&conf->min_charge_current, &conf->max_charge_current,
 		&conf->soc_filter_const, &conf->t_bal_max_cell,
 		&conf->t_bal_max_ic, &conf->t_charge_min,
-		&conf->fast_charge_oc_a, &conf->charge_confirm_time_s,
-		&conf->charge_taper_time_s,
+		&conf->fast_charge_oc_a,
 	};
 	for (size_t i = 0; i < sizeof(safety_floats) / sizeof(safety_floats[0]); i++) {
 		if (!isfinite(*safety_floats[i])) return false;
@@ -272,10 +273,6 @@ bool jfbms_master_validate_config(const main_config_t *conf) {
 			conf->max_charge_current < conf->fast_charge_oc_a &&
 			conf->fast_charge_oc_a <= JFBMS_FAST_OC_MAX_A &&
 			conf->soc_filter_const >= 0.0f && conf->soc_filter_const <= 1.0f &&
-			conf->charge_confirm_time_s >= 0.1f &&
-			conf->charge_confirm_time_s <= 120.0f &&
-			conf->charge_taper_time_s >= 0.1f &&
-			conf->charge_taper_time_s <= 120.0f &&
 			conf->num_slaves >= 1 && conf->num_slaves <= MAX_SLAVES;
 }
 
@@ -1224,8 +1221,6 @@ typedef struct {
 	lbm_uint t_charge_mon_en;
 	lbm_uint fast_charge_oc_en;
 	lbm_uint fast_charge_oc_a;
-	lbm_uint charge_confirm_time_s;
-	lbm_uint charge_taper_time_s;
 	// Master-specific
 	lbm_uint num_slaves;
 } vesc_syms;
@@ -1302,10 +1297,6 @@ static bool compare_symbol(lbm_uint sym, lbm_uint *comp) {
 			lbm_add_symbol_const("fast_charge_oc_en", comp);
 		} else if (comp == &syms_vesc.fast_charge_oc_a) {
 			lbm_add_symbol_const("fast_charge_oc_a", comp);
-		} else if (comp == &syms_vesc.charge_confirm_time_s) {
-			lbm_add_symbol_const("charge_confirm_time_s", comp);
-		} else if (comp == &syms_vesc.charge_taper_time_s) {
-			lbm_add_symbol_const("charge_taper_time_s", comp);
 		} else if (comp == &syms_vesc.num_slaves) {
 			lbm_add_symbol_const("num_slaves", comp);
 		}
@@ -1444,10 +1435,6 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 		res = get_or_set_bool(set, &cfg->fast_charge_oc_en, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.fast_charge_oc_a)) {
 		res = get_or_set_float(set, &cfg->fast_charge_oc_a, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.charge_confirm_time_s)) {
-		res = get_or_set_float(set, &cfg->charge_confirm_time_s, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.charge_taper_time_s)) {
-		res = get_or_set_float(set, &cfg->charge_taper_time_s, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.num_slaves)) {
 		res = get_or_set_i(set, &cfg->num_slaves, &set_arg);
 	}

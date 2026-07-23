@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0" encoding="UTF-8"?>
 <ConfigParams>
     <Params>
         <config_name>
@@ -964,42 +964,6 @@ p, li { white-space: pre-wrap; }
             <suffix> A</suffix>
             <vTx>9</vTx>
         </fast_charge_oc_a>
-        <charge_confirm_time_s>
-            <longName>Charge Session Confirmation Time</longName>
-            <type>1</type>
-            <transmittable>1</transmittable>
-            <description>Continuous meaningful charge-current time required to confirm a real charge session. An attempt that never establishes current is stopped and waits for charger disconnect.</description>
-            <cDefine>CONF_CHARGE_CONFIRM_TIME_S</cDefine>
-            <editorDecimalsDouble>1</editorDecimalsDouble>
-            <editorScale>1</editorScale>
-            <editAsPercentage>0</editAsPercentage>
-            <maxDouble>120</maxDouble>
-            <minDouble>0.1</minDouble>
-            <showDisplay>0</showDisplay>
-            <stepDouble>0.1</stepDouble>
-            <valDouble>10</valDouble>
-            <vTxDoubleScale>1</vTxDoubleScale>
-            <suffix> s</suffix>
-            <vTx>9</vTx>
-        </charge_confirm_time_s>
-        <charge_taper_time_s>
-            <longName>Charge Taper Confirmation Time</longName>
-            <type>1</type>
-            <transmittable>1</transmittable>
-            <description>Continuous low-current time required to complete a confirmed charge session while the highest cell is near the charge-start voltage.</description>
-            <cDefine>CONF_CHARGE_TAPER_TIME_S</cDefine>
-            <editorDecimalsDouble>1</editorDecimalsDouble>
-            <editorScale>1</editorScale>
-            <editAsPercentage>0</editAsPercentage>
-            <maxDouble>120</maxDouble>
-            <minDouble>0.1</minDouble>
-            <showDisplay>0</showDisplay>
-            <stepDouble>0.1</stepDouble>
-            <valDouble>5</valDouble>
-            <vTxDoubleScale>1</vTxDoubleScale>
-            <suffix> s</suffix>
-            <vTx>9</vTx>
-        </charge_taper_time_s>
     </Params>
     <SerOrder>
         <ser>controller_id</ser>
@@ -1051,8 +1015,6 @@ p, li { white-space: pre-wrap; }
         <ser>shutdown</ser>
         <ser>fast_charge_oc_en</ser>
         <ser>fast_charge_oc_a</ser>
-        <ser>charge_confirm_time_s</ser>
-        <ser>charge_taper_time_s</ser>
     </SerOrder>
     <Grouping>
         <group>
@@ -1127,8 +1089,6 @@ p, li { white-space: pre-wrap; }
                     <param>max_charge_current</param>
                     <param>fast_charge_oc_en</param>
                     <param>fast_charge_oc_a</param>
-                    <param>charge_confirm_time_s</param>
-                    <param>charge_taper_time_s</param>
                 </subgroupParams>
             </subgroup>
             <subgroup>

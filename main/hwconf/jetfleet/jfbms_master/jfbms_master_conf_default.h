@@ -248,15 +248,5 @@
 #define CONF_FAST_CHARGE_OC_A 15
 #endif
 
-// Charge Confirmation Time
-#ifndef CONF_CHARGE_CONFIRM_TIME_S
-#define CONF_CHARGE_CONFIRM_TIME_S 10
-#endif
-
-// Charge Taper Confirmation Time
-#ifndef CONF_CHARGE_TAPER_TIME_S
-#define CONF_CHARGE_TAPER_TIME_S 5
-#endif
-
 // JFBMS_MASTER_CONF_DEFAULT_H_
 #endif
