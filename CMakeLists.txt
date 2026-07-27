@@ -9,6 +9,10 @@ if(NOT DEFINED HW_NAME)
             set(HW_NAME "JFBMS_MASTER")
         elseif(IDF_TARGET STREQUAL "esp32c6_fh8")
             set(HW_NAME "Devkit C6 FH8")
+        elseif(IDF_TARGET STREQUAL "esp32c6")
+            # A bare ESP-IDF C6 selection is the JFBMS master profile.
+            # Variant-specific profiles (fh4/fh8) remain selectable by HW_NAME.
+            set(HW_NAME "JFBMS_MASTER")
         elseif(IDF_TARGET STREQUAL "esp32p4_nrw32n16")
             set(HW_NAME "P4 NRW32N16")
         elseif(IDF_TARGET STREQUAL "esp32c3")
