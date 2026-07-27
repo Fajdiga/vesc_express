@@ -830,7 +830,23 @@ loopwhile-thd
     ; Lisp sleep yields, so VESC Tool and CAN processing remain responsive.
     (sleep 1.0)
     (print "CAL: sampling current ADC")
-    (master-calibrate-current)
+    (var request-ok (trap-value '(master-calibrate-current) false))
+    (if request-ok {
+        ; The C request is completed by master-update-vesc-bms. Keep the
+        ; charge gate locked until that owner has committed the offset and
+        ; cleared its running flag.
+        (var calibrated false)
+        (looprange i 0 150 {
+            (sleep 0.1)
+            (var status (trap-value '(master-current-calibration) false))
+            (if (and status (>= (length status) 4)
+                    (ix status 0) (not (ix status 3))) {
+                (setq calibrated true)
+                (break)
+            })
+        })
+        calibrated
+    } false)
 })
 
 (defun current-calibration-thd () {
