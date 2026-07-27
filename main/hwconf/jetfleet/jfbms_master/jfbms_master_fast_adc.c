@@ -50,6 +50,7 @@ static TaskHandle_t m_adc_task_handle;
 static SemaphoreHandle_t m_adc_mutex;
 static StaticSemaphore_t m_adc_mutex_storage;
 static volatile bool m_adc_started;
+static volatile bool m_adc_initial_monitor_setup;
 static volatile bool m_adc_reconfiguring;
 static volatile bool m_fast_oc_armed;
 static volatile bool m_adc_monitor_enabled;
@@ -296,6 +297,7 @@ static void adc_init_cleanup(void) {
 		m_adc_handle = NULL;
 	}
 	m_fast_oc_armed = false;
+	m_adc_initial_monitor_setup = false;
 	m_adc_reconfiguring = false;
 }
 
@@ -331,8 +333,7 @@ static bool adc_install_current_monitor(float offset_v) {
 	float trip_current = cfg->fast_charge_oc_a;
 	float low_voltage = offset_v - (trip_current / ISENSE_SCALE);
 	float high_voltage = offset_v + (trip_current / ISENSE_SCALE);
-	bool thresholds_valid = cfg->fast_charge_oc_en &&
-			isfinite(offset_v) && isfinite(cfg->max_charge_current) &&
+	bool thresholds_valid = isfinite(offset_v) && isfinite(cfg->max_charge_current) &&
 			isfinite(trip_current) &&
 			cfg->max_charge_current < trip_current &&
 			trip_current > 0.0f &&
@@ -433,6 +434,7 @@ bool jfbms_fast_adc_init(void) {
 		return false;
 	}
 	m_adc_started = true;
+	m_adc_initial_monitor_setup = true;
 	// hw_init waits for the powered current reference to settle before it calls
 	// jfbms_fast_adc_set_current_offset() and permits protection to arm.
 	m_fast_oc_armed = false;
@@ -474,12 +476,16 @@ static bool adc_rebuild_current_monitor(float offset_v) {
 
 	bool configured = adc_remove_current_monitor();
 	main_config_t *cfg = (main_config_t *)&backup.config;
-	if (configured && cfg->fast_charge_oc_en) {
+	if (configured) {
 		configured = adc_install_current_monitor(offset_v);
 	}
 
 	bool restarted = adc_continuous_start(m_adc_handle) == ESP_OK;
 	m_adc_started = restarted;
+	if (restarted && configured && !cfg->fast_charge_oc_en &&
+			m_adc_monitor_enabled) {
+		configured = adc_set_current_monitor_enabled(false);
+	}
 	if (!restarted && m_adc_monitor_enabled) {
 		(void)adc_set_current_monitor_enabled(false);
 	}
@@ -502,7 +508,7 @@ static bool adc_reconfigure_current_monitor(float offset_v, bool arm_protection)
 	}
 
 	main_config_t *cfg = (main_config_t *)&backup.config;
-	if (!cfg->fast_charge_oc_en) {
+	if (!cfg->fast_charge_oc_en && !m_adc_initial_monitor_setup) {
 		// Protection disabled means no comparator callback may affect CHG_EN.
 		// Leave an existing monitor allocated but physically disabled so normal
 		// ADC sampling continues without a stop/restart.
@@ -526,10 +532,9 @@ static bool adc_reconfigure_current_monitor(float offset_v, bool arm_protection)
 		return true;
 	}
 
-	// ESP-IDF permits monitor creation/deletion only while the continuous ADC is
-	// stopped. Hold the reader mutex across this bounded rebuild and always
-	// restart the sampler, including failure paths, so current UI data is not
-	// coupled to the optional protection setting.
+	// A monitor is created once during ADC startup. Runtime creation/deletion
+	// would require stopping the live ADC stream and can strand the controller.
+	if (!m_adc_initial_monitor_setup) return false;
 	return adc_rebuild_current_monitor(offset_v);
 }
 
@@ -538,7 +543,9 @@ bool jfbms_fast_adc_disarm_current_monitor(void) {
 }
 
 bool jfbms_fast_adc_set_current_offset(float offset_v) {
-	return adc_reconfigure_current_monitor(offset_v, true);
+	bool result = adc_reconfigure_current_monitor(offset_v, true);
+	if (result) m_adc_initial_monitor_setup = false;
+	return result;
 }
 
 void jfbms_fast_adc_set_software_offset(float offset_v) {
