@@ -2259,7 +2259,9 @@ static lbm_value ext_master_calibrate_current(lbm_value *args, lbm_uint argn) {
 		return ENC_SYM_NIL;
 	}
 
+	commands_printf_lisp("CAL begin: offset=%.4f V", (double)offset_v);
 	bool protection_ready = isense_apply_offset(offset_v);
+	commands_printf_lisp("CAL ADC apply done: protection=%d", protection_ready ? 1 : 0);
 	m_current_valid = true;
 	m_current_offset_calibrated = true;
 	bool stored = isense_store_offset(offset_v);
@@ -2809,6 +2811,14 @@ void hw_init(void) {
 	}
 	m_boot_count++;
 	m_previous_reset_reason = (uint32_t)esp_reset_reason();
+	{
+		uint32_t adc_stage = 0;
+		uint32_t adc_count = 0;
+		if (jfbms_fast_adc_get_debug(&adc_stage, &adc_count) && adc_stage != 0U) {
+			commands_printf("ADC_RECONFIG_LAST stage=%u count=%u",
+					(unsigned)adc_stage, (unsigned)adc_count);
+		}
+	}
 	m_data_mutex = xSemaphoreCreateMutexStatic(&m_data_mutex_storage);
 	m_balance_tx_mutex = xSemaphoreCreateMutexStatic(&m_balance_tx_mutex_storage);
 	if (!jfbms_master_validate_config((const main_config_t *)&backup.config)) {
