@@ -79,8 +79,6 @@ static bool  m_current_filter_init = false;
 static bool  m_current_valid = false;
 static bool  m_current_offset_calibrated = false;
 static volatile bool m_calibration_in_progress = false;
-static volatile bool m_calibration_request = false;
-static volatile uint32_t m_calibration_request_ms;
 #define ISENSE_EMA_ALPHA  0.85f            // Calm BMS current display/counters at 10 Hz
 
 static float isense_read_voltage(void) {
@@ -2158,31 +2156,6 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 	{
 		float v = isense_read_voltage();
 		m_current_valid = v >= 0.0f && isfinite(v);
-		if (m_calibration_request &&
-				(m_current_valid || (now_ms - m_calibration_request_ms) > 5000U)) {
-			m_calibration_request = false;
-			if (!m_current_valid) {
-				m_calibration_in_progress = false;
-				commands_printf_lisp("CAL rejected: current ADC reference is invalid");
-			} else {
-				// This extension is the sole owner of the continuous ADC cache. Apply
-				// the requested zero here, outside the separate Lisp calibration
-				// thread, so monitor rebuild cannot race current publication.
-				bool protection_ready = isense_apply_offset(v);
-				m_current_valid = true;
-				m_current_offset_calibrated = true;
-				bool stored = isense_store_offset(v);
-				m_calibration_in_progress = false;
-				commands_printf_lisp("CAL complete: offset=%.4f V stored=%d protection=%d",
-						(double)v, stored ? 1 : 0, protection_ready ? 1 : 0);
-				if (!stored) {
-					commands_printf_lisp("CAL warning: NVS store failed; zero is valid only until reboot");
-				}
-				if (!protection_ready) {
-					commands_printf_lisp("CAL warning: fast current protection is not ready; charging remains off");
-				}
-			}
-		}
 		if (m_current_valid && m_current_offset_calibrated) {
 			float raw_a = (v - m_current_offset) * ISENSE_SCALE;
 			if (!m_current_filter_init) {
@@ -2262,23 +2235,44 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 // Current Sense Extensions
 // ============================================================================
 
-// (master-calibrate-current) -- request a zero-current calibration. The actual
-// ADC offset/monitor update is consumed by master-update-vesc-bms, the single
-// owner of the continuous ADC cache.
+// (master-calibrate-current) -- commit the latest continuous-ADC sample as the
+// measurement zero. This runs synchronously from the calibration command so a
+// Lisp calibration thread cannot wait forever for a periodic BMS refresh that
+// may be blocked by another pack operation. The ADC reconfiguration itself is
+// serialized by jfbms_fast_adc's mutex.
 static lbm_value ext_master_calibrate_current(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 
-	if (m_calibration_in_progress || m_calibration_request) {
+	if (m_calibration_in_progress) {
 		commands_printf_lisp("Current calibration is already running");
 		return ENC_SYM_NIL;
 	}
 
 	m_calibration_in_progress = true;
-	m_calibration_request = true;
-	m_calibration_request_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
 	gpio_set_level(PIN_CHG_EN, 0);
-	commands_printf_lisp("CAL requested: waiting for ADC update");
+
+	float offset_v = isense_read_voltage();
+	if (!isense_offset_valid(offset_v)) {
+		m_calibration_in_progress = false;
+		commands_printf_lisp("CAL rejected: current ADC reference is invalid");
+		return ENC_SYM_NIL;
+	}
+
+	bool protection_ready = isense_apply_offset(offset_v);
+	m_current_valid = true;
+	m_current_offset_calibrated = true;
+	bool stored = isense_store_offset(offset_v);
+
+	m_calibration_in_progress = false;
+	commands_printf_lisp("CAL complete: offset=%.4f V stored=%d protection=%d",
+			(double)offset_v, stored ? 1 : 0, protection_ready ? 1 : 0);
+	if (!stored) {
+		commands_printf_lisp("CAL warning: NVS store failed; zero is valid only until reboot");
+	}
+	if (!protection_ready) {
+		commands_printf_lisp("CAL warning: fast current protection is not ready; charging remains off");
+	}
 	return ENC_SYM_TRUE;
 }
 

@@ -449,11 +449,6 @@ float hw_adc_get_voltage(adc_channel_t channel) {
 static bool adc_rebuild_current_monitor(float offset_v) {
 	m_adc_reconfiguring = true;
 	GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
-	if (m_adc_monitor_enabled &&
-			!adc_set_current_monitor_enabled(false)) {
-		m_adc_reconfiguring = false;
-		return false;
-	}
 
 	TickType_t lock_wait = pdMS_TO_TICKS(JFBMS_ADC_RECONFIG_TIMEOUT_MS);
 	if (lock_wait == 0) lock_wait = 1;

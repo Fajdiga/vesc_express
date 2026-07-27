@@ -832,9 +832,9 @@ loopwhile-thd
     (print "CAL: sampling current ADC")
     (var request-ok (trap-value '(master-calibrate-current) false))
     (if request-ok {
-        ; The C request is completed by master-update-vesc-bms. Keep the
-        ; charge gate locked until that owner has committed the offset and
-        ; cleared its running flag.
+        ; The C command commits the offset before returning. Keep this small
+        ; poll for compatibility with older firmware and to verify the value
+        ; is visible through the public calibration status extension.
         (var calibrated false)
         (looprange i 0 150 {
             (sleep 0.1)
