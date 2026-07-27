@@ -771,7 +771,7 @@ loopwhile-thd
         (setq init-done true)
 
         (setq charge-ok (and
-                (< c-max (bms-get-param 'vc_charge_end))
+                (< c-max (bms-get-param 'vc_charge_start))
                 (> c-min (bms-get-param 'vc_charge_min))
                 (< t-max (bms-get-param 't_charge_max))
                 (> t-min (bms-get-param 't_charge_min))
