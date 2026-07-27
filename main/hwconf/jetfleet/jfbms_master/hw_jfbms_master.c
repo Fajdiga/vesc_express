@@ -49,13 +49,15 @@
 #endif
 
 // ============================================================================
-// Current Sense (GPIO2 / ADC1_CH2): 1 mΩ shunt, INA181A3 100× amp,
-// center ~1.65 V. Scale = 1 / (0.001 Ω * 100 V/V) = 10 A/V.
+// Current Sense (GPIO2 / ADC1_CH2): nominal 1 mΩ shunt, INA181A3 100×
+// amplifier, center ~1.65 V. Bench calibration on the assembled master gives
+// 55 mV at 1.1 A, so apply the measured 2× correction to the nominal 10 A/V.
 // ============================================================================
 
 #define ISENSE_GAIN    100.0f
 #define ISENSE_RSHUNT  0.001f
-#define ISENSE_SCALE   (1.0f / (ISENSE_GAIN * ISENSE_RSHUNT))   // 10 A/V
+#define ISENSE_CALIBRATION 2.0f
+#define ISENSE_SCALE   (ISENSE_CALIBRATION / (ISENSE_GAIN * ISENSE_RSHUNT)) // 20 A/V
 #define ISENSE_ZERO_DEADBAND_A 0.10f
 #define ISENSE_DEFAULT_OFFSET_V 1.65f
 #define ISENSE_OFFSET_MIN_V 1.50f
@@ -140,13 +142,19 @@ static bool isense_store_offset(float offset_v) {
 }
 
 static bool isense_apply_offset(float offset_v) {
+	if (!isense_offset_valid(offset_v)) return false;
+
+	// Filtering is independent of the hardware threshold monitor. Keep using
+	// the stored/current zero even if protection cannot be armed; CHG_EN still
+	// remains fail-closed through the error return below.
+	m_current_offset      = offset_v;
+	m_current_filtered    = 0.0f;
+	m_current_filter_init = false;
+
 	if (!jfbms_fast_adc_set_current_offset(offset_v)) {
 		gpio_set_level(PIN_CHG_EN, 0);
 		return false;
 	}
-	m_current_offset      = offset_v;
-	m_current_filtered    = 0.0f;
-	m_current_filter_init = false;
 	return true;
 }
 
@@ -270,7 +278,8 @@ bool jfbms_master_validate_config(const main_config_t *conf) {
 			conf->shutdown >= 0 && conf->shutdown <= 3650 &&
 			conf->min_charge_current > 0.0f &&
 			conf->min_charge_current < conf->max_charge_current &&
-			conf->max_charge_current < conf->fast_charge_oc_a &&
+			(!conf->fast_charge_oc_en ||
+				conf->max_charge_current < conf->fast_charge_oc_a) &&
 			conf->fast_charge_oc_a <= JFBMS_FAST_OC_MAX_A &&
 			conf->soc_filter_const >= 0.0f && conf->soc_filter_const <= 1.0f &&
 			conf->num_slaves >= 1 && conf->num_slaves <= MAX_SLAVES;
@@ -683,12 +692,19 @@ static bool pack_safety_ready(void) {
 // complete safe snapshot within the 300 ms safety window.
 static void pack_safety_timer_cb(void *arg) {
 	(void)arg;
-	uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+	// m_slave_complete_ms is recorded from the FreeRTOS tick clock. Comparing it
+	// with esp_timer_get_time() mixes two different boot epochs; once their
+	// offset exceeds 300 ms the watchdog cuts every valid charge-enable pulse.
+	uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
 	int count = configured_slave_count();
 	for (int idx = 0; idx < count; idx++) {
 		uint32_t commit_ms = m_slave_complete_ms[idx];
-		if (commit_ms == 0 || (now_ms - commit_ms) > SLAVE_CHARGE_FRESHNESS_TIMEOUT_MS ||
-				!m_slave_snapshot_safe[idx] || !m_slave_charge_safe[idx]) {
+		uint32_t age_ms = commit_ms == 0 ? UINT32_MAX : now_ms - commit_ms;
+		uint8_t reason = commit_ms == 0 ? 1 :
+				(age_ms > SLAVE_CHARGE_FRESHNESS_TIMEOUT_MS ? 2 :
+				(!m_slave_snapshot_safe[idx] ? 3 :
+				(!m_slave_charge_safe[idx] ? 4 : 0)));
+		if (reason != 0) {
 			GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
 			return;
 		}
@@ -2152,6 +2168,8 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 			if (fabsf(m_current_filtered) <= ISENSE_ZERO_DEADBAND_A) {
 				m_current_filtered = 0.0f;
 			}
+			// Match JFBMS32/VESC BMS current convention: discharge is positive
+			// and charging is negative. Lisp derives charge current as -iout.
 			bms->i_in    = m_current_filtered;
 			bms->i_in_ic = m_current_filtered;
 		} else {
@@ -2218,10 +2236,10 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 // ============================================================================
 
 // (master-calibrate-current) -- commit the latest averaged ADC frame as the
-// software measurement zero. The fast hardware protection remains centered on
-// the safe 1/2-VCC boot reference; changing it would require stopping and
-// restarting the continuous ADC and could block the Lisp/VESC Tool context.
-// Lisp performs the one-second wait while CHG_EN is off.
+// measurement zero. Lisp performs the one-second wait while CHG_EN is off.
+// The hardware thresholds are then recentered with a bounded ADC restart when
+// fast protection is enabled; a failure leaves charging locked but must not
+// invalidate the accurate software measurement or its UI presentation.
 static lbm_value ext_master_calibrate_current(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
@@ -2242,20 +2260,19 @@ static lbm_value ext_master_calibrate_current(lbm_value *args, lbm_uint argn) {
 	}
 
 
-	// This is deliberately only a few assignments: no mutex, delay, ADC stop or
-	// CAN transaction is allowed in the VESC Tool calibration path.
-	m_current_offset = offset_v;
-	m_current_filtered = 0.0f;
-	m_current_filter_init = false;
+	bool protection_ready = isense_apply_offset(offset_v);
 	m_current_valid = true;
 	m_current_offset_calibrated = true;
 	bool stored = isense_store_offset(offset_v);
 
 	m_calibration_in_progress = false;
-	commands_printf_lisp("CAL complete: offset=%.4f V stored=%d",
-			(double)offset_v, stored ? 1 : 0);
+	commands_printf_lisp("CAL complete: offset=%.4f V stored=%d protection=%d",
+			(double)offset_v, stored ? 1 : 0, protection_ready ? 1 : 0);
 	if (!stored) {
 		commands_printf_lisp("CAL warning: NVS store failed; zero is valid only until reboot");
+	}
+	if (!protection_ready) {
+		commands_printf_lisp("CAL warning: fast current protection is not ready; charging remains off");
 	}
 	return ENC_SYM_TRUE;
 }
@@ -2333,7 +2350,8 @@ static lbm_value ext_master_current_calibration(lbm_value *args, lbm_uint argn) 
 	(void)argn;
 	float voltage = isense_read_voltage();
 	bool valid = m_current_offset_calibrated &&
-			isense_offset_valid(m_current_offset) && jfbms_fast_adc_ready();
+			isense_offset_valid(m_current_offset) &&
+			voltage >= 0.0f && isfinite(voltage);
 	float current = valid && voltage >= 0.0f && isfinite(voltage) ?
 			(voltage - m_current_offset) * ISENSE_SCALE : 0.0f;
 	lbm_value result = ENC_SYM_NIL;
@@ -2505,7 +2523,6 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 			(double)hw_adc_get_voltage(HW_ADC_CH3),
 			(double)hw_adc_get_voltage(HW_ADC_CH4),
 			(double)(m_temp_pcb_valid ? m_temp_pcb : -300.0f));
-
 	volatile bms_values *ui_bms = bms_get_values();
 	uint32_t ui_balance_low = 0;
 	int ui_cell_count = ui_bms->cell_num;
@@ -2864,8 +2881,8 @@ void hw_init(void) {
 			terminal_shutdown);
 
 	// Restore the one-time current zero when available. A new controller uses the
-	// safe midpoint and displays 0 A until the first charge captures and stores
-	// its actual zero. The manual VESC Tool command can replace it later.
+	// safe midpoint internally but displays 0 A until the first charge captures
+	// and stores its actual zero. The manual VESC Tool command can replace it.
 	{
 		bool adc_ok = jfbms_fast_adc_init();
 		if (!adc_ok) {
@@ -2881,7 +2898,9 @@ void hw_init(void) {
 			// disarmed until the reference has had time to settle.
 			vTaskDelay(pdMS_TO_TICKS(ISENSE_POWER_SETTLE_MS));
 			protection_armed = isense_apply_offset(startup_offset);
-			m_current_offset_calibrated = stored_offset && protection_armed;
+			// Stored current calibration remains valid independently of the
+			// optional fast-OC monitor. CHG_EN checks monitor readiness itself.
+			m_current_offset_calibrated = stored_offset;
 			if (m_current_offset_calibrated) {
 				commands_printf("JFBMS current zero restored: %.4f V",
 						(double)m_current_offset);

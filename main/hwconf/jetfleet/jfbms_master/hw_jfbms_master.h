@@ -251,7 +251,8 @@ bool jfbms_master_apply_config(void);
 #define PIN_SHUTDOWN				19	// Shutdown drive, high-Z idle, push-pull high when active
 
 // ADC channels
-// GPIO2 = current sense amp output (1 mΩ shunt, INA181A3 100× gain, center ~1.65 V)
+// GPIO2 = current sense amp output (center ~1.65 V; assembled-board transfer
+// function is bench-calibrated in hw_jfbms_master.c)
 // GPIO3 = charger voltage divider (300 kΩ : 4.7 kΩ → 64.83×)
 // GPIO4 = NTC NCP18XH103F03RB (10 k @ 25 °C, B25/85 = 3434), 10 kΩ pull-up to 3.3 V
 #define HW_ADC_CH2					ADC_CHANNEL_2 // Current sense

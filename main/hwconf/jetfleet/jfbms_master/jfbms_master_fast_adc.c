@@ -52,6 +52,9 @@ static StaticSemaphore_t m_adc_mutex_storage;
 static volatile bool m_adc_started;
 static volatile bool m_adc_reconfiguring;
 static volatile bool m_fast_oc_armed;
+static volatile bool m_adc_monitor_enabled;
+static float m_adc_monitor_offset_v;
+static float m_adc_monitor_trip_a;
 static volatile bool m_fast_oc_latch;
 static volatile int8_t m_fast_oc_direction;
 static volatile uint32_t m_fast_oc_trip_count;
@@ -105,11 +108,20 @@ static int adc_voltage_to_raw(adc_channel_t channel, float voltage) {
 	return low;
 }
 
-static bool IRAM_ATTR fast_oc_trip(int8_t direction) {
+static bool IRAM_ATTR fast_oc_trip(adc_monitor_handle_t monitor,
+		int8_t direction) {
 	// This must remain scheduler-, logging- and mutex-free.
-	// Ignore a stale comparator callback while the monitor is being removed or
-	// before a freshly calibrated threshold has been explicitly armed.
-	if (!m_fast_oc_armed || m_adc_reconfiguring) return false;
+	// Disable the level-sensitive monitor on the first event. Leaving it enabled
+	// while the current remains outside the window generates an interrupt for
+	// every ADC conversion and can starve the continuous-reader task and UI.
+	if (!m_adc_monitor_enabled || !m_fast_oc_armed ||
+			m_adc_reconfiguring) {
+		return false;
+	}
+	m_fast_oc_armed = false;
+	if (adc_continuous_monitor_disable(monitor) == ESP_OK) {
+		m_adc_monitor_enabled = false;
+	}
 	GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
 	m_fast_oc_rtc_magic = JFBMS_FAST_OC_RTC_MAGIC;
 	m_fast_oc_diag_seq++;
@@ -126,18 +138,16 @@ static bool IRAM_ATTR fast_oc_trip(int8_t direction) {
 
 static bool IRAM_ATTR fast_oc_below_threshold_cb(adc_monitor_handle_t monitor,
 		const adc_monitor_evt_data_t *event_data, void *user_data) {
-	(void)monitor;
 	(void)event_data;
 	(void)user_data;
-	return fast_oc_trip(-1);
+	return fast_oc_trip(monitor, -1);
 }
 
 static bool IRAM_ATTR fast_oc_above_threshold_cb(adc_monitor_handle_t monitor,
 		const adc_monitor_evt_data_t *event_data, void *user_data) {
-	(void)monitor;
 	(void)event_data;
 	(void)user_data;
-	return fast_oc_trip(1);
+	return fast_oc_trip(monitor, 1);
 }
 
 static void charger_detector_update(float voltage_v, uint32_t now_ms) {
@@ -266,10 +276,15 @@ static void adc_init_cleanup(void) {
 		m_adc_task_handle = NULL;
 	}
 	if (m_adc_monitor) {
-		(void)adc_continuous_monitor_disable(m_adc_monitor);
+		if (m_adc_monitor_enabled) {
+			(void)adc_continuous_monitor_disable(m_adc_monitor);
+		}
 		(void)adc_del_continuous_monitor(m_adc_monitor);
 		m_adc_monitor = NULL;
 	}
+	m_adc_monitor_enabled = false;
+	m_adc_monitor_offset_v = 0.0f;
+	m_adc_monitor_trip_a = 0.0f;
 	for (int channel = 0; channel < 5; channel++) {
 		if (m_adc_cali[channel]) {
 			(void)adc_cali_delete_scheme_curve_fitting(m_adc_cali[channel]);
@@ -282,6 +297,73 @@ static void adc_init_cleanup(void) {
 	}
 	m_fast_oc_armed = false;
 	m_adc_reconfiguring = false;
+}
+
+static bool adc_set_current_monitor_enabled(bool enable) {
+	if (!m_adc_monitor) return false;
+	if (m_adc_monitor_enabled == enable) return true;
+
+	esp_err_t res = enable ?
+			adc_continuous_monitor_enable(m_adc_monitor) :
+			adc_continuous_monitor_disable(m_adc_monitor);
+	if (res != ESP_OK) return false;
+	m_adc_monitor_enabled = enable;
+	return true;
+}
+
+// The ADC driver must be stopped before this helper is called.
+static bool adc_remove_current_monitor(void) {
+	if (!m_adc_monitor) return true;
+	if (m_adc_monitor_enabled &&
+			adc_continuous_monitor_disable(m_adc_monitor) != ESP_OK) {
+		return false;
+	}
+	m_adc_monitor_enabled = false;
+	if (adc_del_continuous_monitor(m_adc_monitor) != ESP_OK) return false;
+	m_adc_monitor = NULL;
+	m_adc_monitor_offset_v = 0.0f;
+	m_adc_monitor_trip_a = 0.0f;
+	return true;
+}
+
+static bool adc_install_current_monitor(float offset_v) {
+	main_config_t *cfg = (main_config_t *)&backup.config;
+	float trip_current = cfg->fast_charge_oc_a;
+	float low_voltage = offset_v - (trip_current / ISENSE_SCALE);
+	float high_voltage = offset_v + (trip_current / ISENSE_SCALE);
+	bool thresholds_valid = cfg->fast_charge_oc_en &&
+			isfinite(offset_v) && isfinite(cfg->max_charge_current) &&
+			isfinite(trip_current) &&
+			cfg->max_charge_current < trip_current &&
+			trip_current > 0.0f &&
+			trip_current <= JFBMS_FAST_OC_MAX_A &&
+			low_voltage > 0.02f && high_voltage < 3.28f;
+	if (!thresholds_valid) return false;
+
+	adc_monitor_config_t monitor_cfg = {
+		.adc_unit = ADC_UNIT_1,
+		.channel = HW_ADC_CH2,
+		.h_threshold = adc_voltage_to_raw(HW_ADC_CH2, high_voltage),
+		.l_threshold = adc_voltage_to_raw(HW_ADC_CH2, low_voltage),
+	};
+	adc_monitor_evt_cbs_t monitor_callbacks = {
+		.on_below_low_thresh = fast_oc_below_threshold_cb,
+		.on_over_high_thresh = fast_oc_above_threshold_cb,
+	};
+	if (adc_new_continuous_monitor(m_adc_handle, &monitor_cfg,
+			&m_adc_monitor) != ESP_OK) {
+		return false;
+	}
+	m_adc_monitor_enabled = false;
+	if (adc_continuous_monitor_register_event_callbacks(m_adc_monitor,
+			&monitor_callbacks, NULL) != ESP_OK ||
+			!adc_set_current_monitor_enabled(true)) {
+		(void)adc_remove_current_monitor();
+		return false;
+	}
+	m_adc_monitor_offset_v = offset_v;
+	m_adc_monitor_trip_a = trip_current;
+	return true;
 }
 
 bool jfbms_fast_adc_init(void) {
@@ -351,6 +433,9 @@ bool jfbms_fast_adc_init(void) {
 		return false;
 	}
 	m_adc_started = true;
+	// hw_init waits for the powered current reference to settle before it calls
+	// jfbms_fast_adc_set_current_offset() and permits protection to arm.
+	m_fast_oc_armed = false;
 	return true;
 }
 
@@ -361,18 +446,22 @@ float hw_adc_get_voltage(adc_channel_t channel) {
 	return m_adc_voltage[channel];
 }
 
-static bool adc_reconfigure_current_monitor(float offset_v, bool arm_protection) {
-	if (!m_adc_handle || !m_adc_started || !isfinite(offset_v)) return false;
-
-	m_fast_oc_armed = false;
+static bool adc_rebuild_current_monitor(float offset_v) {
 	m_adc_reconfiguring = true;
 	GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
+	if (m_adc_monitor_enabled &&
+			!adc_set_current_monitor_enabled(false)) {
+		m_adc_reconfiguring = false;
+		return false;
+	}
+
 	TickType_t lock_wait = pdMS_TO_TICKS(JFBMS_ADC_RECONFIG_TIMEOUT_MS);
 	if (lock_wait == 0) lock_wait = 1;
 	if (!m_adc_mutex || xSemaphoreTake(m_adc_mutex, lock_wait) != pdTRUE) {
 		m_adc_reconfiguring = false;
 		return false;
 	}
+
 	if (adc_continuous_stop(m_adc_handle) != ESP_OK) {
 		xSemaphoreGive(m_adc_mutex);
 		m_adc_reconfiguring = false;
@@ -380,61 +469,65 @@ static bool adc_reconfigure_current_monitor(float offset_v, bool arm_protection)
 	}
 	m_adc_started = false;
 
-	if (m_adc_monitor) {
-		(void)adc_continuous_monitor_disable(m_adc_monitor);
-		(void)adc_del_continuous_monitor(m_adc_monitor);
-		m_adc_monitor = NULL;
-	}
-
-	if (!arm_protection) {
-		bool restarted = adc_continuous_start(m_adc_handle) == ESP_OK;
-		m_adc_started = restarted;
-		xSemaphoreGive(m_adc_mutex);
-		m_adc_reconfiguring = false;
-		return restarted;
-	}
-
-	m_fast_current_offset_v = offset_v;
+	bool configured = adc_remove_current_monitor();
 	main_config_t *cfg = (main_config_t *)&backup.config;
-	float trip_current = cfg->fast_charge_oc_a;
-	bool configured = !cfg->fast_charge_oc_en;
-	if (cfg->fast_charge_oc_en) {
-		configured = isfinite(cfg->max_charge_current) &&
-				isfinite(trip_current) &&
-				cfg->max_charge_current < trip_current &&
-				trip_current > 0.0f &&
-				trip_current <= JFBMS_FAST_OC_MAX_A &&
-				offset_v - (trip_current / ISENSE_SCALE) > 0.02f;
-	}
 	if (configured && cfg->fast_charge_oc_en) {
-		float low_voltage = offset_v - (trip_current / ISENSE_SCALE);
-		float high_voltage = offset_v + (trip_current / ISENSE_SCALE);
-		configured = low_voltage > 0.02f && high_voltage < 3.28f;
-		adc_monitor_config_t monitor_cfg = {
-			.adc_unit = ADC_UNIT_1,
-			.channel = HW_ADC_CH2,
-			.h_threshold = configured ? adc_voltage_to_raw(HW_ADC_CH2,
-					high_voltage) : -1,
-			.l_threshold = configured ? adc_voltage_to_raw(HW_ADC_CH2,
-					low_voltage) : -1,
-		};
-		adc_monitor_evt_cbs_t monitor_callbacks = {
-			.on_below_low_thresh = fast_oc_below_threshold_cb,
-			.on_over_high_thresh = fast_oc_above_threshold_cb,
-		};
-		configured = configured && adc_new_continuous_monitor(m_adc_handle, &monitor_cfg,
-				&m_adc_monitor) == ESP_OK &&
-				adc_continuous_monitor_register_event_callbacks(m_adc_monitor,
-				&monitor_callbacks, NULL) == ESP_OK &&
-				adc_continuous_monitor_enable(m_adc_monitor) == ESP_OK;
+		configured = adc_install_current_monitor(offset_v);
 	}
 
-	if (adc_continuous_start(m_adc_handle) == ESP_OK) m_adc_started = true;
-	else configured = false;
+	bool restarted = adc_continuous_start(m_adc_handle) == ESP_OK;
+	m_adc_started = restarted;
+	if (!restarted && m_adc_monitor_enabled) {
+		(void)adc_set_current_monitor_enabled(false);
+	}
 	xSemaphoreGive(m_adc_mutex);
 	m_adc_reconfiguring = false;
-	m_fast_oc_armed = configured;
+	m_fast_oc_armed = configured && restarted;
 	return m_fast_oc_armed;
+}
+
+static bool adc_reconfigure_current_monitor(float offset_v, bool arm_protection) {
+	if (!m_adc_handle || !m_adc_started || !isfinite(offset_v)) return false;
+
+	// Diagnostics and current-based latch clearing use the same captured zero as
+	// the UI, even if hardware-threshold reconfiguration subsequently fails.
+	m_fast_current_offset_v = offset_v;
+	m_fast_oc_armed = false;
+	if (!arm_protection) {
+		return !m_adc_monitor_enabled ||
+				adc_set_current_monitor_enabled(false);
+	}
+
+	main_config_t *cfg = (main_config_t *)&backup.config;
+	if (!cfg->fast_charge_oc_en) {
+		// Protection disabled means no comparator callback may affect CHG_EN.
+		// Leave an existing monitor allocated but physically disabled so normal
+		// ADC sampling continues without a stop/restart.
+		if (m_adc_monitor_enabled &&
+				!adc_set_current_monitor_enabled(false)) {
+			return false;
+		}
+		m_fast_oc_armed = true;
+		return true;
+	}
+
+	bool monitor_matches = m_adc_monitor &&
+			fabsf(offset_v - m_adc_monitor_offset_v) <= 0.001f &&
+			fabsf(cfg->fast_charge_oc_a - m_adc_monitor_trip_a) <= 0.001f;
+	if (monitor_matches) {
+		if (!m_adc_monitor_enabled &&
+				!adc_set_current_monitor_enabled(true)) {
+			return false;
+		}
+		m_fast_oc_armed = true;
+		return true;
+	}
+
+	// ESP-IDF permits monitor creation/deletion only while the continuous ADC is
+	// stopped. Hold the reader mutex across this bounded rebuild and always
+	// restart the sampler, including failure paths, so current UI data is not
+	// coupled to the optional protection setting.
+	return adc_rebuild_current_monitor(offset_v);
 }
 
 bool jfbms_fast_adc_disarm_current_monitor(void) {
@@ -446,24 +539,35 @@ bool jfbms_fast_adc_set_current_offset(float offset_v) {
 }
 
 bool jfbms_fast_adc_ready(void) {
-	return m_adc_started && m_fast_oc_armed;
+	main_config_t *cfg = (main_config_t *)&backup.config;
+	return m_adc_started && m_fast_oc_armed &&
+			(!cfg->fast_charge_oc_en || m_adc_monitor_enabled);
 }
 
 bool jfbms_fast_oc_sleep_disarm(void) {
-	// CHG_EN is already fail-closed here. Leave the continuous ADC and its
-	// monitor configured; only prevent callbacks caused by the powered-down
-	// current reference from being treated as real overcurrent events.
+	// CHG_EN is already fail-closed here. Disable the retained monitor without
+	// stopping the continuous ADC while the current reference is powered down.
 	if (!m_adc_started || m_adc_reconfiguring || !m_fast_oc_armed) return false;
+	if (m_adc_monitor_enabled &&
+			!adc_set_current_monitor_enabled(false)) {
+		return false;
+	}
 	m_fast_oc_armed = false;
 	return true;
 }
 
 bool jfbms_fast_oc_sleep_rearm(void) {
 	// The caller must restore COM_EN and wait for the 1.65 V reference to settle
-	// before rearming. If protection is enabled, its monitor must still exist.
+	// before restoring the configured monitor state.
 	main_config_t *cfg = (main_config_t *)&backup.config;
-	if (!m_adc_started || m_adc_reconfiguring ||
-			(cfg->fast_charge_oc_en && !m_adc_monitor)) {
+	if (!m_adc_started || m_adc_reconfiguring) return false;
+	if (!cfg->fast_charge_oc_en) {
+		m_fast_oc_armed = true;
+		return true;
+	}
+	if (!m_adc_monitor) return false;
+	if (!m_adc_monitor_enabled &&
+			!adc_set_current_monitor_enabled(true)) {
 		return false;
 	}
 	m_fast_oc_armed = true;
@@ -493,6 +597,24 @@ bool jfbms_fast_oc_clear_allowed(float charger_detect_v) {
 
 bool jfbms_fast_oc_clear_if_unchanged(uint32_t expected_trip_count) {
 	if (m_fast_oc_trip_count != expected_trip_count) return false;
+
+	// A trip turns the level-sensitive comparator off to prevent an interrupt
+	// storm. Restore the configured state only while the charger is known absent
+	// and the measured current is near zero (checked by the caller).
+	main_config_t *cfg = (main_config_t *)&backup.config;
+	if (cfg->fast_charge_oc_en) {
+		if (!m_adc_monitor ||
+				(!m_adc_monitor_enabled &&
+				!adc_set_current_monitor_enabled(true))) {
+			return false;
+		}
+	} else if (m_adc_monitor_enabled &&
+			!adc_set_current_monitor_enabled(false)) {
+		return false;
+	}
+	m_fast_oc_armed = true;
+	if (m_fast_oc_trip_count != expected_trip_count) return false;
+
 	m_fast_oc_latch = false;
 	m_charger_absent_since_ms = 0;
 	m_fast_oc_rtc_magic = 0;

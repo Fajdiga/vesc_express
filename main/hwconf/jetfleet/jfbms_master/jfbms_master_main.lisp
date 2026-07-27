@@ -9,6 +9,7 @@
 (def user-beeps-en true)
 (def beep-duty-normal 0.5)
 (def sleep-unblock-en true)
+(def charger-max-delay 10.0) ; Let the charger establish current before enforcing the minimum.
 (def balance-active-time-s 30.0)
 (def balance-keepalive-period-s 1.0)
 (def control-max-qualify-dt 0.25)
@@ -30,6 +31,7 @@
 (def charge-enable-beeped false)
 (def trigger-bal-after-charge false)
 (def charge-complete false)
+(def charge-ts (systime))
 (def charge-dis-ts (systime))
 (def last-fast-trip-count -1)
 
@@ -530,7 +532,7 @@ loopwhile-thd
     (if (and requested (fast-oc-latched))
         (setq allowed false)
     )
-    ; Current is deliberately 0 A until the one-second zero capture completes.
+    ; Charging remains locked until the one-second zero capture completes.
     ; Never let a direct caller bypass that pre-charge step.
     (if (and requested (not current-zero-ready))
         (setq allowed false)
@@ -550,6 +552,7 @@ loopwhile-thd
     (if (and requested ok) {
         (setq is-charging true)
         (if (not was-charging) {
+            (setq charge-ts (systime))
             (if (not charge-enable-beeped) {
                 (setq charge-enable-beeped true)
                 (spawn (fn () (user-beep 2 0.07)))
@@ -1253,6 +1256,7 @@ loopwhile-thd
     (if (and charger-detected (not charger-detected-prev)) {
         (setq charge-block-beeped false)
         (setq charge-enable-beeped false)
+        (setq charge-ts (systime))
         (spawn (fn () (user-beep 1 0.08)))
         (print "CHG: charger detected")
     })
@@ -1300,7 +1304,22 @@ loopwhile-thd
             (setq block-reason "BALANCING")
             (set-chg false)
         } {
-            (set-chg true)
+            ; Match JFBMS32: give a newly enabled charger time to establish
+            ; current, then hold CHG_EN off for the rest of this connection
+            ; whenever filtered charge current is at or below the configured
+            ; minimum. With CHG_EN off the measured current remains below the
+            ; threshold, so charging cannot chatter back on.
+            (var min-current (bms-get-param 'min_charge_current))
+            (var min-current-ok (or
+                (< (secs-since charge-ts) charger-max-delay)
+                (> charge-current min-current)
+            ))
+                (if min-current-ok
+                (set-chg true)
+                {
+                    (set-chg false)
+                }
+            )
         })
     } {
         (set-chg false)
@@ -2148,6 +2167,7 @@ loopwhile-thd
     (setq charge-enable-beeped false)
     (setq manual-bal-active false)
     (setq calibration-running false)
+    (setq charge-ts (systime))
     (var current-cal (trap-value '(master-current-calibration) '(nil 1.65 0.0 nil)))
     (setq current-zero-ready (and current-cal (>= (length current-cal) 1)
         (ix current-cal 0)))
