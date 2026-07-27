@@ -141,7 +141,7 @@ static bool isense_store_offset(float offset_v) {
 	return result == ESP_OK;
 }
 
-static bool isense_apply_offset(float offset_v) {
+static bool isense_apply_offset(float offset_v, bool reconfigure_monitor) {
 	if (!isense_offset_valid(offset_v)) return false;
 
 	// Filtering is independent of the hardware threshold monitor. Keep using
@@ -151,9 +151,15 @@ static bool isense_apply_offset(float offset_v) {
 	m_current_filtered    = 0.0f;
 	m_current_filter_init = false;
 
-	if (!jfbms_fast_adc_set_current_offset(offset_v)) {
-		gpio_set_level(PIN_CHG_EN, 0);
-		return false;
+	if (reconfigure_monitor) {
+		if (!jfbms_fast_adc_set_current_offset(offset_v)) {
+			gpio_set_level(PIN_CHG_EN, 0);
+			return false;
+		}
+	} else {
+		// Calibration only changes the software zero. Never stop/rebuild the
+		// running ADC monitor from the calibration command.
+		jfbms_fast_adc_set_software_offset(offset_v);
 	}
 	return true;
 }
@@ -2259,9 +2265,8 @@ static lbm_value ext_master_calibrate_current(lbm_value *args, lbm_uint argn) {
 		return ENC_SYM_NIL;
 	}
 
-	commands_printf_lisp("CAL begin: offset=%.4f V", (double)offset_v);
-	bool protection_ready = isense_apply_offset(offset_v);
-	commands_printf_lisp("CAL ADC apply done: protection=%d", protection_ready ? 1 : 0);
+	bool protection_ready = isense_apply_offset(offset_v, false) &&
+			jfbms_fast_adc_ready();
 	m_current_valid = true;
 	m_current_offset_calibrated = true;
 	bool stored = isense_store_offset(offset_v);
@@ -2811,14 +2816,6 @@ void hw_init(void) {
 	}
 	m_boot_count++;
 	m_previous_reset_reason = (uint32_t)esp_reset_reason();
-	{
-		uint32_t adc_stage = 0;
-		uint32_t adc_count = 0;
-		if (jfbms_fast_adc_get_debug(&adc_stage, &adc_count) && adc_stage != 0U) {
-			commands_printf("ADC_RECONFIG_LAST stage=%u count=%u",
-					(unsigned)adc_stage, (unsigned)adc_count);
-		}
-	}
 	m_data_mutex = xSemaphoreCreateMutexStatic(&m_data_mutex_storage);
 	m_balance_tx_mutex = xSemaphoreCreateMutexStatic(&m_balance_tx_mutex_storage);
 	if (!jfbms_master_validate_config((const main_config_t *)&backup.config)) {
@@ -2906,7 +2903,15 @@ void hw_init(void) {
 			// reference. Keep CHG_EN fail-closed and leave the raw monitor
 			// disarmed until the reference has had time to settle.
 			vTaskDelay(pdMS_TO_TICKS(ISENSE_POWER_SETTLE_MS));
-			protection_armed = isense_apply_offset(startup_offset);
+			if (!stored_offset) {
+				float measured_offset = isense_read_voltage();
+				if (isense_offset_valid(measured_offset)) {
+					startup_offset = measured_offset;
+					commands_printf("JFBMS initial current zero reference: %.4f V",
+							(double)startup_offset);
+				}
+			}
+			protection_armed = isense_apply_offset(startup_offset, true);
 			// Stored current calibration remains valid independently of the
 			// optional fast-OC monitor. CHG_EN checks monitor readiness itself.
 			m_current_offset_calibrated = stored_offset;

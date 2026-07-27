@@ -34,7 +34,6 @@
 #define JFBMS_ADC_TASK_PRIORITY     7
 #define JFBMS_ADC_RECONFIG_TIMEOUT_MS 100U
 #define JFBMS_FAST_OC_RTC_MAGIC     0x4A464F43U
-#define JFBMS_ADC_DEBUG_RTC_MAGIC   0x4A464144U
 #define JFBMS_CHARGER_CONNECT_DEBOUNCE_MS 75U
 #define JFBMS_CHARGER_DISCONNECT_DEBOUNCE_MS 250U
 #define JFBMS_CHARGER_HYSTERESIS_V  0.5f
@@ -77,25 +76,6 @@ static volatile float m_adc_voltage[5];
 static volatile uint32_t m_adc_voltage_time_ms[5];
 
 RTC_NOINIT_ATTR static uint32_t m_fast_oc_rtc_magic;
-RTC_NOINIT_ATTR static uint32_t m_adc_debug_rtc_magic;
-RTC_NOINIT_ATTR static uint32_t m_adc_debug_stage;
-RTC_NOINIT_ATTR static uint32_t m_adc_debug_count;
-
-static void adc_debug_stage_set(uint32_t stage) {
-	if (m_adc_debug_rtc_magic != JFBMS_ADC_DEBUG_RTC_MAGIC) {
-		m_adc_debug_rtc_magic = JFBMS_ADC_DEBUG_RTC_MAGIC;
-		m_adc_debug_count = 0;
-	}
-	m_adc_debug_stage = stage;
-	if (stage == 1U) m_adc_debug_count++;
-}
-
-bool jfbms_fast_adc_get_debug(uint32_t *stage, uint32_t *count) {
-	if (m_adc_debug_rtc_magic != JFBMS_ADC_DEBUG_RTC_MAGIC) return false;
-	if (stage) *stage = m_adc_debug_stage;
-	if (count) *count = m_adc_debug_count;
-	return true;
-}
 
 static uint32_t adc_now_ms(void) {
 	return xTaskGetTickCount() * portTICK_PERIOD_MS;
@@ -469,45 +449,35 @@ float hw_adc_get_voltage(adc_channel_t channel) {
 static bool adc_rebuild_current_monitor(float offset_v) {
 	m_adc_reconfiguring = true;
 	GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
-	adc_debug_stage_set(1U); // entered reconfiguration
 
 	// Stop monitor interrupts before tearing down the continuous ADC peripheral.
 	// The callback runs from ISR context and must not observe a half-stopped ADC.
 	if (m_adc_monitor_enabled &&
 			!adc_set_current_monitor_enabled(false)) {
-		adc_debug_stage_set(90U);
 		m_adc_reconfiguring = false;
 		return false;
 	}
-	adc_debug_stage_set(2U); // monitor disabled
 
 	TickType_t lock_wait = pdMS_TO_TICKS(JFBMS_ADC_RECONFIG_TIMEOUT_MS);
 	if (lock_wait == 0) lock_wait = 1;
 	if (!m_adc_mutex || xSemaphoreTake(m_adc_mutex, lock_wait) != pdTRUE) {
-		adc_debug_stage_set(91U);
 		m_adc_reconfiguring = false;
 		return false;
 	}
 
-	adc_debug_stage_set(3U); // ADC mutex acquired
 	if (adc_continuous_stop(m_adc_handle) != ESP_OK) {
-		adc_debug_stage_set(92U);
 		xSemaphoreGive(m_adc_mutex);
 		m_adc_reconfiguring = false;
 		return false;
 	}
 	m_adc_started = false;
-	adc_debug_stage_set(4U); // continuous ADC stopped
 
 	bool configured = adc_remove_current_monitor();
-	adc_debug_stage_set(configured ? 5U : 93U); // monitor deleted or failed
 	main_config_t *cfg = (main_config_t *)&backup.config;
 	if (configured && cfg->fast_charge_oc_en) {
 		configured = adc_install_current_monitor(offset_v);
-		adc_debug_stage_set(configured ? 6U : 94U); // monitor installed or failed
 	}
 
-	adc_debug_stage_set(7U); // restarting continuous ADC
 	bool restarted = adc_continuous_start(m_adc_handle) == ESP_OK;
 	m_adc_started = restarted;
 	if (!restarted && m_adc_monitor_enabled) {
@@ -516,7 +486,6 @@ static bool adc_rebuild_current_monitor(float offset_v) {
 	xSemaphoreGive(m_adc_mutex);
 	m_adc_reconfiguring = false;
 	m_fast_oc_armed = configured && restarted;
-	adc_debug_stage_set((configured && restarted) ? 0U : 95U);
 	return m_fast_oc_armed;
 }
 
@@ -570,6 +539,10 @@ bool jfbms_fast_adc_disarm_current_monitor(void) {
 
 bool jfbms_fast_adc_set_current_offset(float offset_v) {
 	return adc_reconfigure_current_monitor(offset_v, true);
+}
+
+void jfbms_fast_adc_set_software_offset(float offset_v) {
+	if (isfinite(offset_v)) m_fast_current_offset_v = offset_v;
 }
 
 bool jfbms_fast_adc_ready(void) {
