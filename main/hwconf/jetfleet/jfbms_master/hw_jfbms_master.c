@@ -49,15 +49,14 @@
 #endif
 
 // ============================================================================
-// Current Sense (GPIO2 / ADC1_CH2): nominal 1 mΩ shunt, INA181A3 100×
-// amplifier, center ~1.65 V. Bench calibration on the assembled master gives
-// 55 mV at 1.1 A, so apply the measured 2× correction to the nominal 10 A/V.
+// Current Sense (GPIO2 / ADC1_CH2): 1 mΩ shunt, INA181A3 100× amplifier,
+// center ~1.65 V. Use the schematic transfer function without a board-specific
+// correction: 100 V/V × 1 mΩ = 0.1 V/A, or 10 A/V.
 // ============================================================================
 
 #define ISENSE_GAIN    100.0f
 #define ISENSE_RSHUNT  0.001f
-#define ISENSE_CALIBRATION 2.0f
-#define ISENSE_SCALE   (ISENSE_CALIBRATION / (ISENSE_GAIN * ISENSE_RSHUNT)) // 20 A/V
+#define ISENSE_SCALE   (1.0f / (ISENSE_GAIN * ISENSE_RSHUNT)) // 10 A/V
 #define ISENSE_ZERO_DEADBAND_A 0.10f
 #define ISENSE_DEFAULT_OFFSET_V 1.65f
 #define ISENSE_OFFSET_MIN_V 1.50f
@@ -80,6 +79,15 @@ static bool  m_current_valid = false;
 static bool  m_current_offset_calibrated = false;
 static volatile bool m_calibration_in_progress = false;
 #define ISENSE_EMA_ALPHA  0.85f            // Calm BMS current display/counters at 10 Hz
+
+static float isense_current_output(void) {
+	// Deadband only the reported value. Resetting the EMA state here prevents a
+	// small real current from ever accumulating past the deadband. For example,
+	// 0.55 A * (1 - 0.85) starts at 0.0825 A and used to be erased on every
+	// update by the 0.10 A deadband.
+	return fabsf(m_current_filtered) <= ISENSE_ZERO_DEADBAND_A ?
+			0.0f : m_current_filtered;
+}
 
 static float isense_read_voltage(void) {
 	// The continuous ADC task already averages every conversion frame.
@@ -2171,13 +2179,11 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 				m_current_filtered = ISENSE_EMA_ALPHA * m_current_filtered
 				                   + (1.0f - ISENSE_EMA_ALPHA) * raw_a;
 			}
-			if (fabsf(m_current_filtered) <= ISENSE_ZERO_DEADBAND_A) {
-				m_current_filtered = 0.0f;
-			}
+			float current_a = isense_current_output();
 			// Match JFBMS32/VESC BMS current convention: discharge is positive
 			// and charging is negative. Lisp derives charge current as -iout.
-			bms->i_in    = m_current_filtered;
-			bms->i_in_ic = m_current_filtered;
+			bms->i_in    = current_a;
+			bms->i_in_ic = current_a;
 		} else {
 			m_current_filter_init = false;
 			m_current_filtered = 0.0f;
@@ -2383,7 +2389,7 @@ static lbm_value ext_master_get_current(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 	return lbm_enc_float((m_current_valid && m_current_offset_calibrated) ?
-			m_current_filtered : 0.0f);
+			isense_current_output() : 0.0f);
 }
 
 // (master-get-vchg) — returns EMA-filtered charger voltage (V); updated by master-update-vesc-bms

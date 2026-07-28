@@ -759,6 +759,13 @@ loopwhile-thd
         (master-update-vesc-bms)
         (setq vt-vchg (master-get-vchg))
         (setq iout (master-get-current))
+        ; Publish the local ADC samples explicitly. VESC Tool reads these
+        ; bms_values fields, not the Lisp globals used by charge control.
+        ; Keep the normal VESC sign convention: discharge positive, charge
+        ; negative.
+        (set-bms-val 'bms-v-charge vt-vchg)
+        (set-bms-val 'bms-i-in iout)
+        (set-bms-val 'bms-i-in-ic iout)
         (update-temp-globals)
         (scan-pack-from-slaves)
         true
