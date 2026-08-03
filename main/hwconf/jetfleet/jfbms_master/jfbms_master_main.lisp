@@ -809,12 +809,6 @@ loopwhile-thd
         (true "unknown")
 ))
 
-(defun shutdown-reason-beep (reason) {
-    ; Give the same long warning used by JFBMS32 before power removal.
-    ; 30 x (0.1 s on + 0.1 s off) is approximately 6 seconds.
-    (beep 30 0.1)
-})
-
 (defun fail-close-outputs (clear-bal-trigger) {
     (var local-ok false)
     (match (trap (master-fail-close-local))
@@ -904,7 +898,6 @@ loopwhile-thd
     (set-bms-val 'bms-status (str-merge "SHUTDOWN_" (shutdown-reason-name reason)))
     (send-slave-beep 0x04)
     (fail-close-outputs true)
-    (shutdown-reason-beep reason)
     (save-settings)
     (master-shutdown)
 

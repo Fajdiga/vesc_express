@@ -26,6 +26,7 @@
 
 #include "main.h"
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "esp_attr.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
@@ -2741,7 +2742,46 @@ static lbm_value ext_can_debug_reset(lbm_value *args, lbm_uint argn) {
 // Section E: Extension Registration & hw_init
 // ============================================================================
 
+static void shutdown_warning_beep(void) {
+	// All shutdown entry points converge in hw_shutdown(), so provide the same
+	// six-second warning directly in the hardware path.
+	ledc_timer_config_t timer_cfg = {
+			.speed_mode       = LEDC_LOW_SPEED_MODE,
+			.timer_num        = LEDC_TIMER_0,
+			.duty_resolution  = LEDC_TIMER_10_BIT,
+			.freq_hz          = 4000,
+			.clk_cfg          = LEDC_AUTO_CLK,
+	};
+	ledc_channel_config_t channel_cfg = {
+			.gpio_num       = PIN_BUZZER,
+			.speed_mode     = LEDC_LOW_SPEED_MODE,
+			.channel        = LEDC_CHANNEL_0,
+			.intr_type      = LEDC_INTR_DISABLE,
+			.timer_sel      = LEDC_TIMER_0,
+			.duty           = 0,
+			.hpoint         = 0,
+	};
+
+	if (ledc_timer_config(&timer_cfg) != ESP_OK ||
+			ledc_channel_config(&channel_cfg) != ESP_OK) {
+		return;
+	}
+
+	for (int i = 0; i < 30; i++) {
+		ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 512);
+		ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+		vTaskDelay(pdMS_TO_TICKS(100));
+		ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+		ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+		vTaskDelay(pdMS_TO_TICKS(100));
+	}
+
+	ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+	gpio_set_level(PIN_BUZZER, 0);
+}
+
 void hw_shutdown(void) {
+	shutdown_warning_beep();
 	commands_printf("Shutdown: disabling outputs, then driving GPIO%d high", PIN_SHUTDOWN);
 
 	gpio_set_level(PIN_CHG_EN, 0);
