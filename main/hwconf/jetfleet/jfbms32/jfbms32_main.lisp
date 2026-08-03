@@ -45,8 +45,7 @@
 
 (def shutdown-reason-unknown 0)
 (def shutdown-reason-timer 1)
-(def shutdown-reason-low-soc-start 2)
-(def shutdown-reason-low-soc-main 3)
+(def shutdown-reason-low-soc-timer 2)
 (def shutdown-reason-app 4)
 
 (def last-bq-init-attempts 0)
@@ -332,8 +331,7 @@ loopwhile-thd
 (defun shutdown-reason-name (reason)
         (cond
                 ((= reason shutdown-reason-timer) "timer")
-                ((= reason shutdown-reason-low-soc-start) "low-soc-start")
-                ((= reason shutdown-reason-low-soc-main) "low-soc-main")
+                ((= reason shutdown-reason-low-soc-timer) "low-soc-timer")
                 ((= reason shutdown-reason-app) "app")
                 (true "unknown")
 ))
@@ -649,13 +647,19 @@ loopwhile-thd
 ; them again before entering hardware shutdown.
 (defun bms-shutdown-timer () (bms-shutdown-impl true shutdown-reason-timer))
 
-(defun bms-shutdown-low-soc-start () (bms-shutdown-impl false shutdown-reason-low-soc-start))
-
-(defun bms-shutdown-low-soc-main () (bms-shutdown-impl true shutdown-reason-low-soc-main))
+(defun bms-shutdown-low-soc-timer ()
+        (bms-shutdown-impl true shutdown-reason-low-soc-timer)
+)
 
 (defun bms-shutdown-app () (bms-shutdown-impl true shutdown-reason-app))
 
-(defun low-soc-unused () (and
+; Low SOC is a shutdown decision only after a deep-sleep timer wake. Normal
+; wakes are for charger/button/CAN use and must continue through the normal
+; SOC and charge-control flow. The charger guard is retained as a safety
+; check if a timer wake races with charger detection.
+(defun low-soc-timer-wake (wake-source chg-detected) (and
+        (= wake-source 2)
+        (not chg-detected)
         (valid-pack-reading)
         (< soc 0.05)
         (not trigger-bal-after-charge)
@@ -706,6 +710,8 @@ loopwhile-thd
         (if (shutdown-timer-due)
                 (bms-shutdown-timer)
         )
+
+        source
 })
 
 
@@ -740,7 +746,7 @@ loopwhile-thd
 
         (user-beep 2 0.1)
 
-        (process-sleep-time)
+        (var wake-source (process-sleep-time))
 
         (if (can-active) (setq do-sleep false))
 
@@ -795,7 +801,12 @@ loopwhile-thd
                 })
         })
 
-        (if (low-soc-unused) (bms-shutdown-low-soc-start))
+        ; Match VBMS32's low-SOC sleep policy, except that JFBMS32 shuts down
+        ; instead of selecting a longer sleep interval. This is intentionally
+        ; evaluated only after a deep-sleep timer wake.
+        (if (low-soc-timer-wake wake-source chg-detected)
+                (bms-shutdown-low-soc-timer)
+        )
 
         ;(sleep 5)
         ;(print v-cells)
@@ -1301,11 +1312,6 @@ loopwhile-thd
         ; Set SOC to 0 below 2.9V and not under load.
         (if (and (> i-zero-time 10.0) (<= c-min (bms-get-param 'vc_empty))) {
                 (setq ah-cnt-soc 0.0)
-        })
-
-        ; Shut down when SOC is too low and nothing external is requesting the BMS.
-        (if (and (low-soc-unused) (> i-zero-time 1.0) (<= c-min (bms-get-param 'vc_empty))) {
-                (bms-shutdown-low-soc-main)
         })
 
         (wdt-reset)
