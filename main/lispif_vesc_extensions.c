@@ -1256,7 +1256,7 @@ static lbm_value ext_can_msg_age(lbm_value *args, lbm_uint argn) {
 	int id = lbm_dec_as_i32(args[0]);
 	int msg = lbm_dec_as_i32(args[1]);
 
-	if (id < 0 || id > 253) {
+	if (id < 0 || id > 254) {
 		return ENC_SYM_EERROR;
 	}
 
@@ -1581,11 +1581,25 @@ static lbm_value ext_can_use_vesc(lbm_value *args, lbm_uint argn) {
 static lbm_value ext_can_scan(lbm_value *args, lbm_uint argn) {
 	(void)args; (void)argn;
 	lbm_value dev_list = ENC_SYM_NIL;
+	bool found = false;
 
-	for (int i = 253;i >= 0;i--) {
-		if (comm_can_ping(i, 0)) {
+#ifdef CAN_TX_GPIO_NUM
+	comm_can_start(CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM);
+#endif
+
+	for (int i = 254;i >= 0;i--) {
+		bool tx_ok;
+		if (comm_can_ping_scan(i, 0, &tx_ok)) {
 			dev_list = lbm_cons(lbm_enc_i(i), dev_list);
+			found = true;
 		}
+		if (!tx_ok) {
+			break;
+		}
+	}
+
+	if (!found) {
+		comm_can_stop();
 	}
 
 	return dev_list;
@@ -1595,11 +1609,14 @@ static lbm_value ext_can_ping(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 
 	int id = lbm_dec_as_i32(args[0]);
-	if (id < 0 || id > 253) {
+	if (id < 0 || id > 254) {
 		return ENC_SYM_TERROR;
 	}
 
 	HW_TYPE hw = HW_TYPE_VESC;
+	#ifdef CAN_TX_GPIO_NUM
+	comm_can_start(CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM);
+	#endif
 	bool res = comm_can_ping(id, &hw);
 
 	return res ? lbm_enc_i(hw) : ENC_SYM_NIL;

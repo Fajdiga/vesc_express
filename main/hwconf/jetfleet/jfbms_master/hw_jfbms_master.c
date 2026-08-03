@@ -2723,6 +2723,9 @@ void hw_shutdown(void) {
 	gpio_set_direction(PIN_COM_EN, GPIO_MODE_OUTPUT);
 	gpio_set_level(PIN_COM_EN, 1);
 	vTaskDelay(pdMS_TO_TICKS(50) + 1);
+	// GPIO_MODE_OUTPUT is push-pull. Preload its high latch before enabling the
+	// output driver so GPIO19 cannot glitch low during the high-Z -> active
+	// transition, then write high again after the mode change.
 	gpio_set_level(PIN_SHUTDOWN, 1);
 	gpio_set_direction(PIN_SHUTDOWN, GPIO_MODE_OUTPUT);
 	gpio_set_level(PIN_SHUTDOWN, 1);
@@ -2874,7 +2877,9 @@ void hw_init(void) {
 	gpconf.pull_up_en   = GPIO_PULLUP_DISABLE;
 	gpio_config(&gpconf);
 
-	// High-Z idle: SHUTDOWN on GPIO19. Only drive push-pull high in hw_shutdown().
+	// High-Z idle is intentional: a reset or partially initialized firmware must
+	// not actively drive the board's shutdown input. hw_shutdown() is the only
+	// path that changes GPIO19 to push-pull output and asserts it high.
 	// GPIO8 (buzzer) is driven by the PWM peripheral — not configured here
 
 	gpconf.pin_bit_mask = BIT(PIN_SHUTDOWN);

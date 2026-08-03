@@ -59,6 +59,11 @@
 // CAN: Normal ACK mode for reliable master-slave communication
 #define HW_CAN_NO_ACK_MODE			0
 
+// The optional primary CAN connector must not retry forever when it is empty.
+// Three hardware retries preserve resilience to transient arbitration/errors
+// without allowing one unacknowledged frame to occupy the bus indefinitely.
+#define HW_CAN_FAIL_RETRY_CNT		3
+
 // This board is the pack BMS and owns the global VESC BMS value set. Do not
 // let received/echoed standard BMS CAN frames replace its locally assembled
 // slave snapshot (especially cell_num and v_cell[]).

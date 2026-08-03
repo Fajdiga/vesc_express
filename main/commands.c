@@ -159,11 +159,23 @@ static void block_task(void *arg) {
 			send_buffer[ind++] = COMM_PING_CAN;
 
 #if HW_CAN_PING_SCAN_ENABLED
+			#ifdef CAN_TX_GPIO_NUM
+			comm_can_start(CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM);
+			#endif
+			bool found = false;
 			for (uint8_t i = 0;i < 255;i++) {
 				HW_TYPE hw_type;
-				if (comm_can_ping(i, &hw_type)) {
+				bool tx_ok;
+				if (comm_can_ping_scan(i, &hw_type, &tx_ok)) {
 					send_buffer[ind++] = i;
+					found = true;
 				}
+				if (!tx_ok) {
+					break;
+				}
+			}
+			if (!found) {
+				comm_can_stop();
 			}
 #endif
 

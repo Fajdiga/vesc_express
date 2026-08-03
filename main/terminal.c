@@ -270,12 +270,22 @@ void terminal_process_string(char *str) {
 		commands_printf(" ");
 	} else if (strcmp(argv[0], "can_scan") == 0) {
 		bool found = false;
-		for (int i = 0;i < 254;i++) {
+		#ifdef CAN_TX_GPIO_NUM
+		comm_can_start(CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM);
+		#endif
+		for (int i = 0;i < 255;i++) {
 			HW_TYPE hw_type;
-			if (comm_can_ping(i, &hw_type)) {
+			bool tx_ok;
+			if (comm_can_ping_scan(i, &hw_type, &tx_ok)) {
 				commands_printf("Found %s with ID: %d", utils_hw_type_to_string(hw_type), i);
 				found = true;
 			}
+			if (!tx_ok) {
+				break;
+			}
+		}
+		if (!found) {
+			comm_can_stop();
 		}
 
 		if (found) {

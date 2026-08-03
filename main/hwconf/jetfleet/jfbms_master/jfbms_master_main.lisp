@@ -16,6 +16,8 @@
 (def soc-checkpoint-min-time-s 10.0)
 (def soc-checkpoint-max-time-s 300.0)
 (def soc-checkpoint-delta 0.02)
+(def primary-can-health-period-s 1.0)
+(def primary-can-health-max-failures 3)
 
 ;;;;;;;;;; State ;;;;;;;;;;
 
@@ -76,6 +78,10 @@
 (def soc-checkpoint-ah -1.0)
 (def soc-checkpoint-ts (systime))
 (def primary-can-status-ts (systime))
+(def primary-can-health-ts (systime))
+(def primary-can-present false)
+(def primary-can-probe-id -1)
+(def primary-can-health-failures 0)
 
 (def t-last (systime))
 (def rtc-val '(
@@ -176,13 +182,41 @@ loopwhile-thd
 
 (defun cfg-num-slaves () (truncate (param-or 'num_slaves 1) 1 8))
 
+; A VESC that was present at boot can disappear later. Probe one discovered ID
+; once per second and stop the primary controller after three missed replies so
+; periodic BMS status frames cannot continue forever on an abandoned bus.
+(defun update-primary-can-health () {
+    (if (and
+            primary-can-present
+            (>= primary-can-probe-id 0)
+            (>= (secs-since primary-can-health-ts) primary-can-health-period-s)
+        ) {
+        (setq primary-can-health-ts (systime))
+        (var ping-result
+            (trap-value (list 'can-ping primary-can-probe-id) false))
+        (if (not (eq ping-result nil)) {
+            (setq primary-can-health-failures 0)
+        } {
+            (setq primary-can-health-failures (+ primary-can-health-failures 1))
+            (if (>= primary-can-health-failures primary-can-health-max-failures) {
+                (setq primary-can-present false)
+                (setq primary-can-probe-id -1)
+                (trap (can-stop))
+                (print "Primary CAN device lost; status publishing and CAN stopped")
+            })
+        })
+    })
+})
+
 ; The primary VESC CAN connector is optional. A zero status rate is standalone
-; mode and must result in no transmit attempts: an empty acknowledged CAN bus
-; otherwise enters bus-off recovery and can stall the controller repeatedly.
+; mode and must result in no transmit attempts. Without a responding VESC, the
+; controller otherwise enters bus-off recovery and can stall the controller repeatedly.
 ; TWAI1 slave traffic is independent and remains enabled.
 (defun update-primary-can-status () {
     (var rate (truncate (param-or 'can_status_rate_hz 0) 0 200))
+    (if (> rate 0) (update-primary-can-health))
     (if (and
+            primary-can-present
             (> rate 0)
             (>= (secs-since primary-can-status-ts) (/ 1.0 rate))
         ) {
@@ -793,10 +827,9 @@ loopwhile-thd
 ))
 
 (defun shutdown-reason-beep (reason) {
-    (var count (if (> reason 0) reason 5))
-    (user-beep count 0.25)
-    (sleep 0.8)
-    (user-beep 3 0.06)
+    ; Give the same long warning used by JFBMS32 before power removal.
+    ; 30 x (0.1 s on + 0.1 s off) is approximately 6 seconds.
+    (beep 30 0.1)
 })
 
 (defun fail-close-outputs (clear-bal-trigger) {
@@ -892,10 +925,13 @@ loopwhile-thd
     (save-settings)
     (master-shutdown)
 
-    ; If the hardware did not remove power, stay fail-closed and keep warning.
-    (sleep 2.0)
+    ; Returning here means hardware power removal failed. Keep GPIO19 asserted
+    ; and beep continuously. Give the power latch one second to react first.
+    (sleep 1.0)
+    (print "BMS hardware shutdown failed")
     (loopwhile t {
-        (fail-close-outputs true)
+        (trap (master-shutdown))
+        (trap (wdt-reset))
         (beep 10 0.05)
         (sleep 1.0)
     })
@@ -929,14 +965,12 @@ loopwhile-thd
         ((= source 1) {
             (setassoc rtc-val 'sleep-total-time-s 0)
         })
-        ; Count actual timer sleep, not the requested duration.
+        ; A timer wake means one configured sleep interval elapsed. app_main
+        ; resets gettimeofday on every boot, so wall-clock subtraction cannot
+        ; be used across deep sleep.
         ((= source 2) {
-            (var entered (rtc-number 'sleep-enter-time-s 0))
-            (var now (master-get-time-of-day-s))
-            (if (and entered (> entered 0) (> now entered)) {
-                (setassoc rtc-val 'sleep-total-time-s
-                    (+ (rtc-number 'sleep-total-time-s 0) (- now entered)))
-            })
+            (setassoc rtc-val 'sleep-total-time-s
+                (+ (rtc-number 'sleep-total-time-s 0) (sleep-duration-s)))
         })
     )
 
@@ -944,7 +978,6 @@ loopwhile-thd
 
     (if (or
             (external-wake-active)
-            (> vt-vchg (bms-get-param 'v_charge_detect))
             (is-comm-connected)
             (can-active)
         ) {
@@ -966,7 +999,6 @@ loopwhile-thd
     ; Any real external use resets the shutdown-days counter.
     (if (or
             (external-wake-active)
-            (> vt-vchg (bms-get-param 'v_charge_detect))
             (is-comm-connected)
             (can-active)
         ) {
@@ -1186,6 +1218,10 @@ loopwhile-thd
     (if (and charge-complete pack-data-ok (not (balance-in-progress))
             (< c-max (bms-get-param 'vc_charge_start))) {
         (setq charge-complete false)
+        ; The charger can remain connected throughout an overnight balance
+        ; cycle. Start a new current-establishment window so CHG_EN can rise
+        ; before min_charge_current is enforced for this top-up.
+        (setq charge-ts (systime))
         (setassoc rtc-val 'charge-complete false)
         (save-rtc-val)
         (print "CHG rearmed below vc_charge_start")
@@ -1327,11 +1363,10 @@ loopwhile-thd
             (setq block-reason "BALANCING")
             (set-chg false)
         } {
-            ; Match JFBMS32: give a newly enabled charger time to establish
-            ; current, then hold CHG_EN off for the rest of this connection
-            ; whenever filtered charge current is at or below the configured
-            ; minimum. With CHG_EN off the measured current remains below the
-            ; threshold, so charging cannot chatter back on.
+            ; Give each plug-in or post-balance hysteresis rearm time to
+            ; establish current before enforcing the configured minimum.
+            ; rearm-charge-hysteresis restarts charge-ts so an overnight
+            ; balance/top-up cycle does not require unplugging the charger.
             (var min-current (bms-get-param 'min_charge_current))
             (var min-current-ok (or
                 (< (secs-since charge-ts) charger-max-delay)
@@ -2202,13 +2237,30 @@ loopwhile-thd
     (setq charge-dis-ts (systime))
     (setq t-last (systime))
     (setq primary-can-status-ts (systime))
+    (setq primary-can-health-ts (systime))
+    (setq primary-can-present false)
+    (setq primary-can-probe-id -1)
+    (setq primary-can-health-failures 0)
     (setq loop-cnt 0)
 
     (var primary-can-rate (truncate (param-or 'can_status_rate_hz 0) 0 200))
     (if (= primary-can-rate 0)
         (print "Primary CAN status disabled (standalone mode)")
-        (print (str-merge "Primary CAN status enabled at "
-            (str-from-n primary-can-rate "%d") " Hz"))
+        {
+            ; Scan every primary-bus ID once. A transmit failure ends an empty
+            ; bus scan; an active bus is scanned through all IDs.
+            (var primary-can-devices (trap-value '(can-scan) false))
+            (if (and primary-can-devices (> (length primary-can-devices) 0)) {
+                (setq primary-can-present true)
+                (setq primary-can-probe-id (first primary-can-devices))
+                (print (str-merge "Primary CAN devices detected ("
+                    (str-from-n (length primary-can-devices) "%d")
+                    "); status enabled at "
+                    (str-from-n primary-can-rate "%d") " Hz"))
+            } {
+                (print "No primary CAN device detected; status publishing disabled until reboot")
+            })
+        }
     )
 
     (if (> app-wdt-timeout 0)

@@ -80,6 +80,18 @@
 #define HW_CAN_NO_ACK_MODE 0
 #endif
 
+// Hardware retry limit for failed CAN frames. Keep the legacy infinite retry
+// behavior unless a hardware profile opts into bounded retries.
+#ifndef HW_CAN_FAIL_RETRY_CNT
+#define HW_CAN_FAIL_RETRY_CNT -1
+#endif
+
+// Keep the secondary/dedicated CAN controller independent from the optional
+// primary-bus retry policy. Hardware profiles can bound it separately.
+#ifndef HW_CAN2_FAIL_RETRY_CNT
+#define HW_CAN2_FAIL_RETRY_CNT -1
+#endif
+
 // Hardware-specific CAN acceptance filter hook. A hwconf header can override
 // this macro to forward to a function that fills a twai_mask_filter_config_t
 // and returns true. The default expands to false, which the compiler eliminates

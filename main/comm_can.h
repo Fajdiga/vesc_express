@@ -95,6 +95,7 @@ esp_err_t comm_can_transmit_sid_sync(uint32_t id, const uint8_t *data,
 		uint8_t len, int timeout_ms);
 void comm_can_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send);
 bool comm_can_ping(uint8_t controller_id, HW_TYPE *hw_type);
+bool comm_can_ping_scan(uint8_t controller_id, HW_TYPE *hw_type, bool *tx_ok);
 
 void comm_can_set_duty(uint8_t controller_id, float duty);
 void comm_can_set_current(uint8_t controller_id, float current);

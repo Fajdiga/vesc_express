@@ -57,6 +57,8 @@ static psw_status psw_stat[CAN_STATUS_MSGS_TO_STORE];
 #define RXBUF_LEN					200
 #define TXBUF_LEN					20
 #define TX_RETRY_ATTEMPTS			200
+#define CAN_PING_TX_TIMEOUT_MS		50
+#define CAN_PING_RESPONSE_TIMEOUT_MS	50
 
 typedef struct {
 	uint32_t identifier;
@@ -150,6 +152,8 @@ static volatile int rx_recovery_cnt = 0;
 // Private functions
 static void update_baud(CAN_BAUD baudrate);
 static esp_err_t comm_can_transmit_locked(uint32_t id, const uint8_t *data, uint8_t len, bool ext);
+static esp_err_t comm_can_transmit_once_locked(uint32_t id, const uint8_t *data, uint8_t len, bool ext);
+static esp_err_t comm_can_wait_tx_done_locked(int timeout_ms);
 
 static esp_err_t transmit_twai_frame(twai_node_handle_t node, can_tx_msg_t *tx_buf,
 		int *tx_write, uint32_t id, const uint8_t *data, uint8_t len, bool ext,
@@ -282,7 +286,8 @@ static esp_err_t configure_node_filter(twai_node_handle_t node, bool use_hw_filt
 }
 
 static esp_err_t create_twai_node(twai_node_handle_t *node, can_rx_ctx_t *rx_ctx,
-		int pin_tx, int pin_rx, uint32_t bitrate, bool no_ack, bool use_hw_filter,
+		int pin_tx, int pin_rx, uint32_t bitrate, int fail_retry_cnt,
+		bool no_ack, bool use_hw_filter,
 		const twai_mask_filter_config_t *custom_filter) {
 	twai_onchip_node_config_t node_config = {
 		.io_cfg = {
@@ -294,7 +299,7 @@ static esp_err_t create_twai_node(twai_node_handle_t *node, can_rx_ctx_t *rx_ctx
 		.bit_timing = {
 			.bitrate = bitrate,
 		},
-		.fail_retry_cnt = -1,
+		.fail_retry_cnt = fail_retry_cnt,
 		.tx_queue_depth = 20,
 		.intr_priority = 1,
 		.flags = {
@@ -1097,7 +1102,7 @@ void comm_can_start(int pin_tx, int pin_rx) {
 	can_rx_io = pin_rx;
 
 	if (create_twai_node(&can_node, &can_rx_ctx, can_tx_io, can_rx_io, can_bitrate,
-			HW_CAN_NO_ACK_MODE, true, NULL) != ESP_OK) {
+			HW_CAN_FAIL_RETRY_CNT, HW_CAN_NO_ACK_MODE, true, NULL) != ESP_OK) {
 		return;
 	}
 
@@ -1198,7 +1203,7 @@ void comm_can_update_baudrate(int delay_msec) {
 
 	update_baud(backup.config.can_baud_rate);
 	create_twai_node(&can_node, &can_rx_ctx, can_tx_io, can_rx_io, can_bitrate,
-			HW_CAN_NO_ACK_MODE, true, NULL);
+			HW_CAN_FAIL_RETRY_CNT, HW_CAN_NO_ACK_MODE, true, NULL);
 
 	start_rx_thd();
 	xSemaphoreGive(send_mutex);
@@ -1222,7 +1227,7 @@ void comm_can_change_pins(int tx, int rx) {
 	can_tx_io = tx;
 	can_rx_io = rx;
 	create_twai_node(&can_node, &can_rx_ctx, can_tx_io, can_rx_io, can_bitrate,
-			HW_CAN_NO_ACK_MODE, true, NULL);
+			HW_CAN_FAIL_RETRY_CNT, HW_CAN_NO_ACK_MODE, true, NULL);
 
 	start_rx_thd();
 	xSemaphoreGive(send_mutex);
@@ -1350,6 +1355,21 @@ static esp_err_t comm_can_transmit_locked(uint32_t id, const uint8_t *data, uint
 	}
 
 	return res;
+}
+
+// Pings are discovery traffic. A failed transmit must not enter the normal
+// 200-attempt retry loop, otherwise an empty bus makes every scanned ID stall.
+static esp_err_t comm_can_transmit_once_locked(uint32_t id, const uint8_t *data, uint8_t len, bool ext) {
+	if (len > 8) {
+		len = 8;
+	}
+
+	if (!init_done || !can_node) {
+		return ESP_ERR_INVALID_STATE;
+	}
+
+	return transmit_twai_frame(can_node, can_tx_buf, &can_tx_write,
+			id, data, len, ext, CAN_PING_TX_TIMEOUT_MS);
 }
 
 static bool comm_can_should_quiet_status(const uint8_t *data, unsigned int len) {
@@ -1542,19 +1562,60 @@ void comm_can_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len
  * @param hw_type
  * The hardware type of the CAN device.
  *
+ * @param tx_ok
+ * Set true when the ping frame completed without a controller/ACK error.
+ *
  * @return
  * True for success, false otherwise.
  */
-bool comm_can_ping(uint8_t controller_id, HW_TYPE *hw_type) {
+bool comm_can_ping_scan(uint8_t controller_id, HW_TYPE *hw_type, bool *tx_ok) {
+	if (tx_ok) {
+		*tx_ok = false;
+	}
+
 	if (!init_done) {
 		return false;
 	}
 
 	uint8_t buffer[1];
 	buffer[0] = backup.config.controller_id;
-	comm_can_transmit_eid(controller_id | ((uint32_t)CAN_PACKET_PING << 8), buffer, 1);
 
-	bool ret = xSemaphoreTake(ping_sem, 10 / portTICK_PERIOD_MS) == pdTRUE;
+	xSemaphoreTake(send_mutex, portMAX_DELAY);
+	// Do not let a late response from a previous timed-out ping satisfy this ID.
+	(void)xSemaphoreTake(ping_sem, 0);
+	twai_node_status_t tx_before = {0};
+	bool have_tx_status = twai_node_get_info(can_node, &tx_before, NULL) == ESP_OK;
+	esp_err_t tx_res = comm_can_transmit_once_locked(
+			controller_id | ((uint32_t)CAN_PACKET_PING << 8), buffer, 1, true);
+	if (tx_res == ESP_OK) {
+		esp_err_t tx_done_res = comm_can_wait_tx_done_locked(CAN_PING_TX_TIMEOUT_MS);
+		if (tx_done_res != ESP_OK) {
+			tx_res = tx_done_res;
+		}
+	}
+	if (tx_res == ESP_OK && have_tx_status) {
+		twai_node_status_t tx_after = {0};
+		if (twai_node_get_info(can_node, &tx_after, NULL) != ESP_OK ||
+				tx_after.state == TWAI_ERROR_BUS_OFF ||
+				tx_after.tx_error_count > tx_before.tx_error_count) {
+			tx_res = ESP_FAIL;
+		}
+	}
+	xSemaphoreGive(send_mutex);
+
+	if (tx_ok) {
+		*tx_ok = tx_res == ESP_OK;
+	}
+
+	if (tx_res != ESP_OK) {
+		return false;
+	}
+
+	TickType_t response_ticks = pdMS_TO_TICKS(CAN_PING_RESPONSE_TIMEOUT_MS);
+	if (response_ticks == 0) {
+		response_ticks = 1;
+	}
+	bool ret = xSemaphoreTake(ping_sem, response_ticks) == pdTRUE;
 
 	if (ret) {
 		if (hw_type) {
@@ -1563,6 +1624,10 @@ bool comm_can_ping(uint8_t controller_id, HW_TYPE *hw_type) {
 	}
 
 	return ret;
+}
+
+bool comm_can_ping(uint8_t controller_id, HW_TYPE *hw_type) {
+	return comm_can_ping_scan(controller_id, hw_type, NULL);
 }
 
 void comm_can_set_duty(uint8_t controller_id, float duty) {
@@ -1979,7 +2044,7 @@ void comm_can2_start(int pin_tx, int pin_rx, int baud_kbits) {
 	can2_bitrate = can2_bitrate_from_kbits(baud_kbits);
 
 	esp_err_t res = create_twai_node(&can2_handle, &can2_rx_ctx, pin_tx, pin_rx, can2_bitrate,
-			false, false, &can2_mask_filter);
+			HW_CAN2_FAIL_RETRY_CNT, false, false, &can2_mask_filter);
 	if (res != ESP_OK) {
 		can2_debug_info.last_error = res;
 		return;
