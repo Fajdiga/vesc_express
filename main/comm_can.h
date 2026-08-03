@@ -81,6 +81,7 @@ typedef struct {
 // Functions
 void comm_can_start(int pin_tx, int pin_rx);
 void comm_can_stop(void);
+bool comm_can_has_listener(void);
 int comm_can_get_rx_recovery_cnt(void);
 void comm_can_get_debug_info(comm_can_debug_info_t *info);
 void comm_can_reset_debug_info(void);
@@ -95,7 +96,12 @@ esp_err_t comm_can_transmit_sid_sync(uint32_t id, const uint8_t *data,
 		uint8_t len, int timeout_ms);
 void comm_can_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send);
 bool comm_can_ping(uint8_t controller_id, HW_TYPE *hw_type);
-bool comm_can_ping_scan(uint8_t controller_id, HW_TYPE *hw_type, bool *tx_ok);
+// Like comm_can_ping(), but also reports whether the CAN frame completed on
+// the wire. A false ping with tx_ok=true means that the bus is alive but the
+// addressed node did not answer the VESC ping. tx_ok=false means that the
+// controller could not complete the frame (for example, an empty bus with no
+// ACK), so an ID scanner should stop instead of driving the controller bus-off.
+bool comm_can_ping_ex(uint8_t controller_id, HW_TYPE *hw_type, bool *tx_ok);
 
 void comm_can_set_duty(uint8_t controller_id, float duty);
 void comm_can_set_current(uint8_t controller_id, float current);

@@ -1580,6 +1580,8 @@ static lbm_value ext_can_use_vesc(lbm_value *args, lbm_uint argn) {
 
 static lbm_value ext_can_scan(lbm_value *args, lbm_uint argn) {
 	(void)args; (void)argn;
+	// This is VESC protocol discovery, not a generic CAN-ID scanner. A VESC
+	// must answer CAN_PACKET_PING with CAN_PACKET_PONG for its ID to be listed.
 	lbm_value dev_list = ENC_SYM_NIL;
 	bool found = false;
 
@@ -1588,11 +1590,15 @@ static lbm_value ext_can_scan(lbm_value *args, lbm_uint argn) {
 #endif
 
 	for (int i = 254;i >= 0;i--) {
-		bool tx_ok;
-		if (comm_can_ping_scan(i, 0, &tx_ok)) {
+		bool tx_ok = false;
+		if (comm_can_ping_ex(i, 0, &tx_ok)) {
 			dev_list = lbm_cons(lbm_enc_i(i), dev_list);
 			found = true;
 		}
+
+		// A failed transmit means that the CAN controller could not get an
+		// ACK. Continuing to probe an empty bus only repeats the same frame
+		// while TWAI moves toward bus-off; it cannot discover another ID.
 		if (!tx_ok) {
 			break;
 		}

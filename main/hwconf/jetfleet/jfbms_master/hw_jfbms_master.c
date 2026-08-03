@@ -406,6 +406,10 @@ static volatile uint32_t slave_can_tx_timeout_cnt = 0;
 static volatile esp_err_t slave_can_last_error = ESP_OK;
 static uint8_t slave_can_rx_bus[MAX_SLAVES];
 
+// Set by hw_can_rx_hook when an ESC initiates VESC discovery by pinging this
+// master. Lisp consumes and clears it from the control loop.
+static volatile int primary_can_ping_id = -1;
+
 // Master slave data
 // Keep each broadcast private until all required frames and its final status
 // have arrived. The live snapshot is only replaced by one complete commit.
@@ -803,6 +807,16 @@ static void slave_can_buffer_rx(uint32_t id, const uint8_t *data, int len, bool 
 // TWAI1 mode ignores primary-bus slave frames unless a fallback build explicitly
 // enables the legacy shared-bus path.
 void hw_can_rx_hook(uint32_t id, uint8_t *data, int len, bool is_ext) {
+	if (is_ext && data && len >= 1 &&
+			(id >> 8) == CAN_PACKET_PING &&
+			((id & 0xFFU) == 255U ||
+			(id & 0xFFU) == (uint32_t)backup.config.controller_id)) {
+		uint8_t sender_id = data[0];
+		if (sender_id < 255U && sender_id != (uint8_t)backup.config.controller_id) {
+			primary_can_ping_id = sender_id;
+		}
+	}
+
 #if JFBMS_USE_DEDICATED_SLAVE_TWAI && !JFBMS_ALLOW_SHARED_SLAVE_CAN_FALLBACK
 	(void)id;
 	(void)data;
@@ -1543,6 +1557,17 @@ static lbm_value ext_master_can_overflow(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 	return lbm_enc_u32(can_rx_overflow);
+}
+
+// (master-primary-can-ping) - Return and clear the most recent ESC source ID
+// observed pinging this master on the primary TWAI0 bus.
+static lbm_value ext_master_primary_can_ping(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+
+	int ping_id = primary_can_ping_id;
+	primary_can_ping_id = -1;
+	return ping_id >= 0 ? lbm_enc_i(ping_id) : ENC_SYM_NIL;
 }
 
 // (master-get-slave-cells slave-id) - Get list of cell voltages in V (only non-zero up to cell_count)
@@ -2764,6 +2789,7 @@ static void load_extensions(bool main_found) {
 	lbm_add_extension("master-can-read-all", ext_master_can_read_all);
 	lbm_add_extension("master-can-available", ext_master_can_available);
 	lbm_add_extension("master-can-overflow", ext_master_can_overflow);
+	lbm_add_extension("master-primary-can-ping", ext_master_primary_can_ping);
 
 	// Slave data access
 	lbm_add_extension("master-get-slave-cells", ext_master_get_slave_cells);
@@ -2819,6 +2845,7 @@ static void load_extensions(bool main_found) {
 }
 
 void hw_init(void) {
+	primary_can_ping_id = -1;
 	if (m_boot_diag_magic != JFBMS_BOOT_DIAG_MAGIC) {
 		m_boot_diag_magic = JFBMS_BOOT_DIAG_MAGIC;
 		m_boot_count = 0;

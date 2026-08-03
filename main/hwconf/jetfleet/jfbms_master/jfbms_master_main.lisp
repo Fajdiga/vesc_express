@@ -16,8 +16,6 @@
 (def soc-checkpoint-min-time-s 10.0)
 (def soc-checkpoint-max-time-s 300.0)
 (def soc-checkpoint-delta 0.02)
-(def primary-can-health-period-s 1.0)
-(def primary-can-health-max-failures 3)
 
 ;;;;;;;;;; State ;;;;;;;;;;
 
@@ -54,6 +52,7 @@
 (def t-ic 24.0)
 (def t-mos 24.0)
 (def soc -1.0)
+(def low-soc-timer-wake-pending false)
 (def cell-num 0)
 (def temp-data-ok false)
 (def cell-temp-mon-en false)
@@ -78,10 +77,7 @@
 (def soc-checkpoint-ah -1.0)
 (def soc-checkpoint-ts (systime))
 (def primary-can-status-ts (systime))
-(def primary-can-health-ts (systime))
 (def primary-can-present false)
-(def primary-can-probe-id -1)
-(def primary-can-health-failures 0)
 
 (def t-last (systime))
 (def rtc-val '(
@@ -109,8 +105,7 @@
 
 (def shutdown-reason-unknown 0)
 (def shutdown-reason-timer 1)
-(def shutdown-reason-low-soc-start 2)
-(def shutdown-reason-low-soc-main 3)
+(def shutdown-reason-low-soc-timer 2)
 (def shutdown-reason-app 4)
 
 (def loop-cnt 0)
@@ -182,28 +177,17 @@ loopwhile-thd
 
 (defun cfg-num-slaves () (truncate (param-or 'num_slaves 1) 1 8))
 
-; A VESC that was present at boot can disappear later. Probe one discovered ID
-; once per second and stop the primary controller after three missed replies so
-; periodic BMS status frames cannot continue forever on an abandoned bus.
-(defun update-primary-can-health () {
-    (if (and
-            primary-can-present
-            (>= primary-can-probe-id 0)
-            (>= (secs-since primary-can-health-ts) primary-can-health-period-s)
-        ) {
-        (setq primary-can-health-ts (systime))
-        (var ping-result
-            (trap-value (list 'can-ping primary-can-probe-id) false))
-        (if (not (eq ping-result nil)) {
-            (setq primary-can-health-failures 0)
-        } {
-            (setq primary-can-health-failures (+ primary-can-health-failures 1))
-            (if (>= primary-can-health-failures primary-can-health-max-failures) {
-                (setq primary-can-present false)
-                (setq primary-can-probe-id -1)
-                (trap (can-stop))
-                (print "Primary CAN device lost; status publishing and CAN stopped")
-            })
+; The ESC may be asleep when the BMS wakes. Keep TWAI0 listening and let the
+; ESC initiate discovery with CAN_PACKET_PING. comm_can automatically replies
+; with CAN_PACKET_PONG; the hardware hook reports the sender ID here.
+(defun observe-primary-can-ping () {
+    (var ping-id (trap-value '(master-primary-can-ping) nil))
+    (if (not (eq ping-id nil)) {
+        (if (not primary-can-present) {
+            (setq primary-can-present true)
+            (setq primary-can-status-ts (systime))
+            (print (str-merge "Primary CAN device detected from ESC ping (ID "
+                (str-from-n ping-id "%d") ")"))
         })
     })
 })
@@ -214,7 +198,7 @@ loopwhile-thd
 ; TWAI1 slave traffic is independent and remains enabled.
 (defun update-primary-can-status () {
     (var rate (truncate (param-or 'can_status_rate_hz 0) 0 200))
-    (if (> rate 0) (update-primary-can-health))
+    (if (> rate 0) (observe-primary-can-ping))
     (if (and
             primary-can-present
             (> rate 0)
@@ -820,8 +804,7 @@ loopwhile-thd
 (defun shutdown-reason-name (reason)
     (cond
         ((= reason shutdown-reason-timer) "timer")
-        ((= reason shutdown-reason-low-soc-start) "low-soc-start")
-        ((= reason shutdown-reason-low-soc-main) "low-soc-main")
+        ((= reason shutdown-reason-low-soc-timer) "low-soc-timer")
         ((= reason shutdown-reason-app) "app")
         (true "unknown")
 ))
@@ -937,16 +920,15 @@ loopwhile-thd
     })
 })
 
-(defun bms-shutdown-low-soc-start () (bms-shutdown-impl shutdown-reason-low-soc-start))
-(defun bms-shutdown-low-soc-main () (bms-shutdown-impl shutdown-reason-low-soc-main))
+(defun bms-shutdown-low-soc-timer () (bms-shutdown-impl shutdown-reason-low-soc-timer))
 (defun bms-shutdown-app () (bms-shutdown-impl shutdown-reason-app))
 (defun shutdown-master () (bms-shutdown-app))
 
-(defun low-soc-unused () (and
+(defun low-soc-timer-wake () (and
     (valid-pack-reading)
     (< soc 0.05)
     (not trigger-bal-after-charge)
-    (< vt-vchg (bms-get-param 'v_charge_detect))
+    (not (test-chg 1))
     (external-wake-inactive)
     (not (is-connected))
     (not (can-active))
@@ -993,6 +975,8 @@ loopwhile-thd
             (bms-shutdown-impl shutdown-reason-timer)
         )
     })
+
+    source
 })
 
 (defun update-sleep-shutdown-timer () {
@@ -2192,9 +2176,16 @@ loopwhile-thd
             (checkpoint-soc true "EMPTY")
         })
 
-        (if (and (low-soc-unused) (> i-zero-time 1.0) (<= c-min (bms-get-param 'vc_empty)))
-            (bms-shutdown-low-soc-main)
-        )
+        ; Low SOC shutdown is evaluated once after a deep-sleep timer wake.
+        ; A charger, external enable, connection or CAN activity makes this a
+        ; normal wake and must not trigger the shutdown.
+        (if (and low-soc-timer-wake-pending (valid-pack-reading)) {
+            (var low-soc-shutdown (low-soc-timer-wake))
+            (setq low-soc-timer-wake-pending false)
+            (if low-soc-shutdown
+                (bms-shutdown-low-soc-timer)
+            )
+        })
 
         ; The master has no local BQ to put to sleep; slaves handle their own
         ; BQ state and the master only drops COM/ESP.
@@ -2237,31 +2228,8 @@ loopwhile-thd
     (setq charge-dis-ts (systime))
     (setq t-last (systime))
     (setq primary-can-status-ts (systime))
-    (setq primary-can-health-ts (systime))
     (setq primary-can-present false)
-    (setq primary-can-probe-id -1)
-    (setq primary-can-health-failures 0)
     (setq loop-cnt 0)
-
-    (var primary-can-rate (truncate (param-or 'can_status_rate_hz 0) 0 200))
-    (if (= primary-can-rate 0)
-        (print "Primary CAN status disabled (standalone mode)")
-        {
-            ; Scan every primary-bus ID once. A transmit failure ends an empty
-            ; bus scan; an active bus is scanned through all IDs.
-            (var primary-can-devices (trap-value '(can-scan) false))
-            (if (and primary-can-devices (> (length primary-can-devices) 0)) {
-                (setq primary-can-present true)
-                (setq primary-can-probe-id (first primary-can-devices))
-                (print (str-merge "Primary CAN devices detected ("
-                    (str-from-n (length primary-can-devices) "%d")
-                    "); status enabled at "
-                    (str-from-n primary-can-rate "%d") " Hz"))
-            } {
-                (print "No primary CAN device detected; status publishing disabled until reboot")
-            })
-        }
-    )
 
     (if (> app-wdt-timeout 0)
         (wdt-configure true app-wdt-timeout)
@@ -2274,6 +2242,31 @@ loopwhile-thd
     (gpio-write 6 0)
     (set-chg false)
     (set-bms-val 'bms-can-id (can-local-id))
+
+    ; COM_EN powers the external CAN transceiver. After deep sleep it is held
+    ; off until this point, so the boot scan must happen after COM_EN is low.
+    (sleep 0.05)
+    (var primary-can-rate (truncate (param-or 'can_status_rate_hz 0) 0 200))
+    (if (= primary-can-rate 0)
+        (print "Primary CAN status disabled (standalone mode)")
+        {
+            ; Perform one VESC ID scan at boot. If the ESC is asleep, can-scan
+            ; stops after the physical transmit failure; restart TWAI0 as a
+            ; listener so the ESC can later initiate discovery with PING.
+            (var primary-can-devices (trap-value '(can-scan) false))
+            (if (and primary-can-devices (> (length primary-can-devices) 0)) {
+                (setq primary-can-present true)
+                (setq primary-can-status-ts (systime))
+                (print (str-merge "Primary CAN devices detected ("
+                    (str-from-n (length primary-can-devices) "%d")
+                    "); status enabled at "
+                    (str-from-n primary-can-rate "%d") " Hz"))
+            } {
+                (trap (can-start))
+                (print "No primary CAN device at boot; listener enabled for ESC ping")
+            })
+        }
+    )
 
     ; Buzzer on GPIO8.
     (pwm-start 4000 0.0 0 8)
@@ -2300,7 +2293,8 @@ loopwhile-thd
 
     (setq init-done true)
     (load-settings)
-    (process-sleep-time)
+    (var wake-source (process-sleep-time))
+    (setq low-soc-timer-wake-pending (= wake-source 2))
 
     (if pack-data-ok
         (print (str-merge "Pack ready: slaves=" (str-from-n (cfg-num-slaves) "%d")

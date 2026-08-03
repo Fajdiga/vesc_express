@@ -476,6 +476,12 @@ volatile bms_values *bms_get_values(void) {
 }
 
 void bms_send_status_can(void) {
+#ifdef HW_BMS_STATUS_CAN_REQUIRES_LISTENER
+	if (!comm_can_has_listener()) {
+		return;
+	}
+#endif
+
 	int32_t send_index = 0;
 	uint8_t buffer[8];
 

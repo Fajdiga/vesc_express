@@ -165,8 +165,8 @@ static void block_task(void *arg) {
 			bool found = false;
 			for (uint8_t i = 0;i < 255;i++) {
 				HW_TYPE hw_type;
-				bool tx_ok;
-				if (comm_can_ping_scan(i, &hw_type, &tx_ok)) {
+				bool tx_ok = false;
+				if (comm_can_ping_ex(i, &hw_type, &tx_ok)) {
 					send_buffer[ind++] = i;
 					found = true;
 				}

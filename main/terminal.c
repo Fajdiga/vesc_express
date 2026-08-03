@@ -275,8 +275,8 @@ void terminal_process_string(char *str) {
 		#endif
 		for (int i = 0;i < 255;i++) {
 			HW_TYPE hw_type;
-			bool tx_ok;
-			if (comm_can_ping_scan(i, &hw_type, &tx_ok)) {
+			bool tx_ok = false;
+			if (comm_can_ping_ex(i, &hw_type, &tx_ok)) {
 				commands_printf("Found %s with ID: %d", utils_hw_type_to_string(hw_type), i);
 				found = true;
 			}

@@ -58,7 +58,7 @@ static psw_status psw_stat[CAN_STATUS_MSGS_TO_STORE];
 #define TXBUF_LEN					20
 #define TX_RETRY_ATTEMPTS			200
 #define CAN_PING_TX_TIMEOUT_MS		50
-#define CAN_PING_RESPONSE_TIMEOUT_MS	50
+#define CAN_PING_RESPONSE_TIMEOUT_MS	10
 
 typedef struct {
 	uint32_t identifier;
@@ -97,10 +97,12 @@ static volatile bool status_running = false;
 static volatile bool rx_running = false;
 
 static SemaphoreHandle_t ping_sem;
+static SemaphoreHandle_t ping_mutex;
 static SemaphoreHandle_t proc_sem;
 static SemaphoreHandle_t status_sem;
 static SemaphoreHandle_t send_mutex;
 static volatile HW_TYPE ping_hw_last = HW_TYPE_VESC;
+static volatile int ping_id_expected = -1;
 static uint8_t rx_buffer[RX_BUFFER_NUM][RX_BUFFER_SIZE];
 static int rx_buffer_offset[RX_BUFFER_NUM];
 static volatile unsigned int rx_buffer_last_id;
@@ -113,6 +115,9 @@ static volatile uint32_t rx_overflow = 0;
 static volatile bool use_vesc_decoder = true;
 static volatile uint32_t send_buffer_last_ticks = 0;
 static comm_can_debug_info_t debug_info = {0};
+// True when the primary CAN path has a successfully completed transmission.
+// The JFBMS master uses this as a hard gate for optional BMS status traffic.
+static volatile bool can_listener_ok = false;
 static can_rx_ctx_t can_rx_ctx = {
 	.rx_buf = rx_buf,
 	.rx_write = &rx_write,
@@ -604,12 +609,16 @@ static void decode_msg(uint32_t eid, uint8_t *data8, int len, bool is_replaced) 
 			} break;
 
 			case CAN_PACKET_PONG:
-				// data8[0]; // Sender ID
-				xSemaphoreGive(ping_sem);
-				if (len >= 2) {
-					ping_hw_last = data8[1];
-				} else {
-					ping_hw_last = HW_TYPE_VESC_BMS;
+				// Only complete the ping that requested this sender. This prevents a
+				// late PONG from a timed-out ID from being reported as the next ID.
+				if (len >= 1 && data8[0] == ping_id_expected) {
+					if (len >= 2) {
+						ping_hw_last = data8[1];
+					} else {
+						ping_hw_last = HW_TYPE_VESC_BMS;
+					}
+					ping_id_expected = -1;
+					xSemaphoreGive(ping_sem);
 				}
 				break;
 
@@ -1083,6 +1092,7 @@ void comm_can_start(int pin_tx, int pin_rx) {
 
 	if (!sem_init_done) {
 		ping_sem = xSemaphoreCreateBinary();
+		ping_mutex = xSemaphoreCreateMutex();
 		status_sem = xSemaphoreCreateBinary();
 		send_mutex = xSemaphoreCreateMutex();
 		sem_init_done = true;
@@ -1117,6 +1127,7 @@ void comm_can_start(int pin_tx, int pin_rx) {
 
 void comm_can_stop(void) {
 	if (!init_done) {
+		can_listener_ok = false;
 		return;
 	}
 
@@ -1132,6 +1143,11 @@ void comm_can_stop(void) {
 
 	delete_twai_node(&can_node);
 	can_rx_ctx.node = NULL;
+	can_listener_ok = false;
+}
+
+bool comm_can_has_listener(void) {
+	return can_listener_ok;
 }
 
 int comm_can_get_rx_recovery_cnt(void) {
@@ -1354,6 +1370,8 @@ static esp_err_t comm_can_transmit_locked(uint32_t id, const uint8_t *data, uint
 		}
 	}
 
+	can_listener_ok = (res == ESP_OK);
+
 	return res;
 }
 
@@ -1562,13 +1580,10 @@ void comm_can_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len
  * @param hw_type
  * The hardware type of the CAN device.
  *
- * @param tx_ok
- * Set true when the ping frame completed without a controller/ACK error.
- *
  * @return
  * True for success, false otherwise.
  */
-bool comm_can_ping_scan(uint8_t controller_id, HW_TYPE *hw_type, bool *tx_ok) {
+bool comm_can_ping_ex(uint8_t controller_id, HW_TYPE *hw_type, bool *tx_ok) {
 	if (tx_ok) {
 		*tx_ok = false;
 	}
@@ -1580,11 +1595,12 @@ bool comm_can_ping_scan(uint8_t controller_id, HW_TYPE *hw_type, bool *tx_ok) {
 	uint8_t buffer[1];
 	buffer[0] = backup.config.controller_id;
 
+	xSemaphoreTake(ping_mutex, portMAX_DELAY);
+
 	xSemaphoreTake(send_mutex, portMAX_DELAY);
 	// Do not let a late response from a previous timed-out ping satisfy this ID.
 	(void)xSemaphoreTake(ping_sem, 0);
-	twai_node_status_t tx_before = {0};
-	bool have_tx_status = twai_node_get_info(can_node, &tx_before, NULL) == ESP_OK;
+	ping_id_expected = controller_id;
 	esp_err_t tx_res = comm_can_transmit_once_locked(
 			controller_id | ((uint32_t)CAN_PACKET_PING << 8), buffer, 1, true);
 	if (tx_res == ESP_OK) {
@@ -1593,22 +1609,17 @@ bool comm_can_ping_scan(uint8_t controller_id, HW_TYPE *hw_type, bool *tx_ok) {
 			tx_res = tx_done_res;
 		}
 	}
-	if (tx_res == ESP_OK && have_tx_status) {
-		twai_node_status_t tx_after = {0};
-		if (twai_node_get_info(can_node, &tx_after, NULL) != ESP_OK ||
-				tx_after.state == TWAI_ERROR_BUS_OFF ||
-				tx_after.tx_error_count > tx_before.tx_error_count) {
-			tx_res = ESP_FAIL;
-		}
-	}
 	xSemaphoreGive(send_mutex);
 
-	if (tx_ok) {
-		*tx_ok = tx_res == ESP_OK;
+	if (tx_res != ESP_OK) {
+		can_listener_ok = false;
+		ping_id_expected = -1;
+		xSemaphoreGive(ping_mutex);
+		return false;
 	}
 
-	if (tx_res != ESP_OK) {
-		return false;
+	if (tx_ok) {
+		*tx_ok = true;
 	}
 
 	TickType_t response_ticks = pdMS_TO_TICKS(CAN_PING_RESPONSE_TIMEOUT_MS);
@@ -1616,18 +1627,21 @@ bool comm_can_ping_scan(uint8_t controller_id, HW_TYPE *hw_type, bool *tx_ok) {
 		response_ticks = 1;
 	}
 	bool ret = xSemaphoreTake(ping_sem, response_ticks) == pdTRUE;
+	ping_id_expected = -1;
 
 	if (ret) {
+		can_listener_ok = true;
 		if (hw_type) {
 			*hw_type = ping_hw_last;
 		}
 	}
 
+	xSemaphoreGive(ping_mutex);
 	return ret;
 }
 
 bool comm_can_ping(uint8_t controller_id, HW_TYPE *hw_type) {
-	return comm_can_ping_scan(controller_id, hw_type, NULL);
+	return comm_can_ping_ex(controller_id, hw_type, NULL);
 }
 
 void comm_can_set_duty(uint8_t controller_id, float duty) {

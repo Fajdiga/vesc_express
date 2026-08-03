@@ -69,6 +69,9 @@
 // slave snapshot (especially cell_num and v_cell[]).
 #define HW_BMS_CAN_VALUES_LOCAL_OWNER
 
+// Gate optional primary-bus BMS status traffic after a failed transmission.
+#define HW_BMS_STATUS_CAN_REQUIRES_LISTENER
+
 // Configuration overrides
 #define OVR_CONF_PARSER_C			"jfbms_master_confparser.c"
 #define OVR_CONF_PARSER_H			"jfbms_master_confparser.h"
