@@ -20,14 +20,20 @@
 
 #include "utils.h"
 #include "soc/gpio_pins.h"
+#include "soc/soc_caps.h"
+#if VESC_ENABLE_STORAGE
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
+#endif
 #include "esp_vfs.h"
 #include "esp_memory_utils.h"
 
 #include <sys/time.h>
+#include <sys/stat.h>
 #include <dirent.h>
 #include <string.h>
+#include <unistd.h>
+#include <stdlib.h>
 
 // Global variables
 char *string_pin_invalid = "Invalid pin";

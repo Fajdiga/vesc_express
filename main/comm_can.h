@@ -21,13 +21,71 @@
 #define MAIN_COMM_CAN_H_
 
 #include "datatypes.h"
+#include "esp_err.h"
 
 #define CAN_STATUS_MSGS_TO_STORE	10
+
+typedef struct {
+	uint32_t tx_process_short;
+	uint32_t tx_fill_rx;
+	uint32_t tx_fill_rx_long;
+	uint32_t tx_process_rx;
+	uint32_t tx_eid_retry;
+	uint32_t tx_drain_retry;
+	uint32_t tx_send_buffer_fail;
+	uint32_t tx_eid_fail;
+	uint32_t tx_sid_fail;
+	uint32_t tx_drain_fail;
+	uint32_t rx_fill_rx;
+	uint32_t rx_fill_rx_long;
+	uint32_t rx_process_short;
+	uint32_t rx_process_rx;
+	uint32_t rx_forward_reply_short;
+	uint32_t rx_forward_reply_rx;
+	uint32_t rx_forward_request_short;
+	uint32_t rx_forward_request_rx;
+	uint32_t rx_overflow;
+	uint32_t rx_no_buffer;
+	uint32_t rx_crc_fail;
+	uint32_t rx_bad_len;
+	uint32_t last_rx_eid;
+	uint16_t last_tx_len;
+	uint16_t last_rx_len;
+	uint8_t last_tx_dst_id;
+	uint8_t last_tx_src_id;
+	uint8_t last_tx_send;
+	uint8_t last_rx_id;
+	uint8_t last_rx_packet;
+	uint8_t last_rx_last_id;
+	uint8_t last_rx_send;
+} comm_can_debug_info_t;
+
+typedef struct {
+	uint32_t tx_eid_ok;
+	uint32_t tx_sid_ok;
+	uint32_t tx_eid_fail;
+	uint32_t tx_sid_fail;
+	uint32_t tx_eid_timeout;
+	uint32_t tx_sid_timeout;
+	uint32_t rx_total;
+	uint32_t rx_overflow;
+	uint32_t last_tx_eid;
+	uint32_t last_tx_sid;
+	uint32_t last_rx_id;
+	uint16_t last_tx_len;
+	uint16_t last_rx_len;
+	uint8_t last_rx_ext;
+	esp_err_t last_error;
+} comm_can2_debug_info_t;
 
 // Functions
 void comm_can_start(int pin_tx, int pin_rx);
 void comm_can_stop(void);
+bool comm_can_has_listener(void);
 int comm_can_get_rx_recovery_cnt(void);
+void comm_can_get_debug_info(comm_can_debug_info_t *info);
+void comm_can_reset_debug_info(void);
+bool comm_can_send_buffer_recent(int msec);
 void comm_can_use_vesc_decoder(bool use_vesc_dec);
 CAN_BAUD comm_can_kbits_to_baud(int kbits);
 void comm_can_update_baudrate(int delay_msec);
@@ -36,8 +94,16 @@ void comm_can_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len);
 void comm_can_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len);
 void comm_can_set_sid_rx_callback(bool (*p_func)(uint32_t id, uint8_t *data, uint8_t len));
 void comm_can_set_eid_rx_callback(bool (*p_func)(uint32_t id, uint8_t *data, uint8_t len));
+esp_err_t comm_can_transmit_sid_sync(uint32_t id, const uint8_t *data,
+		uint8_t len, int timeout_ms);
 void comm_can_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send);
 bool comm_can_ping(uint8_t controller_id, HW_TYPE *hw_type);
+// Like comm_can_ping(), but also reports whether the CAN frame completed on
+// the wire. A false ping with tx_ok=true means that the bus is alive but the
+// addressed node did not answer the VESC ping. tx_ok=false means that the
+// controller could not complete the frame (for example, an empty bus with no
+// ACK), so an ID scanner should stop instead of driving the controller bus-off.
+bool comm_can_ping_ex(uint8_t controller_id, HW_TYPE *hw_type, bool *tx_ok);
 
 void comm_can_set_duty(uint8_t controller_id, float duty);
 void comm_can_set_current(uint8_t controller_id, float current);
@@ -81,10 +147,17 @@ void comm_can_update_pid_pos_offset(int id, float angle_now, bool store);
 
 #ifdef CONFIG_IDF_TARGET_ESP32C6
 void comm_can2_start(int pin_tx, int pin_rx, int baud_kbits);
+void comm_can2_set_mask_filter(uint32_t id, uint32_t mask, bool is_ext);
 void comm_can2_stop(void);
 void comm_can2_use_vesc_decoder(bool use);
 bool comm_can2_is_running(void);
 int  comm_can2_get_rx_recovery_cnt(void);
+void comm_can2_get_debug_info(comm_can2_debug_info_t *info);
+void comm_can2_reset_debug_info(void);
+esp_err_t comm_can2_transmit_eid_result(uint32_t id, const uint8_t *data, uint8_t len);
+esp_err_t comm_can2_transmit_sid_result(uint32_t id, const uint8_t *data, uint8_t len);
+esp_err_t comm_can2_transmit_sid_sync(uint32_t id, const uint8_t *data,
+		uint8_t len, int timeout_ms);
 void comm_can2_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len);
 void comm_can2_transmit_sid(uint32_t id, const uint8_t *data, uint8_t len);
 void comm_can2_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send_type);
