@@ -36,10 +36,18 @@
 #include "extensions/mutex_extensions.h"
 #include "extensions/lbm_dyn_lib.h"
 #include "extensions/ttf_extensions.h"
+#if VESC_ENABLE_DISPLAY
 #include "lispif_disp_extensions.h"
+#endif
+#if VESC_ENABLE_TOUCH
 #include "lispif_touch_extensions.h"
+#endif
+#if VESC_ENABLE_WIFI
 #include "lispif_wifi_extensions.h"
+#endif
+#if VESC_ENABLE_BLE
 #include "lispif_ble_extensions.h"
+#endif
 #include "lispif_rgbled_extensions.h"
 #include "lbm_color_extensions.h"
 #include "lbm_constants.h"
@@ -50,7 +58,6 @@
 #include "mempools.h"
 #include "log.h"
 #include "buffer.h"
-#include "flash_helper.h"
 #include "nvs.h"
 #include "print.h"
 #include "utils.h"
@@ -70,16 +77,16 @@
 #include "packet.h"
 #include "bme280_if.h"
 
+#if VESC_ENABLE_WIFI
 #include "esp_netif.h"
-#if CONFIG_ESP_WIFI_ENABLED || CONFIG_ESP_WIFI_REMOTE_ENABLED
+#if !CONFIG_IDF_TARGET_ESP32P4
 #include "esp_wifi.h"
 #include "esp_mac.h"
-#endif
-#if !CONFIG_IDF_TARGET_ESP32P4
 #include "esp_now.h"
-#include "esp_crc.h"
 #endif
-#include "driver/i2c.h"
+#endif
+#include "esp_crc.h"
+#include "i2c_compat.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
@@ -88,18 +95,32 @@
 #include "esp_sleep.h"
 #include "soc/rtc.h"
 #include "esp_private/esp_clk.h"
+#if VESC_ENABLE_BLE && !CONFIG_IDF_TARGET_ESP32P4
+#include "esp_bt.h"
+#ifdef CONFIG_BT_BLUEDROID_ENABLED
+#include "esp_bt_main.h"
+#elif defined(CONFIG_BT_NIMBLE_ENABLED)
+#include "nimble/nimble_port.h"
+#endif
+#endif
 #include "esp_partition.h"
 #include "esp_ota_ops.h"
 
+#if VESC_ENABLE_STORAGE
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include "esp_vfs.h"
 #include "lowzip.h"
+#endif
 #include "aes/esp_aes.h"
 
 #include <math.h>
 #include <ctype.h>
 #include <stdarg.h>
+#include <stdio.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <string.h>
 
 #if CONFIG_IDF_TARGET_ESP32S3
@@ -109,10 +130,6 @@
 #else
 	#error "Unsupported target"
 #endif
-
-// Declare native lib extension
-lbm_value ext_load_native_lib(lbm_value *args, lbm_uint argn);
-lbm_value ext_unload_native_lib(lbm_value *args, lbm_uint argn);
 
 typedef struct {
 	// BMS
@@ -161,7 +178,6 @@ typedef struct {
 	lbm_uint fw_ver;
 	lbm_uint uuid;
 	lbm_uint hw_type;
-	lbm_uint hw_target;
 	lbm_uint part_running;
 	lbm_uint git_branch;
 	lbm_uint git_hash;
@@ -298,8 +314,6 @@ static bool compare_symbol(lbm_uint sym, lbm_uint *comp) {
 			lbm_add_symbol_const("uuid", comp);
 		} else if (comp == &syms_vesc.hw_type) {
 			lbm_add_symbol_const("hw-type", comp);
-		} else if (comp == &syms_vesc.hw_target) {
-			lbm_add_symbol_const("hw-target", comp);
 		} else if (comp == &syms_vesc.part_running) {
 			lbm_add_symbol_const("part-running", comp);
 		} else if (comp == &syms_vesc.git_branch) {
@@ -415,11 +429,10 @@ static bool is_symbol_true_false(lbm_value v) {
 
 static lbm_value ext_print(lbm_value *args, lbm_uint argn) {
 	const int str_len = 256;
-	char *print_val_buffer = lbm_malloc_reserve(str_len + 1);
+	char *print_val_buffer = lbm_malloc_reserve(str_len);
 	if (!print_val_buffer) {
 		return ENC_SYM_MERROR;
 	}
-	print_val_buffer[str_len] = '\0';
 
 	for (lbm_uint i = 0; i < argn; i ++) {
 		lbm_print_value(print_val_buffer, str_len, args[i]);
@@ -1005,13 +1018,54 @@ static lbm_value ext_recv_data(lbm_value *args, lbm_uint argn) {
 	return ENC_SYM_TRUE;
 }
 
+typedef union {
+	uint32_t as_u32;
+	int32_t as_i32;
+	float as_float;
+} eeprom_var;
+
+#define EEPROM_VARS		256
+
 static bool check_eeprom_addr(int addr) {
 	if (addr < 0 || addr >= EEPROM_VARS) {
-		lbm_set_error_reason("Address must be 0 to 511");
+		lbm_set_error_reason("Address must be 0 to 255");
 		return false;
 	}
 
 	return true;
+}
+
+static bool store_eeprom_var(eeprom_var *v, int address) {
+	if (address < 0 || address >= EEPROM_VARS) {
+		return false;
+	}
+
+	char buf[10];
+	sprintf(buf, "v%d", address);
+
+	nvs_handle_t my_handle;
+	esp_err_t ok_op = nvs_open("lbm", NVS_READWRITE, &my_handle);
+	esp_err_t ok_set = nvs_set_u32(my_handle, buf, v->as_u32);
+	esp_err_t ok_com = nvs_commit(my_handle);
+	nvs_close(my_handle);
+
+	return ok_op == ESP_OK && ok_set == ESP_OK && ok_com == ESP_OK;
+}
+
+static bool read_eeprom_var(eeprom_var *v, int address) {
+	if (address < 0 || address >= EEPROM_VARS) {
+		return false;
+	}
+
+	char buf[10];
+	sprintf(buf, "v%d", address);
+
+	nvs_handle_t my_handle;
+	esp_err_t ok_op = nvs_open("lbm", NVS_READONLY, &my_handle);
+	esp_err_t ok_set = nvs_get_u32(my_handle, buf, &v->as_u32);
+	nvs_close(my_handle);
+
+	return ok_op == ESP_OK && ok_set == ESP_OK;
 }
 
 static lbm_value ext_eeprom_store_f(lbm_value *args, lbm_uint argn) {
@@ -1024,7 +1078,7 @@ static lbm_value ext_eeprom_store_f(lbm_value *args, lbm_uint argn) {
 
 	eeprom_var v;
 	v.as_float = lbm_dec_as_float(args[1]);
-	return store_eeprom_var(&v, addr, 1) ? ENC_SYM_TRUE : ENC_SYM_NIL;
+	return store_eeprom_var(&v, addr) ? ENC_SYM_TRUE : ENC_SYM_NIL;
 }
 
 static lbm_value ext_eeprom_read_f(lbm_value *args, lbm_uint argn) {
@@ -1036,7 +1090,7 @@ static lbm_value ext_eeprom_read_f(lbm_value *args, lbm_uint argn) {
 	}
 
 	eeprom_var v;
-	bool res = read_eeprom_var(&v, addr, 1);
+	bool res = read_eeprom_var(&v, addr);
 	return res ? lbm_enc_float(v.as_float) : ENC_SYM_NIL;
 }
 
@@ -1050,7 +1104,7 @@ static lbm_value ext_eeprom_store_i(lbm_value *args, lbm_uint argn) {
 
 	eeprom_var v;
 	v.as_i32 = lbm_dec_as_i32(args[1]);
-	return store_eeprom_var(&v, addr, 1) ? ENC_SYM_TRUE : ENC_SYM_NIL;
+	return store_eeprom_var(&v, addr) ? ENC_SYM_TRUE : ENC_SYM_NIL;
 }
 
 static lbm_value ext_eeprom_read_i(lbm_value *args, lbm_uint argn) {
@@ -1062,7 +1116,7 @@ static lbm_value ext_eeprom_read_i(lbm_value *args, lbm_uint argn) {
 	}
 
 	eeprom_var v;
-	bool res = read_eeprom_var(&v, addr, 1);
+	bool res = read_eeprom_var(&v, addr);
 	return res ? lbm_enc_i32(v.as_i32) : ENC_SYM_NIL;
 }
 
@@ -1074,7 +1128,20 @@ static lbm_value ext_eeprom_erase(lbm_value *args, lbm_uint argn){
 		return ENC_SYM_EERROR;
 	}
 
-	if (!erase_eeprom_var(addr, 1)) {
+	char key[10];
+	sprintf(key, "v%d", addr);
+
+	nvs_handle_t nvs_handle;
+	esp_err_t ok_op = nvs_open("lbm", NVS_READWRITE, &nvs_handle);
+	if (ok_op != ESP_OK) {
+		return ENC_SYM_EERROR;
+	}
+
+	esp_err_t ok_set = nvs_erase_key(nvs_handle, key);
+	esp_err_t ok_com = nvs_commit(nvs_handle);
+	nvs_close(nvs_handle);
+
+	if (ok_set != ESP_OK || ok_com != ESP_OK) {
 		return ENC_SYM_EERROR;
 	}
 	return ENC_SYM_TRUE;
@@ -1112,18 +1179,6 @@ static lbm_value ext_sysinfo(lbm_value *args, lbm_uint argn) {
 		res = lbm_cons(lbm_enc_i(FW_VERSION_MAJOR), res);
 	} else if (compare_symbol(name, &syms_vesc.hw_type)) {
 		res = lbm_enc_sym(sym_hw_express);
-	} else if (compare_symbol(name, &syms_vesc.hw_target)) {
-		// Chip this firmware runs on, e.g. "esp32c3". Native libs only run
-		// on the chip they were built for, so multi-target packages use
-		// this to pick the right binary.
-		lbm_value lbm_res;
-		if (lbm_create_array(&lbm_res, strlen(CONFIG_IDF_TARGET) + 1)) {
-			lbm_array_header_t *arr = (lbm_array_header_t*)lbm_car(lbm_res);
-			strcpy((char*)arr->data, CONFIG_IDF_TARGET);
-			res = lbm_res;
-		} else {
-			res = ENC_SYM_MERROR;
-		}
 	} else if (compare_symbol(name, &syms_vesc.part_running)) {
 		const esp_partition_t *running = esp_ota_get_running_partition();
 		if (running != NULL) {
@@ -1201,7 +1256,7 @@ static lbm_value ext_can_msg_age(lbm_value *args, lbm_uint argn) {
 	int id = lbm_dec_as_i32(args[0]);
 	int msg = lbm_dec_as_i32(args[1]);
 
-	if (id < 0 || id > 253) {
+	if (id < 0 || id > 254) {
 		return ENC_SYM_EERROR;
 	}
 
@@ -1525,12 +1580,32 @@ static lbm_value ext_can_use_vesc(lbm_value *args, lbm_uint argn) {
 
 static lbm_value ext_can_scan(lbm_value *args, lbm_uint argn) {
 	(void)args; (void)argn;
+	// This is VESC protocol discovery, not a generic CAN-ID scanner. A VESC
+	// must answer CAN_PACKET_PING with CAN_PACKET_PONG for its ID to be listed.
 	lbm_value dev_list = ENC_SYM_NIL;
+	bool found = false;
 
-	for (int i = 253;i >= 0;i--) {
-		if (comm_can_ping(i, 0)) {
+#ifdef CAN_TX_GPIO_NUM
+	comm_can_start(CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM);
+#endif
+
+	for (int i = 254;i >= 0;i--) {
+		bool tx_ok = false;
+		if (comm_can_ping_ex(i, 0, &tx_ok)) {
 			dev_list = lbm_cons(lbm_enc_i(i), dev_list);
+			found = true;
 		}
+
+		// A failed transmit means that the CAN controller could not get an
+		// ACK. Continuing to probe an empty bus only repeats the same frame
+		// while TWAI moves toward bus-off; it cannot discover another ID.
+		if (!tx_ok) {
+			break;
+		}
+	}
+
+	if (!found) {
+		comm_can_stop();
 	}
 
 	return dev_list;
@@ -1540,11 +1615,14 @@ static lbm_value ext_can_ping(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 
 	int id = lbm_dec_as_i32(args[0]);
-	if (id < 0 || id > 253) {
+	if (id < 0 || id > 254) {
 		return ENC_SYM_TERROR;
 	}
 
 	HW_TYPE hw = HW_TYPE_VESC;
+	#ifdef CAN_TX_GPIO_NUM
+	comm_can_start(CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM);
+	#endif
 	bool res = comm_can_ping(id, &hw);
 
 	return res ? lbm_enc_i(hw) : ENC_SYM_NIL;
@@ -2127,6 +2205,80 @@ static lbm_value ext_lbm_set_quota(lbm_value *args, lbm_uint argn) {
 	return ENC_SYM_TRUE;
 }
 
+static bool decode_bool_arg(lbm_value arg, bool *val) {
+	if (lbm_is_number(arg)) {
+		*val = lbm_dec_as_i32(arg) != 0;
+		return true;
+	} else if (arg == ENC_SYM_TRUE) {
+		*val = true;
+		return true;
+	} else if (arg == ENC_SYM_NIL) {
+		*val = false;
+		return true;
+	}
+
+	return false;
+}
+
+static lbm_value ext_wdt_result(esp_err_t res) {
+	if (res == ESP_OK) {
+		return ENC_SYM_TRUE;
+	}
+
+	lbm_set_error_reason((char*)esp_err_to_name(res));
+	return ENC_SYM_EERROR;
+}
+
+static lbm_value ext_wdt_configure(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN(2);
+
+	bool is_enabled = false;
+	if (!decode_bool_arg(args[0], &is_enabled)) {
+		lbm_set_error_reason((char*) lbm_error_str_incorrect_arg);
+		return ENC_SYM_TERROR;
+	}
+
+	if (!lbm_is_number(args[1])) {
+		lbm_set_error_reason((char*) lbm_error_str_no_number);
+		return ENC_SYM_TERROR;
+	}
+
+	uint32_t timeout_s = lbm_dec_as_u32(args[1]);
+	if (is_enabled && timeout_s < 1) {
+		lbm_set_error_reason("Watchdog timeout must be greater than 0");
+		return ENC_SYM_EERROR;
+	}
+
+	return ext_wdt_result(main_task_wdt_configure(is_enabled, timeout_s));
+}
+
+static lbm_value ext_wdt_enable(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN(0);
+	return ext_wdt_result(main_task_wdt_enable());
+}
+
+static lbm_value ext_wdt_disable(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN(0);
+	return ext_wdt_result(main_task_wdt_disable());
+}
+
+static lbm_value ext_wdt_reset(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN(0);
+	return ext_wdt_result(main_task_wdt_reset());
+}
+
+static lbm_value ext_wdt_set_timeout(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(1);
+
+	uint32_t timeout_s = lbm_dec_as_u32(args[0]);
+	if (timeout_s < 1) {
+		lbm_set_error_reason("Watchdog timeout must be greater than 0");
+		return ENC_SYM_EERROR;
+	}
+
+	return ext_wdt_result(main_task_wdt_set_timeout(timeout_s));
+}
+
 lbm_value ext_lbm_set_gc_stack_size(lbm_value *args, lbm_uint argn) {
 	if (argn == 1) {
 		if (lbm_is_number(args[0])) {
@@ -2261,6 +2413,7 @@ static lbm_value ext_ioboard_set_pwm(lbm_value *args, lbm_uint argn) {
 }
 
 // ESP NOW
+#if VESC_ENABLE_WIFI
 
 #if !CONFIG_IDF_TARGET_ESP32P4
 
@@ -2381,7 +2534,7 @@ static lbm_value ext_esp_now_start(lbm_value *args, lbm_uint argn) {
 		wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
 		esp_wifi_init(&cfg);
 		esp_wifi_set_storage(WIFI_STORAGE_RAM);
-		esp_wifi_set_mode(WIFI_MODE_APSTA);
+		esp_wifi_set_mode(WIFI_MODE_AP);
 
 		if (backup.config.ble_mode == BLE_MODE_DISABLED) {
 			esp_wifi_set_ps(WIFI_PS_NONE);
@@ -2397,12 +2550,14 @@ static lbm_value ext_esp_now_start(lbm_value *args, lbm_uint argn) {
 				NULL,
 				&instance_any_id);
 
+#ifdef VESC_ENABLE_WIFI_FTM
 		// Enable FTM responder
 		wifi_config_t wifi_config;
 		memset(&wifi_config, 0, sizeof(wifi_config));
 		esp_wifi_get_config(WIFI_IF_AP, &wifi_config);
 		wifi_config.ap.ftm_responder = true;
 		esp_wifi_set_config(WIFI_IF_AP, &wifi_config);
+#endif
 
 		esp_wifi_start();
 	}
@@ -2438,12 +2593,12 @@ static lbm_value ext_esp_now_add_peer(lbm_value *args, lbm_uint argn) {
 
 	int rate = -1;
 	if (argn >= 2) {
-		if (!lbm_is_number(args[1]) || lbm_dec_as_i32(args[1]) > 15) {
+		if (!lbm_is_number(args[1]) || lbm_dec_as_i32(args[2]) > 15) {
 			lbm_set_error_reason(lbm_error_str_incorrect_arg);
 			return ENC_SYM_TERROR;
 		}
 
-		rate = lbm_dec_as_i32(args[1]);
+		rate = lbm_dec_as_i32(args[2]);
 	}
 
 	uint8_t addr[ESP_NOW_ETH_ALEN] = {255, 255, 255, 255, 255, 255};
@@ -2469,7 +2624,7 @@ static lbm_value ext_esp_now_add_peer(lbm_value *args, lbm_uint argn) {
 	esp_now_peer_info_t peer;
 	memset(&peer, 0, sizeof(peer));
 	peer.channel = 0; // Must be the same as the wifi-channel when using wifi. 0 means current channel.
-	peer.ifidx = ESP_IF_WIFI_AP;
+	peer.ifidx = WIFI_IF_AP;
 	peer.encrypt = false;
 	memcpy(peer.peer_addr, addr, ESP_NOW_ETH_ALEN);
 
@@ -2600,9 +2755,9 @@ static lbm_value ext_wifi_set_bw(lbm_value *args, lbm_uint argn) {
 		return ENC_SYM_TERROR;
 	}
 
-	wifi_bandwidth_t bwt = WIFI_BW_HT20;
+	wifi_bandwidth_t bwt = WIFI_BW20;
 	if (bw == 40) {
-		bwt = WIFI_BW_HT40;
+		bwt = WIFI_BW40;
 	}
 
 	esp_err_t res = esp_wifi_set_bandwidth(WIFI_IF_AP, bwt);
@@ -2618,7 +2773,7 @@ static lbm_value ext_wifi_set_bw(lbm_value *args, lbm_uint argn) {
 static lbm_value ext_wifi_get_bw(lbm_value *args, lbm_uint argn) {
 	(void)args; (void)argn;
 
-	wifi_bandwidth_t bwt = WIFI_BW_HT20;
+	wifi_bandwidth_t bwt = WIFI_BW20;
 	esp_err_t res = esp_wifi_get_bandwidth(WIFI_IF_AP, &bwt);
 
 	if (res == ESP_ERR_WIFI_NOT_INIT) {
@@ -2626,7 +2781,7 @@ static lbm_value ext_wifi_get_bw(lbm_value *args, lbm_uint argn) {
 		return ENC_SYM_EERROR;
 	}
 
-	return lbm_enc_i(bwt == WIFI_BW_HT20 ? 20 : 40);
+	return lbm_enc_i(bwt == WIFI_BW20 ? 20 : 40);
 }
 
 static lbm_value ext_wifi_start(lbm_value *args, lbm_uint argn) {
@@ -2716,6 +2871,7 @@ static lbm_value ext_esp_now_recv(lbm_value *args, lbm_uint argn) {
 
 	return ENC_SYM_TRUE;
 }
+#endif
 
 #endif
 
@@ -3612,16 +3768,68 @@ static lbm_value ext_set_pos_time(lbm_value *args, lbm_uint argn) {
 	return ENC_SYM_TRUE;
 }
 
+// Disable radios before sleeping. Reversible — safe for light sleep where
+// execution resumes after wake and the BT/WiFi stacks must still be usable.
+static void sleep_disable_radios(void) {
+#if VESC_ENABLE_WIFI && !CONFIG_IDF_TARGET_ESP32P4
+	esp_wifi_stop();
+#endif
+
+#if VESC_ENABLE_BLE && !CONFIG_IDF_TARGET_ESP32P4
+#ifdef CONFIG_BT_BLUEDROID_ENABLED
+	if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_ENABLED) {
+		esp_bluedroid_disable();
+	}
+#elif defined(CONFIG_BT_NIMBLE_ENABLED)
+	nimble_port_stop();
+#endif
+
+	if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED) {
+		esp_bt_controller_disable();
+	}
+#endif
+}
+
+// Full teardown for deep sleep only. The chip reboots on wake so deinit is
+// free; doing it here prevents BLE state corruption observed across many
+// 2h-cycle wakes (BMS freeze after weeks).
+static void sleep_deinit_radios(void) {
+	sleep_disable_radios();
+
+#if VESC_ENABLE_BLE && !CONFIG_IDF_TARGET_ESP32P4
+#ifdef CONFIG_BT_BLUEDROID_ENABLED
+	if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_INITIALIZED) {
+		esp_bluedroid_deinit();
+	}
+#elif defined(CONFIG_BT_NIMBLE_ENABLED)
+	nimble_port_deinit();
+#endif
+	if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_INITED) {
+		esp_bt_controller_deinit();
+	}
+#endif
+}
+
+static uint64_t sleep_time_to_us(lbm_value sleep_time_arg) {
+	double sleep_time_s = lbm_dec_as_double(sleep_time_arg);
+	if (sleep_time_s <= 0.0) {
+		return 0;
+	}
+
+	// ESP-IDF takes microseconds. Keep the multiplication in double precision
+	// and convert directly to uint64_t; a 32-bit intermediate wraps after
+	// about 71.6 minutes (12 hours would become about 250 seconds).
+	return (uint64_t)(sleep_time_s * 1000000.0);
+}
+
 static lbm_value ext_sleep_deep(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 
-	#if CONFIG_ESP_WIFI_ENABLED || CONFIG_ESP_WIFI_REMOTE_ENABLED
-	esp_wifi_stop();
-	#endif
+	sleep_deinit_radios();
 
-	float sleep_time = lbm_dec_as_float(args[0]);
-	if (sleep_time > 0) {
-		esp_sleep_enable_timer_wakeup((uint32_t)(sleep_time * 1.0e6));
+	uint64_t sleep_time_us = sleep_time_to_us(args[0]);
+	if (sleep_time_us > 0) {
+		esp_sleep_enable_timer_wakeup(sleep_time_us);
 	}
 
 	esp_deep_sleep_start();
@@ -3632,13 +3840,14 @@ static lbm_value ext_sleep_deep(lbm_value *args, lbm_uint argn) {
 static lbm_value ext_sleep_light(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 
-	#if CONFIG_ESP_WIFI_ENABLED || CONFIG_ESP_WIFI_REMOTE_ENABLED
-	esp_wifi_stop();
-	#endif
+	// Light sleep returns to the caller with stacks intact, so use the
+	// reversible disable path — a deinit here would leave the unit
+	// permanently without BT/WiFi until reboot.
+	sleep_disable_radios();
 
-	float sleep_time = lbm_dec_as_float(args[0]);
-	if (sleep_time > 0) {
-		esp_sleep_enable_timer_wakeup((uint32_t)(sleep_time * 1.0e6));
+	uint64_t sleep_time_us = sleep_time_to_us(args[0]);
+	if (sleep_time_us > 0) {
+		esp_sleep_enable_timer_wakeup(sleep_time_us);
 	}
 
 	esp_light_sleep_start();
@@ -3659,10 +3868,14 @@ static lbm_value ext_sleep_config_wakeup_pin(lbm_value *args, lbm_uint argn) {
 
 	gpio_set_direction(pin, GPIO_MODE_INPUT);
 #if CONFIG_IDF_TARGET_ESP32S3
-	esp_sleep_enable_ext0_wakeup(pin, mode ? 1 : 0);
+	esp_sleep_enable_ext0_wakeup(pin, mode ? 1 : 0); 
 	esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
-#elif CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C6 || CONFIG_IDF_TARGET_ESP32P4
-	esp_deep_sleep_enable_gpio_wakeup(1 << pin,mode ? ESP_GPIO_WAKEUP_GPIO_HIGH : ESP_GPIO_WAKEUP_GPIO_LOW);
+#elif CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C6
+	esp_sleep_enable_gpio_wakeup_on_hp_periph_powerdown(1ULL << pin,
+			mode ? ESP_GPIO_WAKEUP_GPIO_HIGH : ESP_GPIO_WAKEUP_GPIO_LOW);
+#elif CONFIG_IDF_TARGET_ESP32P4
+	esp_deep_sleep_enable_gpio_wakeup(1ULL << pin,
+			mode ? ESP_GPIO_WAKEUP_GPIO_HIGH : ESP_GPIO_WAKEUP_GPIO_LOW);
 #else
 	#error "Unsupported target"
 #endif
@@ -3685,82 +3898,6 @@ static lbm_value ext_rtc_data(lbm_value *args, lbm_uint argn) {
 static lbm_value ext_empty(lbm_value *args, lbm_uint argn) {
 	(void)args;(void)argn;
 	return ENC_SYM_TRUE;
-}
-
-// (import "path" 'sym): the path is only used by VESC Tool at upload time
-// to bundle the file into the (name, offset, len) table appended after the
-// program's own source in the CODE_IND_LISP flash region. Looks sym up in
-// that table and shares the matching flash range as a const array.
-static lbm_value ext_import(lbm_value *args, lbm_uint argn) {
-	if (argn != 2 || !lbm_is_array_r(args[0]) || !lbm_is_symbol(args[1])) {
-		return ENC_SYM_TERROR;
-	}
-
-	lbm_uint sym_id = lbm_dec_sym(args[1]);
-	const char *sym_name = lbm_get_name_by_symbol(sym_id);
-	if (!sym_name) {
-		lbm_set_error_reason("import: could not look up the name of the destination symbol");
-		return ENC_SYM_EERROR;
-	}
-
-	const char *code_data = (const char*)flash_helper_code_data_raw(CODE_IND_LISP);
-	int32_t code_len = (int32_t)flash_helper_code_size_raw(CODE_IND_LISP);
-	if (!code_data || code_len <= 8) {
-		lbm_set_error_reason("No program stored to import from");
-		return ENC_SYM_EERROR;
-	}
-	code_data += 8;
-	code_len -= 8;
-
-	int32_t code_chars = (int32_t)strnlen(code_data, (size_t)code_len);
-	if (code_len <= code_chars + 3) {
-		lbm_set_error_reason("No bundled imports found");
-		return ENC_SYM_EERROR;
-	}
-
-	int32_t ind = code_chars + 1;
-	uint16_t num_imports = buffer_get_uint16((uint8_t*)code_data, &ind);
-	if (num_imports == 0 || num_imports >= 500) {
-		lbm_set_error_reason("No bundled imports found");
-		return ENC_SYM_EERROR;
-	}
-
-	for (int i = 0; i < num_imports; i++) {
-		const char *name = code_data + ind;
-		ind += (int32_t)strnlen(name, (size_t)(code_len - ind)) + 1;
-		int32_t offset = buffer_get_int32((uint8_t*)code_data, &ind);
-		int32_t len = buffer_get_int32((uint8_t*)code_data, &ind);
-
-		if (strcmp(name, sym_name) != 0) {
-			continue;
-		}
-
-		if (offset < 0 || len < 0 || (int64_t)offset + len > (int64_t)code_len) {
-			lbm_set_error_reason("Bundled import has an invalid offset/length");
-			return ENC_SYM_EERROR;
-		}
-
-		lbm_value val;
-		if (!lbm_share_array_const(&val, (char*)(code_data + offset), (lbm_uint)len)) {
-			return ENC_SYM_MERROR;
-		}
-
-		lbm_uint ix_key = sym_id & GLOBAL_ENV_MASK;
-		lbm_value *global_env = lbm_get_global_env();
-		lbm_value new_env_entry = lbm_env_set(global_env[ix_key], args[1], val);
-		if (lbm_is_symbol_merror(new_env_entry)) {
-			return ENC_SYM_MERROR;
-		}
-		if (lbm_is_symbol(new_env_entry)) {
-			lbm_set_error_reason("import: could not bind the destination symbol");
-			return ENC_SYM_EERROR;
-		}
-		global_env[ix_key] = new_env_entry;
-		return ENC_SYM_TRUE;
-	}
-
-	lbm_set_error_reason("Symbol not found among bundled imports");
-	return ENC_SYM_EERROR;
 }
 
 // Remote Messages
@@ -3859,11 +3996,6 @@ static lbm_value ext_canmsg_send(lbm_value *args, lbm_uint argn) {
 }
 
 // File System
-#define MAX_FILES 5
-static FILE *files_open[MAX_FILES + 1] = {0};
-static int file_now = 0;
-static const char* str_f_not_open = "File not open.";
-
 static char* dec_str_check(lbm_value val) {
 	char *res = 0;
 	if (lbm_is_array_r(val)) {
@@ -3878,6 +4010,12 @@ static char* dec_str_check(lbm_value val) {
 	}
 	return res;
 }
+
+#if VESC_ENABLE_STORAGE
+#define MAX_FILES 5
+static FILE *files_open[MAX_FILES + 1] = {0};
+static int file_now = 0;
+static const char* str_f_not_open = "File not open.";
 
 static FILE* file_from_arg(lbm_value arg) {
 	uint32_t fn = lbm_dec_as_u32(arg);
@@ -4460,6 +4598,7 @@ static lbm_value ext_f_fatinfo(lbm_value *args, lbm_uint argn) {
 
 	return res;
 }
+#endif
 
 typedef struct {
 	uint8_t version_major;
@@ -5752,6 +5891,7 @@ static lbm_value ext_pwm_set_duty(lbm_value *args, lbm_uint argn) {
 	return lbm_enc_float((float)duty_i / (float)pwm_max[chan]);
 }
 
+#if VESC_ENABLE_STORAGE
 // Compression
 
 typedef struct {
@@ -6195,6 +6335,7 @@ static lbm_value ext_zip_ls(lbm_value *args, lbm_uint argn) {
 	lbm_free(st_file);
 	return r;
 }
+#endif
 
 // Connection checks
 
@@ -6793,7 +6934,6 @@ static bool dynamic_loader(const char *str, const char **code) {
 }
 
 void lispif_load_vesc_extensions(bool main_found) {
-	lispif_stop_lib();
 	if (!i2c_mutex_init_done) {
 		i2c_mutex = xSemaphoreCreateMutex();
 		i2c_mutex_init_done = true;
@@ -6844,7 +6984,7 @@ void lispif_load_vesc_extensions(bool main_found) {
 		lbm_add_extension("send-data", ext_send_data);
 		lbm_add_extension("recv-data", ext_recv_data);
 		lbm_add_extension("sysinfo", ext_sysinfo);
-		lbm_add_extension("import", ext_import);
+		lbm_add_extension("import", ext_empty);
 		lbm_add_extension("main-init-done", ext_main_init_done);
 		lbm_add_extension("crc16", ext_crc16);
 		lbm_add_extension("crc32", ext_crc32);
@@ -6937,6 +7077,13 @@ void lispif_load_vesc_extensions(bool main_found) {
 		lbm_add_extension("lbm-set-quota", ext_lbm_set_quota);
 		lbm_add_extension("lbm-set-gc-stack-size", ext_lbm_set_gc_stack_size);
 
+		// Application watchdog
+		lbm_add_extension("wdt-configure", ext_wdt_configure);
+		lbm_add_extension("wdt-enable", ext_wdt_enable);
+		lbm_add_extension("wdt-disable", ext_wdt_disable);
+		lbm_add_extension("wdt-reset", ext_wdt_reset);
+		lbm_add_extension("wdt-set-timeout", ext_wdt_set_timeout);
+
 		// Plot
 		lbm_add_extension("plot-init", ext_plot_init);
 		lbm_add_extension("plot-add-graph", ext_plot_add_graph);
@@ -6950,7 +7097,7 @@ void lispif_load_vesc_extensions(bool main_found) {
 		lbm_add_extension("ioboard-set-pwm", ext_ioboard_set_pwm);
 
 		// ESP NOW
-		#if !CONFIG_IDF_TARGET_ESP32P4
+#if VESC_ENABLE_WIFI && !CONFIG_IDF_TARGET_ESP32P4
 		lbm_add_extension("esp-now-start", ext_esp_now_start);
 		lbm_add_extension("esp-now-add-peer", ext_esp_now_add_peer);
 		lbm_add_extension("esp-now-del-peer", ext_esp_now_del_peer);
@@ -6963,7 +7110,7 @@ void lispif_load_vesc_extensions(bool main_found) {
 		lbm_add_extension("wifi-set-bw", ext_wifi_set_bw);
 		lbm_add_extension("wifi-start", ext_wifi_start);
 		lbm_add_extension("wifi-stop", ext_wifi_stop);
-		#endif
+#endif
 
 		// Logging
 		lbm_add_extension("log-start", ext_log_start);
@@ -6989,28 +7136,31 @@ void lispif_load_vesc_extensions(bool main_found) {
 		lbm_add_extension("sleep-config-wakeup-pin", ext_sleep_config_wakeup_pin);
 		lbm_add_extension("rtc-data", ext_rtc_data);
 
-		// Native libraries
-		lbm_add_extension("load-native-lib", ext_load_native_lib);
-		lbm_add_extension("unload-native-lib", ext_unload_native_lib);
-
 		lispif_load_rgbled_extensions();
 
+#if VESC_ENABLE_DISPLAY
 		lispif_load_disp_extensions();
+#endif
+#if VESC_ENABLE_TOUCH
 		lispif_load_touch_extensions();
-		#if CONFIG_ESP_WIFI_ENABLED || CONFIG_ESP_WIFI_REMOTE_ENABLED
+#endif
+#if VESC_ENABLE_WIFI && !CONFIG_IDF_TARGET_ESP32P4
 		lispif_load_wifi_extensions();
-		#endif
+#endif
 
+		#if VESC_ENABLE_BLE
 		if (backup.config.ble_mode == BLE_MODE_SCRIPTING) {
-			#if CONFIG_BT_BLUEDROID_ENABLED
+			#if !CONFIG_IDF_TARGET_ESP32P4
 			lispif_load_ble_extensions();
 			#endif
 		}
+		#endif
 
 		// CAN-Messages
 		lbm_add_extension("canmsg-recv", ext_canmsg_recv);
 		lbm_add_extension("canmsg-send", ext_canmsg_send);
 
+#if VESC_ENABLE_STORAGE
 		// File System
 		lbm_add_extension("f-connect", ext_f_connect);
 		lbm_add_extension("f-connect-nand", ext_f_connect_nand);
@@ -7033,6 +7183,7 @@ void lispif_load_vesc_extensions(bool main_found) {
 		lbm_add_extension("f-rename", ext_f_rename);
 		lbm_add_extension("f-sync", ext_f_sync);
 		lbm_add_extension("f-fatinfo", ext_f_fatinfo);
+#endif
 
 		// Firmware update
 		lbm_add_extension("fw-erase", ext_fw_erase);
@@ -7080,9 +7231,11 @@ void lispif_load_vesc_extensions(bool main_found) {
 		lbm_add_extension("pwm-stop", ext_pwm_stop);
 		lbm_add_extension("pwm-set-duty", ext_pwm_set_duty);
 
+#if VESC_ENABLE_STORAGE
 		// Compression
 		lbm_add_extension("unzip", ext_unzip);
 		lbm_add_extension("zip-ls", ext_zip_ls);
+#endif
 
 		// Connection checks
 		lbm_add_extension("connected-wifi", ext_connected_wifi);
@@ -7143,8 +7296,6 @@ void lispif_disable_all_events(void) {
 		xSemaphoreGive(rmsg_mutex);
 	}
 
-	lispif_stop_lib();
-
 	event_can_sid_en = false;
 	event_can_eid_en = false;
 	event_can2_sid_en = false;
@@ -7165,9 +7316,9 @@ void lispif_disable_all_events(void) {
 
 	bms_register_cmd_handler(NULL);
 
-	#if !CONFIG_IDF_TARGET_ESP32P4
+#if VESC_ENABLE_WIFI && !CONFIG_IDF_TARGET_ESP32P4
 	esp_now_recv_cid = -1;
-	#endif
+#endif
 	can_recv_sid_cid = -1;
 	can_recv_eid_cid = -1;
 #ifdef CONFIG_IDF_TARGET_ESP32C6
@@ -7176,12 +7327,14 @@ void lispif_disable_all_events(void) {
 #endif
 	recv_data_cid = -1;
 
+#if VESC_ENABLE_STORAGE
 	for (int i = 0;i < file_now;i++) {
 		fclose(files_open[i]);
 		files_open[i] = 0;
 	}
 
 	file_now = 0;
+#endif
 
 	if (as504x_init_done) {
 		enc_as504x_deinit(&as504x);
@@ -7194,8 +7347,6 @@ void lispif_disable_all_events(void) {
 
 	cmds_running = false;
 	cmds_state = 0;
-
-	vTaskDelay(pdMS_TO_TICKS(5));
 }
 
 void lispif_process_can(uint32_t can_id, uint8_t *data8, int len, bool is_ext) {
