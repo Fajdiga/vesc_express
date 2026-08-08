@@ -66,9 +66,17 @@
 #define LOGS_ENABLED 0
 #endif
 
-// Set to 0 in a hwconf header to skip the COMM_PING_CAN scan loop. Useful for
-// headless variants that share a bus with a master and should never respond to
-// or initiate VESC ping discovery.
+// Set to 1 on boards that participate in the VESC CAN protocol layer
+// (comm_can discovery, controller-id assignment, baud propagation). Boards
+// that share a bus with a master and speak a different protocol set this to 0
+// so the standard VESC CAN code paths compile out.
+#ifndef HW_VESC_CAN_ENABLED
+#define HW_VESC_CAN_ENABLED 1
+#endif
+
+// 1 = extended VESC Tool scan (auto comm_can_start/stop, early exit on an
+// empty bus). 0 = standard upstream scan (probes every ID once). The scan is
+// fully skipped when HW_VESC_CAN_ENABLED is 0.
 #ifndef HW_CAN_PING_SCAN_ENABLED
 #define HW_CAN_PING_SCAN_ENABLED 0
 #endif
@@ -84,6 +92,13 @@
 // behavior unless a hardware profile opts into bounded retries.
 #ifndef HW_CAN_FAIL_RETRY_CNT
 #define HW_CAN_FAIL_RETRY_CNT -1
+#endif
+
+// Set to 0 on boards that are not the authoritative source of the global VESC
+// controller_id / can_baud_rate (e.g. a slave that inherits them from a
+// master). Such boards skip stamping them into the backup blob.
+#ifndef HW_OWNS_VESC_CONFIG
+#define HW_OWNS_VESC_CONFIG 1
 #endif
 
 // Keep the secondary/dedicated CAN controller independent from the optional

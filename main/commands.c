@@ -179,7 +179,7 @@ static void block_task(void *arg) {
 			if (!found) {
 				comm_can_stop();
 			}
-#elif !defined(HW_IS_SLAVE)
+#elif HW_VESC_CAN_ENABLED
 			// Standard VESC CAN ping scan (upstream behaviour): probe every ID
 			// once. Boards that want the extended scan (auto start/stop, early
 			// exit on an empty bus) opt in via HW_CAN_PING_SCAN_ENABLED, and

@@ -1,4 +1,5 @@
-# No-wireless overlay for HW_IS_SLAVE class builds.
+# No-wireless overlay for minimal builds (boards that declare every
+# HW_ENABLE_WIFI/BLE/DISPLAY/STORAGE flag as 0, e.g. the JFBMS slave).
 # CONFIG_BT_ENABLED is not set
 # CONFIG_BT_BLUEDROID_ENABLED is not set
 # CONFIG_BT_NIMBLE_ENABLED is not set
