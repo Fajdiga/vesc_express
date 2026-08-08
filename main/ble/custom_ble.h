@@ -20,12 +20,16 @@
 #ifndef MAIN_BLE_CUSTOM_BLE_H_
 #define MAIN_BLE_CUSTOM_BLE_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <stdbool.h>
 #include "sdkconfig.h"
 
-#if !CONFIG_BT_BLUEDROID_ENABLED
+// The stub branch is for targets without a usable BT controller (P4 has no
+// BT). Every other target — Bluedroid OR NimBLE — gets the full API, which
+// both custom_ble.c and custom_ble_nimble.c implement. Do NOT key this on
+// !CONFIG_BT_BLUEDROID_ENABLED: that sends NimBLE builds into the stub.
+#if CONFIG_IDF_TARGET_ESP32P4
 
 typedef enum {
 	CUSTOM_BLE_DISABLED = 0,
@@ -36,9 +40,7 @@ bool custom_ble_started(void);
 
 #else
 
-#include "esp_bt_defs.h"
-#include "esp_gatt_defs.h"
-#include "esp_gap_ble_api.h"
+#include "ble_compat.h"
 
 #define CUSTOM_BLE_MAX_NAME_LEN 30
 
@@ -374,7 +376,6 @@ bool custom_ble_started();
 void custom_ble_init();
 
 extern esp_ble_adv_params_t ble_adv_params;
-
 
 #endif
 
