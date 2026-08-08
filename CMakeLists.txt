@@ -21,7 +21,7 @@ if(NOT DEFINED HW_NAME OR "${HW_NAME}" STREQUAL "")
     endif()
 
     if(NOT DEFINED HW_NAME OR "${HW_NAME}" STREQUAL "")
-        set(HW_NAME "VESC Express T")
+        set(HW_NAME "JFBMS_SLAVE")
     endif()
 endif()
 
@@ -35,7 +35,6 @@ foreach(HW_HEADER_PATH ${HW_HEADER_PATHS})
     set(IS_HW_MATCH false)
     set(FILE_HW_TARGET "")
     set(FILE_HW_INTERNAL_FS 0)
-    set(FILE_HW_IS_SLAVE 0)
 
     foreach(LINE IN LISTS FILE_CONTENTS)
         string(REGEX MATCH "^#define[ \t]+([A-Za-z_][A-Za-z0-9_]*)([ \t]+(.*))?$" MATCHES "${LINE}")
@@ -57,8 +56,18 @@ foreach(HW_HEADER_PATH ${HW_HEADER_PATHS})
                     set(FILE_HW_TARGET ${DEF_VAL})
                 elseif(DEF_KEY STREQUAL "HW_INTERNAL_FS")
                     set(FILE_HW_INTERNAL_FS 1)
-                elseif(DEF_KEY STREQUAL "HW_IS_SLAVE")
-                    set(FILE_HW_IS_SLAVE 1)
+                elseif(DEF_KEY STREQUAL "HW_ENABLE_WIFI")
+                    set(FILE_HW_ENABLE_WIFI ${DEF_VAL})
+                elseif(DEF_KEY STREQUAL "HW_ENABLE_BLE")
+                    set(FILE_HW_ENABLE_BLE ${DEF_VAL})
+                elseif(DEF_KEY STREQUAL "HW_ENABLE_GNSS")
+                    set(FILE_HW_ENABLE_GNSS ${DEF_VAL})
+                elseif(DEF_KEY STREQUAL "HW_ENABLE_DISPLAY")
+                    set(FILE_HW_ENABLE_DISPLAY ${DEF_VAL})
+                elseif(DEF_KEY STREQUAL "HW_ENABLE_TOUCH")
+                    set(FILE_HW_ENABLE_TOUCH ${DEF_VAL})
+                elseif(DEF_KEY STREQUAL "HW_ENABLE_STORAGE")
+                    set(FILE_HW_ENABLE_STORAGE ${DEF_VAL})
                 endif()
             endif()
         endif()
@@ -68,10 +77,22 @@ foreach(HW_HEADER_PATH ${HW_HEADER_PATHS})
         set(HW_TARGET ${FILE_HW_TARGET})
         set(HW_FILE_NAME ${HW_HEADER_PATH})
         set(HW_INTERNAL_FS ${FILE_HW_INTERNAL_FS})
-        set(HW_IS_SLAVE ${FILE_HW_IS_SLAVE})
         break()
     endif()
 endforeach()
+
+# Minimal no-wireless build: a board that explicitly disables wifi, BLE,
+# display and storage in its hw header (HW_ENABLE_<FEAT> = 0). Feature-derived,
+# not identity: a future no-wireless board that is NOT a slave gets the same
+# build automatically. Undefined flags expand to "" and fail STREQUAL "0".
+# ponytail: all-or-nothing; switch to per-component EXCLUDE if a board ever
+# disables only a subset (e.g. wifi off, display on) and flash budget matters.
+if(FILE_HW_ENABLE_WIFI STREQUAL "0" AND FILE_HW_ENABLE_BLE STREQUAL "0"
+        AND FILE_HW_ENABLE_DISPLAY STREQUAL "0" AND FILE_HW_ENABLE_STORAGE STREQUAL "0")
+    set(HW_MINIMAL_BUILD ON)
+else()
+    set(HW_MINIMAL_BUILD OFF)
+endif()
 
 if(DEFINED HW_NAME AND DEFINED HW_TARGET AND DEFINED HW_FILE_NAME)
     # HW_TARGET must include variant suffix, e.g. esp32c6_fh4.
@@ -137,18 +158,14 @@ if(DEFINED HW_NAME AND DEFINED HW_TARGET AND DEFINED HW_FILE_NAME)
         list(APPEND SDKCONFIG_DEFAULTS_FILES "${TARGET_LOW_RAM_DEFAULTS_FILE}")
     endif()
 
-    if(HW_IS_SLAVE)
-        set(NOWIRELESS_LOW_RAM_DEFAULTS_FILE "sdkconfig.defaults.idf6_lowram.nowireless")
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${NOWIRELESS_LOW_RAM_DEFAULTS_FILE}")
-            list(APPEND SDKCONFIG_DEFAULTS_FILES "${NOWIRELESS_LOW_RAM_DEFAULTS_FILE}")
+    if(HW_MINIMAL_BUILD)
+        set(_NOWIRELESS_FILE "sdkconfig.defaults.idf6_lowram.nowireless")
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_NOWIRELESS_FILE}")
+            list(APPEND SDKCONFIG_DEFAULTS_FILES "${_NOWIRELESS_FILE}")
         endif()
-        set(VESC_ENABLE_WIFI 0)
-        set(VESC_ENABLE_BLE 0)
-        set(VESC_ENABLE_GNSS 0)
-        set(VESC_ENABLE_DISPLAY 0)
-        set(VESC_ENABLE_TOUCH 0)
-        set(VESC_ENABLE_STORAGE 0)
-    elseif(HW_NAME STREQUAL "JFBMS_MASTER" AND HW_IDF_TARGET STREQUAL "esp32c6")
+    endif()
+
+    if(HW_NAME STREQUAL "JFBMS_MASTER" AND HW_IDF_TARGET STREQUAL "esp32c6")
         set(VESC_ENABLE_WIFI 1)
         set(VESC_ENABLE_BLE 1)
         set(VESC_ENABLE_GNSS 0)
@@ -171,6 +188,14 @@ if(DEFINED HW_NAME AND DEFINED HW_TARGET AND DEFINED HW_FILE_NAME)
         set(VESC_ENABLE_STORAGE 1)
     endif()
 
+    # Board-header overrides: a board declares HW_ENABLE_<FEAT> in its hw header
+    # to force a feature on/off regardless of the target defaults above.
+    foreach(_feat WIFI BLE GNSS DISPLAY TOUCH STORAGE)
+        if(DEFINED FILE_HW_ENABLE_${_feat})
+            set(VESC_ENABLE_${_feat} ${FILE_HW_ENABLE_${_feat}})
+        endif()
+    endforeach()
+
     set(VESC_ENABLE_WIFI ${VESC_ENABLE_WIFI} CACHE INTERNAL "VESC WiFi feature gate" FORCE)
     set(VESC_ENABLE_BLE ${VESC_ENABLE_BLE} CACHE INTERNAL "VESC BLE feature gate" FORCE)
     set(VESC_ENABLE_GNSS ${VESC_ENABLE_GNSS} CACHE INTERNAL "VESC GNSS feature gate" FORCE)
@@ -191,11 +216,11 @@ if(DEFINED HW_NAME AND DEFINED HW_TARGET AND DEFINED HW_FILE_NAME)
     endif()
     message(STATUS "Using sdkconfig ${SDKCONFIG}")
 
-    if(HW_IS_SLAVE)
+    if(HW_MINIMAL_BUILD)
         set(COMPONENTS main)
         set(EXCLUDE_COMPONENTS esp_wifi wpa_supplicant esp_coex esp_phy bt esp_lcd fatfs sdmmc wear_levelling)
         set(ENV{IDF_COMPONENT_MANAGER} 0)
-        message(STATUS "Using minimal IDF component graph for no-wireless slave build")
+        message(STATUS "Using minimal IDF component graph for no-wireless build")
     endif()
 
     # Auto-generate QML files if any *.qml files exist alongside the HW config
@@ -232,7 +257,7 @@ else ()
 endif()
 
 message("Processing target ${HW_NAME} on ${HW_TARGET} for file ${HW_FILE_NAME}")
-message(STATUS "VESC feature gates: WIFI=${VESC_ENABLE_WIFI}, BLE=${VESC_ENABLE_BLE}, GNSS=${VESC_ENABLE_GNSS}, DISPLAY=${VESC_ENABLE_DISPLAY}, TOUCH=${VESC_ENABLE_TOUCH}, STORAGE=${VESC_ENABLE_STORAGE}, HW_IS_SLAVE=${HW_IS_SLAVE}")
+message(STATUS "VESC feature gates: WIFI=${VESC_ENABLE_WIFI}, BLE=${VESC_ENABLE_BLE}, GNSS=${VESC_ENABLE_GNSS}, DISPLAY=${VESC_ENABLE_DISPLAY}, TOUCH=${VESC_ENABLE_TOUCH}, STORAGE=${VESC_ENABLE_STORAGE}, MINIMAL_BUILD=${HW_MINIMAL_BUILD}")
 
 # The following lines of boilerplate have to be in your project's
 # CMakeLists in this exact order for cmake to work correctly

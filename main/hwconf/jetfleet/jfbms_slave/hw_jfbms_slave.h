@@ -30,10 +30,19 @@
 
 #define HW_EARLY_LBM_INIT
 #define HW_NO_UART
-#define HW_IS_SLAVE
 #define HW_INIT_HOOK()				hw_init()
-#define HW_CAN_PING_SCAN_ENABLED	0  // Disable VESC CAN ping scan - slave uses 11-bit protocol
+#define HW_VESC_CAN_ENABLED			0  // Slave uses an 11-bit protocol, not VESC CAN
+#define HW_CAN_PING_SCAN_ENABLED	0  // No VESC CAN ping discovery on this board
+#define HW_OWNS_VESC_CONFIG			0  // Master owns controller_id / can_baud
 #define HW_CAN_NO_ACK_MODE			0  // Normal ACK mode for reliable communication
+// Feature gates read by CMake to shape the build. All off -> minimal
+// no-wireless build (nowireless sdkconfig overlay + pruned component graph).
+#define HW_ENABLE_WIFI				0
+#define HW_ENABLE_BLE				0
+#define HW_ENABLE_GNSS				0
+#define HW_ENABLE_DISPLAY			0
+#define HW_ENABLE_TOUCH				0
+#define HW_ENABLE_STORAGE			0
 #define HW_CAN_FILTER_CONFIG(cfg)	hw_can_get_filter_config(cfg)
 #define USER_EXTENSION_STORAGE_SIZE	50 // Extra slots for hw extensions (default 350 not enough)
 //#define HW_POST_LISPIF_HOOK()		vTaskDelay(200);

@@ -357,7 +357,7 @@ void app_main(void) {
 
 	vTaskDelay(1);
 
-#if !defined(HW_IS_SLAVE) && !CONFIG_IDF_TARGET_ESP32P4
+#if VESC_ENABLE_BLE && !CONFIG_IDF_TARGET_ESP32P4
 	switch (backup.config.ble_mode) {
 		case BLE_MODE_DISABLED: {
 			break;
@@ -456,7 +456,7 @@ uint32_t main_calc_hw_crc(void) {
 
 void main_store_backup_data(void) {
 	nvs_handle_t my_handle;
-#ifndef HW_IS_SLAVE
+#if HW_OWNS_VESC_CONFIG
 	backup.controller_id = backup.config.controller_id;
 	backup.can_baud_rate = backup.config.can_baud_rate;
 #endif
