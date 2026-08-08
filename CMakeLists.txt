@@ -1,7 +1,4 @@
-cmake_minimum_required(VERSION 3.5)
-
-# You can set a HW here when e.g. building with the eclipse plugin
-# set(HW_NAME "Wcore")
+cmake_minimum_required(VERSION 3.22)
 
 # Default build target Logic
 if(NOT DEFINED HW_NAME OR "${HW_NAME}" STREQUAL "")
@@ -38,6 +35,7 @@ foreach(HW_HEADER_PATH ${HW_HEADER_PATHS})
     set(IS_HW_MATCH false)
     set(FILE_HW_TARGET "")
     set(FILE_HW_INTERNAL_FS 0)
+    set(FILE_HW_IS_SLAVE 0)
 
     foreach(LINE IN LISTS FILE_CONTENTS)
         string(REGEX MATCH "^#define[ \t]+([A-Za-z_][A-Za-z0-9_]*)([ \t]+(.*))?$" MATCHES "${LINE}")
@@ -59,6 +57,8 @@ foreach(HW_HEADER_PATH ${HW_HEADER_PATHS})
                     set(FILE_HW_TARGET ${DEF_VAL})
                 elseif(DEF_KEY STREQUAL "HW_INTERNAL_FS")
                     set(FILE_HW_INTERNAL_FS 1)
+                elseif(DEF_KEY STREQUAL "HW_IS_SLAVE")
+                    set(FILE_HW_IS_SLAVE 1)
                 endif()
             endif()
         endif()
@@ -68,6 +68,7 @@ foreach(HW_HEADER_PATH ${HW_HEADER_PATHS})
         set(HW_TARGET ${FILE_HW_TARGET})
         set(HW_FILE_NAME ${HW_HEADER_PATH})
         set(HW_INTERNAL_FS ${FILE_HW_INTERNAL_FS})
+        set(HW_IS_SLAVE ${FILE_HW_IS_SLAVE})
         break()
     endif()
 endforeach()
@@ -87,23 +88,115 @@ if(DEFINED HW_NAME AND DEFINED HW_TARGET AND DEFINED HW_FILE_NAME)
 
     # IMPORTANT: Set IDF_TARGET before including project.cmake
     if(NOT DEFINED IDF_TARGET)
-        SET(IDF_TARGET ${HW_IDF_TARGET})
+        set(IDF_TARGET ${HW_IDF_TARGET} CACHE STRING "ESP-IDF target" FORCE)
     elseif(NOT IDF_TARGET STREQUAL HW_IDF_TARGET)
-        message(WARNING "IDF_TARGET (${IDF_TARGET}) does not match HW_IDF_TARGET (${HW_IDF_TARGET}) derived from HW_TARGET (${HW_TARGET}) for ${HW_NAME}. This may cause build issues.")
+        message(WARNING "IDF_TARGET (${IDF_TARGET}) does not match ${HW_NAME} HW_TARGET (${HW_TARGET}); forcing IDF_TARGET=${HW_IDF_TARGET}.")
+        set(IDF_TARGET ${HW_IDF_TARGET} CACHE STRING "ESP-IDF target" FORCE)
     endif()
-    
+
+    # ESP-IDF checks the environment before the CMake cache. Keep both in
+    # sync so HW_NAME/HW_TARGET remains the authoritative target selection.
+    set(ENV{IDF_TARGET} ${HW_IDF_TARGET})
+
+    # The bootloader is configured later by Ninja as an external project. It
+    # inherits the IDE/build process environment rather than this CMake
+    # process, so a stale VS Code IDF_TARGET can override the correct cache
+    # value. Prefix custom commands with the selected target environment so
+    # the application and bootloader always use the same chip.
+    set_property(GLOBAL PROPERTY RULE_LAUNCH_CUSTOM
+        "${CMAKE_COMMAND} -E env IDF_TARGET=${HW_IDF_TARGET}")
+
     # Pass through hw file paths
     add_compile_definitions(HW_HEADER="${HW_FILE}.h" HW_SOURCE="${HW_FILE}.c")
 
+    set(SDKCONFIG_DEFAULTS_FILES)
     set(SDKCONFIG_DEFAULTS_FILE "sdkconfig.defaults.${HW_IDF_TARGET}")
     set(HW_TARGET_SDKCONFIG_DEFAULTS_FILE "sdkconfig.defaults.${HW_TARGET}")
+    set(HW_SDKCONFIG_DEFAULTS_FILE "sdkconfig.defaults.${HW_FILE}")
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${HW_TARGET_SDKCONFIG_DEFAULTS_FILE}")
-        set(SDKCONFIG_DEFAULTS_FILE "${HW_TARGET_SDKCONFIG_DEFAULTS_FILE}")
+        list(APPEND SDKCONFIG_DEFAULTS_FILES "${HW_TARGET_SDKCONFIG_DEFAULTS_FILE}")
+        message(STATUS "Using target sdkconfig defaults ${HW_TARGET_SDKCONFIG_DEFAULTS_FILE} for ${HW_NAME}")
     else()
+        list(APPEND SDKCONFIG_DEFAULTS_FILES "${SDKCONFIG_DEFAULTS_FILE}")
         message(STATUS "Using shared sdkconfig defaults ${SDKCONFIG_DEFAULTS_FILE} for ${HW_NAME}")
     endif()
-    set(SDKCONFIG_DEFAULTS ${SDKCONFIG_DEFAULTS_FILE})
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${HW_SDKCONFIG_DEFAULTS_FILE}")
+        list(APPEND SDKCONFIG_DEFAULTS_FILES "${HW_SDKCONFIG_DEFAULTS_FILE}")
+        message(STATUS "Using hardware sdkconfig overrides ${HW_SDKCONFIG_DEFAULTS_FILE} for ${HW_NAME}")
+    endif()
+
+    set(COMMON_LOW_RAM_DEFAULTS_FILE "sdkconfig.defaults.idf6_lowram")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${COMMON_LOW_RAM_DEFAULTS_FILE}")
+        list(APPEND SDKCONFIG_DEFAULTS_FILES "${COMMON_LOW_RAM_DEFAULTS_FILE}")
+    endif()
+
+    set(TARGET_LOW_RAM_DEFAULTS_FILE "sdkconfig.defaults.idf6_lowram.${HW_IDF_TARGET}")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${TARGET_LOW_RAM_DEFAULTS_FILE}")
+        list(APPEND SDKCONFIG_DEFAULTS_FILES "${TARGET_LOW_RAM_DEFAULTS_FILE}")
+    endif()
+
+    if(HW_IS_SLAVE)
+        set(NOWIRELESS_LOW_RAM_DEFAULTS_FILE "sdkconfig.defaults.idf6_lowram.nowireless")
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${NOWIRELESS_LOW_RAM_DEFAULTS_FILE}")
+            list(APPEND SDKCONFIG_DEFAULTS_FILES "${NOWIRELESS_LOW_RAM_DEFAULTS_FILE}")
+        endif()
+        set(VESC_ENABLE_WIFI 0)
+        set(VESC_ENABLE_BLE 0)
+        set(VESC_ENABLE_GNSS 0)
+        set(VESC_ENABLE_DISPLAY 0)
+        set(VESC_ENABLE_TOUCH 0)
+        set(VESC_ENABLE_STORAGE 0)
+    elseif(HW_NAME STREQUAL "JFBMS_MASTER" AND HW_IDF_TARGET STREQUAL "esp32c6")
+        set(VESC_ENABLE_WIFI 1)
+        set(VESC_ENABLE_BLE 1)
+        set(VESC_ENABLE_GNSS 0)
+        set(VESC_ENABLE_DISPLAY 0)
+        set(VESC_ENABLE_TOUCH 0)
+        set(VESC_ENABLE_STORAGE 0)
+    elseif(HW_IDF_TARGET STREQUAL "esp32p4")
+        set(VESC_ENABLE_WIFI 0)
+        set(VESC_ENABLE_BLE 0)
+        set(VESC_ENABLE_GNSS 0)
+        set(VESC_ENABLE_DISPLAY 1)
+        set(VESC_ENABLE_TOUCH 1)
+        set(VESC_ENABLE_STORAGE 1)
+    else()
+        set(VESC_ENABLE_WIFI 1)
+        set(VESC_ENABLE_BLE 1)
+        set(VESC_ENABLE_GNSS 1)
+        set(VESC_ENABLE_DISPLAY 1)
+        set(VESC_ENABLE_TOUCH 1)
+        set(VESC_ENABLE_STORAGE 1)
+    endif()
+
+    set(VESC_ENABLE_WIFI ${VESC_ENABLE_WIFI} CACHE INTERNAL "VESC WiFi feature gate" FORCE)
+    set(VESC_ENABLE_BLE ${VESC_ENABLE_BLE} CACHE INTERNAL "VESC BLE feature gate" FORCE)
+    set(VESC_ENABLE_GNSS ${VESC_ENABLE_GNSS} CACHE INTERNAL "VESC GNSS feature gate" FORCE)
+    set(VESC_ENABLE_DISPLAY ${VESC_ENABLE_DISPLAY} CACHE INTERNAL "VESC display feature gate" FORCE)
+    set(VESC_ENABLE_TOUCH ${VESC_ENABLE_TOUCH} CACHE INTERNAL "VESC touch feature gate" FORCE)
+    set(VESC_ENABLE_STORAGE ${VESC_ENABLE_STORAGE} CACHE INTERNAL "VESC storage feature gate" FORCE)
+
+    set(ENV{VESC_ENABLE_WIFI} ${VESC_ENABLE_WIFI})
+    set(ENV{VESC_ENABLE_BLE} ${VESC_ENABLE_BLE})
+    set(ENV{VESC_ENABLE_GNSS} ${VESC_ENABLE_GNSS})
+    set(ENV{VESC_ENABLE_DISPLAY} ${VESC_ENABLE_DISPLAY})
+    set(ENV{VESC_ENABLE_TOUCH} ${VESC_ENABLE_TOUCH})
+    set(ENV{VESC_ENABLE_STORAGE} ${VESC_ENABLE_STORAGE})
+
+    set(SDKCONFIG_DEFAULTS ${SDKCONFIG_DEFAULTS_FILES})
+    if(NOT DEFINED SDKCONFIG)
+        set(SDKCONFIG "${CMAKE_BINARY_DIR}/sdkconfig")
+    endif()
+    message(STATUS "Using sdkconfig ${SDKCONFIG}")
+
+    if(HW_IS_SLAVE)
+        set(COMPONENTS main)
+        set(EXCLUDE_COMPONENTS esp_wifi wpa_supplicant esp_coex esp_phy bt esp_lcd fatfs sdmmc wear_levelling)
+        set(ENV{IDF_COMPONENT_MANAGER} 0)
+        message(STATUS "Using minimal IDF component graph for no-wireless slave build")
+    endif()
 
     # Auto-generate QML files if any *.qml files exist alongside the HW config
     get_filename_component(HW_DIR ${HW_FILE_NAME} DIRECTORY)
@@ -139,6 +232,7 @@ else ()
 endif()
 
 message("Processing target ${HW_NAME} on ${HW_TARGET} for file ${HW_FILE_NAME}")
+message(STATUS "VESC feature gates: WIFI=${VESC_ENABLE_WIFI}, BLE=${VESC_ENABLE_BLE}, GNSS=${VESC_ENABLE_GNSS}, DISPLAY=${VESC_ENABLE_DISPLAY}, TOUCH=${VESC_ENABLE_TOUCH}, STORAGE=${VESC_ENABLE_STORAGE}, HW_IS_SLAVE=${HW_IS_SLAVE}")
 
 # The following lines of boilerplate have to be in your project's
 # CMakeLists in this exact order for cmake to work correctly

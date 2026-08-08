@@ -113,6 +113,62 @@ def run_streamed(cmd, **kwargs):
     proc.wait()
     return proc
 
+def _cmake_cache_value(cache_file, key):
+    """Read a value from a CMakeCache.txt file."""
+    try:
+        with open(cache_file, "r", encoding="utf-8", errors="replace") as cache:
+            prefix = f"{key}:"
+            for line in cache:
+                if line.startswith(prefix):
+                    _, value = line.rstrip("\r\n").split("=", 1)
+                    return value
+    except OSError:
+        pass
+    return None
+
+def _path_is_within(path, directory):
+    """Return whether path is located below directory, including on Windows."""
+    try:
+        path = os.path.normcase(os.path.realpath(os.path.abspath(path)))
+        directory = os.path.normcase(os.path.realpath(os.path.abspath(directory)))
+        return os.path.commonpath((path, directory)) == directory
+    except (OSError, ValueError):
+        return False
+
+def clean_incompatible_idf_cache(build_dir):
+    """Remove generated caches which point at a different ESP-IDF install."""
+    idf_path = os.environ.get("IDF_PATH")
+    if not idf_path:
+        return
+
+    stale_entries = []
+    cache_files = (
+        os.path.join(build_dir, "CMakeCache.txt"),
+        os.path.join(build_dir, "bootloader", "CMakeCache.txt"),
+    )
+
+    for cache_file in cache_files:
+        cached_idf_path = _cmake_cache_value(cache_file, "IDF_PATH")
+        if cached_idf_path and not _path_is_within(cached_idf_path, idf_path):
+            stale_entries.append((cache_file, cached_idf_path))
+
+        toolchain_file = _cmake_cache_value(cache_file, "CMAKE_TOOLCHAIN_FILE")
+        if (toolchain_file
+                and not _path_is_within(toolchain_file, idf_path)
+                and not _path_is_within(toolchain_file, build_dir)):
+            stale_entries.append((cache_file, toolchain_file))
+
+    if not stale_entries:
+        return
+
+    print_status(
+        f"--> Active ESP-IDF changed to {idf_path}; removing stale generated build cache...",
+        Colors.WARNING,
+    )
+    for cache_file, stale_path in stale_entries:
+        print_status(f"    {cache_file}: {stale_path}", Colors.WARNING)
+    shutil.rmtree(build_dir)
+
 # Hardware config discovery
 def get_hw_configs():
     configs = []
@@ -145,6 +201,8 @@ def get_hw_configs():
 def build_target(config, output_dir, prev_target=None, idx=0, total=0):
     build_dir = "build"
     shell = True if os.name == 'nt' else False
+
+    clean_incompatible_idf_cache(build_dir)
 
     print_status(f"\n========================================")
     print_status(f"Building: {config['name']} ({config['target']})")
