@@ -35,6 +35,7 @@
 #include "esp_partition.h"
 #include "esp_ota_ops.h"
 #include "esp_system.h"
+#include "sdkconfig.h"
 
 #define GC_STACK_SIZE			160
 #define PRINT_STACK_SIZE		128
@@ -108,34 +109,131 @@ extern lbm_const_heap_t *lbm_const_heap_state;
 #define LBM_PSRAM_BITMAP_KB    512
 #endif
 
+static void lispif_free_storage(void) {
+	if (heap) {
+		free(heap);
+		heap = 0;
+	}
+
+	if (memory_array) {
+		heap_caps_free(memory_array);
+		memory_array = 0;
+	}
+
+	if (bitmap_array) {
+		heap_caps_free(bitmap_array);
+		bitmap_array = 0;
+	}
+}
+
+static bool lispif_alloc_internal_storage(size_t preferred_heap_size, int preferred_memory_kb) {
+	size_t heap_candidates[] = {
+		preferred_heap_size,
+		(preferred_heap_size * 3) / 4,
+		preferred_heap_size / 2,
+		1024
+	};
+	int mem_candidates[] = {
+		preferred_memory_kb,
+		(preferred_memory_kb * 3) / 4,
+		preferred_memory_kb / 2,
+		16
+	};
+	size_t last_heap = 0;
+	int last_mem = 0;
+
+	for (size_t i = 0;i < (sizeof(heap_candidates) / sizeof(heap_candidates[0]));i++) {
+		size_t heap_try = heap_candidates[i];
+		int mem_kb_try = mem_candidates[i];
+
+		if (heap_try < 1024) {
+			heap_try = 1024;
+		}
+
+		if (mem_kb_try < 16) {
+			mem_kb_try = 16;
+		}
+
+		if (heap_try == last_heap && mem_kb_try == last_mem) {
+			continue;
+		}
+
+		last_heap = heap_try;
+		last_mem = mem_kb_try;
+		heap_size = heap_try;
+		mem_size = LBM_MEMORY_SIZE_KB(mem_kb_try);
+		bitmap_size = LBM_BITMAP_SIZE_KB(mem_kb_try);
+
+		heap = memalign(8, heap_size * sizeof(lbm_cons_t));
+		memory_array = heap_caps_malloc(mem_size * sizeof(uint32_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+		bitmap_array = heap_caps_malloc(bitmap_size * sizeof(uint32_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+
+		if (heap && memory_array && bitmap_array) {
+			if (heap_try != preferred_heap_size || mem_kb_try != preferred_memory_kb) {
+				commands_printf_lisp("LispBM using reduced memory: heap=%u bytes mem=%d KB free=%u",
+						(unsigned)(heap_size * sizeof(lbm_cons_t)),
+						mem_kb_try,
+						(unsigned)esp_get_free_heap_size());
+			}
+			return true;
+		}
+
+		commands_printf_lisp("LispBM malloc retry: heap=%p mem=%p bmp=%p free=%u",
+				heap, memory_array, bitmap_array,
+				(unsigned)esp_get_free_heap_size());
+		lispif_free_storage();
+	}
+
+	return false;
+}
+
 
 void lispif_init(void) {
+	lbm_mutex = xSemaphoreCreateMutex();
+
 #ifndef CONFIG_SPIRAM
 #ifdef CONFIG_IDF_TARGET_ESP32S3
 	heap_size = (4096 + 512);
-	mem_size = LBM_MEMORY_SIZE_KB(48);
-	bitmap_size = LBM_BITMAP_SIZE_KB(48);
-#elif CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C6
+	int memory_kb = 48;
+#elif CONFIG_IDF_TARGET_ESP32C3
 	heap_size = (2048 + 512);
-	mem_size = LBM_MEMORY_SIZE_KB(32);
-	bitmap_size = LBM_BITMAP_SIZE_KB(32);
+	int memory_kb = 32;
+#elif CONFIG_IDF_TARGET_ESP32C6
+	heap_size = (4096 + 512);
+	int memory_kb = 48;
 #elif CONFIG_IDF_TARGET_ESP32P4
 	heap_size = (4096 + 512);
-	mem_size = LBM_MEMORY_SIZE_KB(32);
-	bitmap_size = LBM_BITMAP_SIZE_KB(32);
+	int memory_kb = 32;
 #else
 	#error "Unsupported target"
 #endif
-	if (backup.config.wifi_mode == WIFI_MODE_DISABLED &&
-			backup.config.ble_mode == BLE_MODE_DISABLED) {
+	bool wifi_active = false;
+	bool ble_active = false;
+#if VESC_ENABLE_WIFI
+	wifi_active = backup.config.wifi_mode != WIFI_MODE_DISABLED;
+#endif
+#if VESC_ENABLE_BLE
+	ble_active = backup.config.ble_mode != BLE_MODE_DISABLED;
+#endif
+	if (!wifi_active && !ble_active) {
 		heap_size *= 2;
-		mem_size = LBM_MEMORY_SIZE_KB(86);
-		bitmap_size = LBM_BITMAP_SIZE_KB(86);
-	} else if (backup.config.wifi_mode == WIFI_MODE_DISABLED ||
-			backup.config.ble_mode == BLE_MODE_DISABLED) {
+		memory_kb = 86;
+	} else if (!wifi_active || !ble_active) {
 		heap_size *= 2;
-		mem_size = LBM_MEMORY_SIZE_KB(64);
-		bitmap_size = LBM_BITMAP_SIZE_KB(64);
+		memory_kb = 64;
+	}
+
+#ifdef HW_LBM_HEAP_CELLS
+	heap_size = HW_LBM_HEAP_CELLS;
+#endif
+#ifdef HW_LBM_MEMORY_KB
+	memory_kb = HW_LBM_MEMORY_KB;
+#endif
+
+	if (!lispif_alloc_internal_storage(heap_size, memory_kb)) {
+		commands_printf_lisp("LispBM malloc failed after retries (free heap: %u)",
+				(unsigned)esp_get_free_heap_size());
+		return;
 	}
 #endif
 
@@ -146,21 +244,17 @@ void lispif_init(void) {
 	bitmap_size = LBM_BITMAP_SIZE_KB(LBM_PSRAM_BITMAP_KB);
 	memory_array = heap_caps_malloc(mem_size * sizeof(uint32_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 	bitmap_array = heap_caps_malloc(bitmap_size * sizeof(uint32_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-#else
-	heap = memalign(8, heap_size * sizeof(lbm_cons_t));
-	memory_array = heap_caps_malloc(mem_size * sizeof(uint32_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-	bitmap_array = heap_caps_malloc(bitmap_size * sizeof(uint32_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-#endif
 
 	if (!heap || !memory_array || !bitmap_array) {
 		commands_printf_lisp("LispBM malloc failed: heap=%p mem=%p bmp=%p (free heap: %u)",
 				heap, memory_array, bitmap_array,
 				(unsigned)esp_get_free_heap_size());
+		lispif_free_storage();
+		return;
 	}
+#endif
 
-	lbm_mutex = xSemaphoreCreateMutex();
 	lispif_restart(false, true);
-
 #ifdef LBM_USE_TIME_QUOTA
 	lbm_set_eval_time_quota(2000);
 #else
@@ -268,6 +362,7 @@ void lispif_process_cmd(unsigned char *data, unsigned int len,
 		float mem_use = 0.0;
 
 		if (lisp_thd_running) {
+#if CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
 			uint32_t timeTot = 0;
 #ifdef portALT_GET_RUN_TIME_COUNTER_VALUE
 			portALT_GET_RUN_TIME_COUNTER_VALUE( timeTot );
@@ -285,6 +380,7 @@ void lispif_process_cmd(unsigned char *data, unsigned int len,
 			} else {
 				cpu_use = 11.0;
 			}
+#endif
 		} else {
 			break;
 		}
@@ -777,8 +873,10 @@ void lispif_stop(void) {
 		return;
 	}
 
-	lispif_stop_lib();
-
+	TaskHandle_t task = eval_task;
+	if (task) {
+		(void)main_task_wdt_disable_task(task);
+	}
 	lispif_lock_lbm();
 
 	lbm_kill_eval();
@@ -792,10 +890,14 @@ void lispif_stop(void) {
 		}
 	}
 
-	if (lisp_thd_running) {
-		vTaskDelete(eval_task);
+	if (lisp_thd_running && task) {
+		vTaskDelete(task);
 		lisp_thd_running = false;
+		eval_task = 0;
 		commands_printf_lisp("Killed eval task as it didn't stop when asked to");
+	} else if (lisp_thd_running) {
+		lisp_thd_running = false;
+		commands_printf_lisp("Eval task did not stop, but no task handle was available");
 	}
 
 	lispif_unlock_lbm();
@@ -806,6 +908,13 @@ bool lispif_restart(bool print, bool load_code) {
 
 	restart_cnt++;
 	string_tok_valid = false;
+
+	if (!heap || !memory_array || !bitmap_array) {
+		if (print) {
+			commands_printf_lisp("LispBM is not running: memory allocation failed");
+		}
+		return false;
+	}
 
 	if (prof_running) {
 		prof_running = false;
@@ -977,7 +1086,19 @@ static void sleep_callback(uint32_t us) {
 	if (t == 0) {
 		t = 1;
 	}
-	vTaskDelay(t);
+
+	while (t > 0) {
+		TickType_t step = t;
+		if (step > pdMS_TO_TICKS(1000)) {
+			step = pdMS_TO_TICKS(1000);
+		}
+
+		(void)main_task_wdt_reset();
+		vTaskDelay(step);
+		t -= step;
+	}
+
+	(void)main_task_wdt_reset();
 }
 
 static bool image_write(uint32_t w, int32_t ix, bool const_heap) {
@@ -1002,7 +1123,12 @@ static bool image_write(uint32_t w, int32_t ix, bool const_heap) {
 static void eval_thread(void *arg) {
 	(void)arg;
 	eval_task = xTaskGetCurrentTaskHandle();
+#if CONFIG_ESP_TASK_WDT_EN && (defined(HW_APP_WDT_TIMEOUT_S) || defined(HW_APP_WDT_STARTUP_TIMEOUT_S))
+	(void)main_task_wdt_enable();
+#endif
 	lbm_run_eval();
+	(void)main_task_wdt_disable();
 	lisp_thd_running = false;
+	eval_task = 0;
 	vTaskDelete(NULL);
 }
