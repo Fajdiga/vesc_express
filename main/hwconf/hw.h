@@ -70,7 +70,7 @@
 // headless variants that share a bus with a master and should never respond to
 // or initiate VESC ping discovery.
 #ifndef HW_CAN_PING_SCAN_ENABLED
-#define HW_CAN_PING_SCAN_ENABLED 1
+#define HW_CAN_PING_SCAN_ENABLED 0
 #endif
 
 // Set to 1 in a hwconf header to bring up TWAI self-test/no-ACK mode instead

@@ -179,6 +179,17 @@ static void block_task(void *arg) {
 			if (!found) {
 				comm_can_stop();
 			}
+#elif !defined(HW_IS_SLAVE)
+			// Standard VESC CAN ping scan (upstream behaviour): probe every ID
+			// once. Boards that want the extended scan (auto start/stop, early
+			// exit on an empty bus) opt in via HW_CAN_PING_SCAN_ENABLED, and
+			// slaves skip the handler entirely.
+			for (uint8_t i = 0;i < 255;i++) {
+				HW_TYPE hw_type;
+				if (comm_can_ping(i, &hw_type)) {
+					send_buffer[ind++] = i;
+				}
+			}
 #endif
 
 			if (send_func_blocking) {
