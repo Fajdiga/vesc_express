@@ -161,6 +161,7 @@ typedef struct {
 // CAN
 #define CAN_TX_GPIO_NUM				7
 #define CAN_RX_GPIO_NUM				6
+#define HW_CAN_PING_SCAN_ENABLED	1
 
 // Other pins
 #define PIN_SDA						21

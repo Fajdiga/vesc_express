@@ -28,6 +28,7 @@
 
 #define HW_INIT_HOOK()				hw_init()
 #define HW_CAN_NO_ACK_MODE			0
+#define HW_CAN_PING_SCAN_ENABLED	1
 #define USER_EXTENSION_STORAGE_SIZE	50
 
 // Configuration overrides

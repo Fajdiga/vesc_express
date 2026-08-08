@@ -64,6 +64,9 @@
 // without allowing one unacknowledged frame to occupy the bus indefinitely.
 #define HW_CAN_FAIL_RETRY_CNT		3
 
+// Use the extended VESC Tool CAN scan (auto start/stop, early exit) on this BMS.
+#define HW_CAN_PING_SCAN_ENABLED	1
+
 // This board is the pack BMS and owns the global VESC BMS value set. Do not
 // let received/echoed standard BMS CAN frames replace its locally assembled
 // slave snapshot (especially cell_num and v_cell[]).
