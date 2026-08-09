@@ -907,6 +907,42 @@ static void process_task(void *arg) {
 	for (;;) {
 		xSemaphoreTake(proc_sem, 10 / portTICK_PERIOD_MS);
 
+		// Drain the private master<->slave bus (CAN2) before the VESC bus
+		// (CAN1). The slave frames feed the charge/safety snapshot; VESC status
+		// traffic is best-effort. Serving CAN2 first keeps slave data fresh even
+		// when CAN1 is backlogged, so the BMS does not lag/misbehave under load.
+#ifdef CONFIG_IDF_TARGET_ESP32C6
+		while (can2_rx_read != can2_rx_write) {
+			can_rx_msg_t *m = &can2_rx_buf[can2_rx_read];
+			can2_rx_read++;
+			if (can2_rx_read >= RXBUF_LEN) {
+				can2_rx_read = 0;
+			}
+
+			can2_rx_total++;
+			can2_debug_info.rx_total = can2_rx_total;
+			can2_debug_info.last_rx_id = m->identifier;
+			can2_debug_info.last_rx_len = m->data_length_code;
+			can2_debug_info.last_rx_ext = m->extd ? 1 : 0;
+
+			lispif_process_can2(m->identifier, m->data, m->data_length_code, m->extd);
+
+			// Hardware-specific CAN2 hook (weak symbol, can be overridden)
+			extern void hw_can2_rx_hook(uint32_t id, uint8_t *data, int len, bool is_ext) __attribute__((weak));
+			if (hw_can2_rx_hook) {
+				hw_can2_rx_hook(m->identifier, m->data, m->data_length_code, m->extd);
+			}
+
+			if (can2_use_vesc_dec) {
+				if (!bms_process_can_frame(m->identifier, m->data, m->data_length_code, m->extd)) {
+					if (m->extd) {
+						decode_msg(m->identifier, m->data, m->data_length_code, false);
+					}
+				}
+			}
+		}
+#endif
+
 		while (rx_read != rx_write) {
 			can_rx_msg_t *msg = &rx_buf[rx_read];
 			rx_read++;
@@ -943,38 +979,6 @@ static void process_task(void *arg) {
 				}
 			}
 		}
-
-#ifdef CONFIG_IDF_TARGET_ESP32C6
-		while (can2_rx_read != can2_rx_write) {
-			can_rx_msg_t *m = &can2_rx_buf[can2_rx_read];
-			can2_rx_read++;
-			if (can2_rx_read >= RXBUF_LEN) {
-				can2_rx_read = 0;
-			}
-
-			can2_rx_total++;
-			can2_debug_info.rx_total = can2_rx_total;
-			can2_debug_info.last_rx_id = m->identifier;
-			can2_debug_info.last_rx_len = m->data_length_code;
-			can2_debug_info.last_rx_ext = m->extd ? 1 : 0;
-
-			lispif_process_can2(m->identifier, m->data, m->data_length_code, m->extd);
-
-			// Hardware-specific CAN2 hook (weak symbol, can be overridden)
-			extern void hw_can2_rx_hook(uint32_t id, uint8_t *data, int len, bool is_ext) __attribute__((weak));
-			if (hw_can2_rx_hook) {
-				hw_can2_rx_hook(m->identifier, m->data, m->data_length_code, m->extd);
-			}
-
-			if (can2_use_vesc_dec) {
-				if (!bms_process_can_frame(m->identifier, m->data, m->data_length_code, m->extd)) {
-					if (m->extd) {
-						decode_msg(m->identifier, m->data, m->data_length_code, false);
-					}
-				}
-			}
-		}
-#endif
 	}
 
 	vTaskDelete(NULL);

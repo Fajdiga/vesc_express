@@ -77,7 +77,6 @@
 (def soc-checkpoint-ah -1.0)
 (def soc-checkpoint-ts (systime))
 (def primary-can-status-ts (systime))
-(def primary-can-present false)
 
 (def t-last (systime))
 (def rtc-val '(
@@ -177,33 +176,16 @@ loopwhile-thd
 
 (defun cfg-num-slaves () (truncate (param-or 'num_slaves 1) 1 8))
 
-; The ESC may be asleep when the BMS wakes. Keep TWAI0 listening and let the
-; ESC initiate discovery with CAN_PACKET_PING. comm_can automatically replies
-; with CAN_PACKET_PONG; the hardware hook reports the sender ID here.
-(defun observe-primary-can-ping () {
-    (var ping-id (trap-value '(master-primary-can-ping) nil))
-    (if (not (eq ping-id nil)) {
-        (if (not primary-can-present) {
-            (setq primary-can-present true)
-            (setq primary-can-status-ts (systime))
-            (print (str-merge "Primary CAN device detected from ESC ping (ID "
-                (str-from-n ping-id "%d") ")"))
-        })
-    })
-})
-
-; The primary VESC CAN connector is optional. A zero status rate is standalone
-; mode and must result in no transmit attempts. Without a responding VESC, the
-; controller otherwise enters bus-off recovery and can stall the controller repeatedly.
-; TWAI1 slave traffic is independent and remains enabled.
+; Primary VESC CAN (TWAI0) is optional. The ESC discovers this BMS by pinging it;
+; comm_can replies with CAN_PACKET_PONG, and that ACKed transmit is what lets
+; bms_send_status_can (guarded by HW_BMS_STATUS_CAN_REQUIRES_LISTENER) begin
+; broadcasting. No BMS-initiated scan or ack-on-first-id probe is needed: a
+; missing listener simply means no status traffic (and no bus-off). TWAI1 slave
+; traffic is independent. can_status_rate_hz 0 = standalone (bus stays up, no
+; BMS status).
 (defun update-primary-can-status () {
     (var rate (truncate (param-or 'can_status_rate_hz 0) 0 200))
-    (if (> rate 0) (observe-primary-can-ping))
-    (if (and
-            primary-can-present
-            (> rate 0)
-            (>= (secs-since primary-can-status-ts) (/ 1.0 rate))
-        ) {
+    (if (and (> rate 0) (>= (secs-since primary-can-status-ts) (/ 1.0 rate))) {
         (setq primary-can-status-ts (systime))
         (send-bms-can)
     })
@@ -2221,7 +2203,6 @@ loopwhile-thd
     (setq charge-dis-ts (systime))
     (setq t-last (systime))
     (setq primary-can-status-ts (systime))
-    (setq primary-can-present false)
     (setq loop-cnt 0)
 
     (if (> app-wdt-timeout 0)
@@ -2237,29 +2218,14 @@ loopwhile-thd
     (set-bms-val 'bms-can-id (can-local-id))
 
     ; COM_EN powers the external CAN transceiver. After deep sleep it is held
-    ; off until this point, so the boot scan must happen after COM_EN is low.
+    ; off until this point, so bring TWAI0 up after COM_EN is low.
     (sleep 0.05)
+    (trap (can-start))
     (var primary-can-rate (truncate (param-or 'can_status_rate_hz 0) 0 200))
     (if (= primary-can-rate 0)
-        (print "Primary CAN status disabled (standalone mode)")
-        {
-            ; Perform one VESC ID scan at boot. If the ESC is asleep, can-scan
-            ; stops after the physical transmit failure; restart TWAI0 as a
-            ; listener so the ESC can later initiate discovery with PING.
-            (var primary-can-devices (trap-value '(can-scan) false))
-            (if (and primary-can-devices (> (length primary-can-devices) 0)) {
-                (setq primary-can-present true)
-                (setq primary-can-status-ts (systime))
-                (print (str-merge "Primary CAN devices detected ("
-                    (str-from-n (length primary-can-devices) "%d")
-                    "); status enabled at "
-                    (str-from-n primary-can-rate "%d") " Hz"))
-            } {
-                (trap (can-start))
-                (print "No primary CAN device at boot; listener enabled for ESC ping")
-            })
-        }
-    )
+        (print "Primary CAN up (standalone: no BMS status broadcast)")
+        (print (str-merge "Primary CAN up; BMS status at "
+            (str-from-n primary-can-rate "%d") " Hz when an ESC is present")))
 
     ; Buzzer on GPIO8.
     (pwm-start 4000 0.0 0 8)
@@ -2277,12 +2243,10 @@ loopwhile-thd
     (event-enable 'event-bms-zero-ofs)
     (event-enable 'event-data-rx)
 
-    (print "Waiting for slave CAN data...")
-    (looprange i 0 30 {
-        (refresh-pack-data)
-        (if pack-data-ok (break))
-        (sleep 0.1)
-    })
+    ; Seed the pack snapshot once; the control loop keeps refreshing it. Do not
+    ; block boot waiting for slaves — charging self-gates on pack-data-ok, so the
+    ; pack comes online as soon as the first broadcast arrives.
+    (refresh-pack-data)
 
     (setq init-done true)
     (load-settings)
@@ -2292,10 +2256,7 @@ loopwhile-thd
     (if pack-data-ok
         (print (str-merge "Pack ready: slaves=" (str-from-n (cfg-num-slaves) "%d")
             " cells=" (str-from-n cell-num "%d")))
-        {
-            (print "No complete slave CAN pack data yet")
-            (trap (can-debug))
-        }
+        (print "Slave CAN pack data pending; control loop will adopt it")
     )
 
     ; 2 beeps = initialization complete.
