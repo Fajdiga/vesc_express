@@ -115,8 +115,8 @@ static volatile uint32_t rx_overflow = 0;
 static volatile bool use_vesc_decoder = true;
 static volatile uint32_t send_buffer_last_ticks = 0;
 static comm_can_debug_info_t debug_info = {0};
-// True when the primary CAN path has a successfully completed transmission.
-// The JFBMS master uses this as a hard gate for optional BMS status traffic.
+// True when the primary CAN path has answered a VESC CAN ping. This remains
+// available for diagnostics, but normal VESC traffic is not gated on it.
 static volatile bool can_listener_ok = false;
 static can_rx_ctx_t can_rx_ctx = {
 	.rx_buf = rx_buf,
@@ -1378,19 +1378,11 @@ static esp_err_t comm_can_transmit_locked(uint32_t id, const uint8_t *data, uint
 		return ESP_ERR_INVALID_STATE;
 	}
 
-	esp_err_t res = ESP_FAIL;
-	for (int attempt = 0;attempt < TX_RETRY_ATTEMPTS;attempt++) {
-		res = transmit_twai_frame(can_node, can_tx_buf, &can_tx_write,
-				id, data, len, ext, 5);
-		if (res == ESP_OK) {
-			break;
-		}
-
-		if (ext) {
-			debug_info.tx_eid_retry++;
-		}
-		vTaskDelay(1);
-	}
+	// Match the normal VESC CAN path: one transmit request per frame. The
+	// TWAI controller performs its normal arbitration/error handling; the
+	// dedicated BMS bus has its own retry policy below.
+	esp_err_t res = transmit_twai_frame(can_node, can_tx_buf, &can_tx_write,
+			id, data, len, ext, 5);
 
 	if (res != ESP_OK) {
 		if (ext) {
@@ -1400,13 +1392,11 @@ static esp_err_t comm_can_transmit_locked(uint32_t id, const uint8_t *data, uint
 		}
 	}
 
-	can_listener_ok = (res == ESP_OK);
-
 	return res;
 }
 
-// Pings are discovery traffic. A failed transmit must not enter the normal
-// 200-attempt retry loop, otherwise an empty bus makes every scanned ID stall.
+// Pings are discovery traffic and use a dedicated timeout so a missing VESC
+// can be reported quickly without changing normal VESC frame handling.
 static esp_err_t comm_can_transmit_once_locked(uint32_t id, const uint8_t *data, uint8_t len, bool ext) {
 	if (len > 8) {
 		len = 8;

@@ -176,13 +176,10 @@ loopwhile-thd
 
 (defun cfg-num-slaves () (truncate (param-or 'num_slaves 1) 1 8))
 
-; Primary VESC CAN (TWAI0) is optional. The ESC discovers this BMS by pinging it;
-; comm_can replies with CAN_PACKET_PONG, and that ACKed transmit is what lets
-; bms_send_status_can (guarded by HW_BMS_STATUS_CAN_REQUIRES_LISTENER) begin
-; broadcasting. No BMS-initiated scan or ack-on-first-id probe is needed: a
-; missing listener simply means no status traffic (and no bus-off). TWAI1 slave
-; traffic is independent. can_status_rate_hz 0 = standalone (bus stays up, no
-; BMS status).
+; Primary VESC CAN (TWAI0) uses the normal VESC protocol and status behaviour.
+; VESC Tool performs the normal CAN ping scan, while the BMS may broadcast its
+; configured status rate without a JetFleet-specific listener gate. TWAI1 slave
+; traffic is independent. can_status_rate_hz 0 = standalone (no BMS status).
 (defun update-primary-can-status () {
     (var rate (truncate (param-or 'can_status_rate_hz 0) 0 200))
     (if (and (> rate 0) (>= (secs-since primary-can-status-ts) (/ 1.0 rate))) {
