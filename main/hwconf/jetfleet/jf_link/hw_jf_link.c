@@ -183,7 +183,10 @@ static bool valid_slave_msg_len(uint8_t msg_type, int len) {
 		return len == 8;
 	}
 
-	return msg_type == 0x09 && len >= 5 && len <= 7;
+	// The original status frame used 5-7 bytes. The current slave appends
+	// byte 7 with the external-temperature enable flags, making the frame
+	// 8 bytes long. Keep accepting the older lengths for compatibility.
+	return msg_type == 0x09 && len >= 5 && len <= 8;
 }
 
 static int logical_cell_to_wire_index(const jfbms_slave_t *s, int cell) {
