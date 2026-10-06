@@ -19,6 +19,7 @@
 
 #include HW_HEADER
 #include "bq769x2_defs.h"
+#include "jfbms32_safety.h"
 
 #include "main.h"
 #include "i2c_compat.h"
@@ -54,6 +55,10 @@ static unsigned int m_cells_ic1 = 16;
 static unsigned int m_cells_ic2 = 16;
 static uint16_t m_bal_state_ic1 = 0;
 static uint16_t m_bal_state_ic2 = 0;
+static portMUX_TYPE m_control_lock = portMUX_INITIALIZER_UNLOCKED;
+static bms_safety_state m_control_state = {.inhibited = true};
+static bool m_control_monitoring;
+static TaskHandle_t m_control_watchdog_task;
 
 // Error messages
 static char *error_comm_bq1 = "BQ1 communication error";
@@ -443,6 +448,108 @@ static bool bms_disable_balancing_hw(bool include_ic2) {
 static bool bms_fail_close_outputs_hw(bool include_ic2) {
 	bms_set_chg_hw(false);
 	return bms_disable_balancing_hw(include_ic2);
+}
+
+// Opt-in supervision for the normal control script. Raw hardware extensions
+// neither arm nor renew this timer and remain usable without a control script.
+static uint32_t control_time_ms(void) {
+	return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+}
+
+static void control_watchdog_disarm(void) {
+	portENTER_CRITICAL(&m_control_lock);
+	m_control_monitoring = false;
+	bms_safety_inhibit(&m_control_state, false);
+	portEXIT_CRITICAL(&m_control_lock);
+}
+
+static bool control_watchdog_tripped(void) {
+	portENTER_CRITICAL(&m_control_lock);
+	if (m_control_monitoring && bms_safety_expired(&m_control_state, control_time_ms())) {
+		bms_safety_inhibit(&m_control_state, false);
+	}
+	bool tripped = m_control_monitoring && m_control_state.inhibited;
+	portEXIT_CRITICAL(&m_control_lock);
+	return tripped;
+}
+
+static void control_watchdog_task(void *arg) {
+	(void)arg;
+	bool balance_off_verified = false;
+	bool reported = false;
+	while (true) {
+		vTaskDelay(pdMS_TO_TICKS(100));
+		if (!control_watchdog_tripped()) {
+			balance_off_verified = false;
+			reported = false;
+			continue;
+		}
+		// Charge shutdown never waits for an I2C mutex or a failed balance write.
+		bms_set_chg_hw(false);
+		if (!reported) {
+			commands_printf("BMS control timeout: charge off, stopping balancing");
+			reported = true;
+		}
+		if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) continue;
+		// A supervised restart may have completed while this task waited.
+		if (control_watchdog_tripped()) {
+			bms_set_chg_hw(false);
+			if (!balance_off_verified || m_bal_state_ic1 || m_bal_state_ic2) {
+				int com_prev = gpio_get_level(PIN_COM_EN);
+				gpio_set_level(PIN_COM_EN, 0);
+				balance_off_verified = bms_disable_balancing_hw(m_cells_ic2 != 0);
+				gpio_set_level(PIN_COM_EN, com_prev);
+			}
+		}
+		xSemaphoreGive(bq_mutex);
+	}
+}
+
+static lbm_value ext_control_start(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	if (argn != 0 || !m_control_watchdog_task) return ENC_SYM_EERROR;
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) return ENC_SYM_EERROR;
+	int com_prev = gpio_get_level(PIN_COM_EN);
+	gpio_set_level(PIN_COM_EN, 0);
+	bool off = bms_fail_close_outputs_hw(m_cells_ic2 != 0);
+	gpio_set_level(PIN_COM_EN, com_prev);
+	if (off) {
+		portENTER_CRITICAL(&m_control_lock);
+		bms_safety_ready(&m_control_state);
+		(void)bms_safety_feed(&m_control_state, control_time_ms(), m_control_state.generation);
+		m_control_monitoring = true;
+		portEXIT_CRITICAL(&m_control_lock);
+	}
+	xSemaphoreGive(bq_mutex);
+	return off ? ENC_SYM_TRUE : ENC_SYM_EERROR;
+}
+
+static lbm_value ext_control_feed(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	if (argn != 0) return ENC_SYM_EERROR;
+	portENTER_CRITICAL(&m_control_lock);
+	bool ok = m_control_monitoring && bms_safety_feed(&m_control_state,
+			control_time_ms(), m_control_state.generation);
+	portEXIT_CRITICAL(&m_control_lock);
+	return ok ? ENC_SYM_TRUE : ENC_SYM_NIL;
+}
+
+// A check never feeds the timer. Used by the normal script before enabling
+// outputs, so a delayed scan or the balancing worker cannot undo a timeout.
+static lbm_value ext_control_ok(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	if (argn != 0) return ENC_SYM_EERROR;
+	return control_watchdog_tripped() ? ENC_SYM_NIL : ENC_SYM_TRUE;
+}
+
+// Stop the normal script before using this opt-out for manual hardware tests.
+static lbm_value ext_control_stop(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	if (argn != 0) return ENC_SYM_EERROR;
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) return ENC_SYM_EERROR;
+	control_watchdog_disarm();
+	xSemaphoreGive(bq_mutex);
+	return ENC_SYM_TRUE;
 }
 
 static uint32_t float_to_u(float number) {
@@ -932,6 +1039,8 @@ static lbm_value ext_hw_sleep(lbm_value *args, lbm_uint argn) {
 
 	// Disable CAN-bus and other COMM
 	gpio_set_level(PIN_COM_EN, 1);
+	// Successful intentional sleep must not make the watchdog wake the BQs.
+	control_watchdog_disarm();
 
 	xSemaphoreGive(bq_mutex);
 	return ENC_SYM_TRUE;
@@ -998,6 +1107,7 @@ static lbm_value ext_bms_hw_shutdown(lbm_value *args, lbm_uint argn) {
 		lbm_set_error_reason("BQ1 shutdown command failed");
 		return ENC_SYM_EERROR;
 	}
+	control_watchdog_disarm();
 
 	xSemaphoreGive(bq_mutex);
 
@@ -1072,16 +1182,11 @@ static lbm_value ext_cell0_report_offset(lbm_value *args, lbm_uint argn) {
 	return lbm_enc_float(offset);
 }
 
-#define NTC_TEMP(res, ntc_res, ntc_beta) \
-	(1.0 / ((logf((res) / ntc_res) / ntc_beta) + (1.0 / 298.15)) - 273.15)
-#define NAN_TO_M1(x)   (UTILS_IS_NAN(x) ? -1.0 : x)
-
-static float ntc_measured_res(float volts, float pullup_res) {
-	if (volts <= 0.0 || volts >= 1.79) {
-		return NAN;
-	}
-
-	return pullup_res / (1.8 / volts - 1.0) - 500.0;
+// Keep invalid sensors distinguishable from a real subzero temperature.
+// The control script validates every required sensor before using extrema.
+static float ntc_temperature(float volts, float pullup, float nominal, float beta) {
+	float temperature = bms_ntc_temperature(volts, pullup, nominal, beta);
+	return bms_temperature_valid(temperature) ? temperature : -273.0f;
 }
 
 static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
@@ -1169,16 +1274,11 @@ static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
 	}
 
 	float beta = (float)(cfg->temp_beta);
-	ts_list = lbm_cons(lbm_enc_float(NAN_TO_M1(
-			NTC_TEMP(ntc_measured_res(v1, ntc_pullup_res), ntc_res, beta))), ts_list);
-	ts_list = lbm_cons(lbm_enc_float(NAN_TO_M1(
-			NTC_TEMP(ntc_measured_res(v2, ntc_pullup_res), ntc_res, beta))), ts_list);
-	ts_list = lbm_cons(lbm_enc_float(NAN_TO_M1(
-			NTC_TEMP(ntc_measured_res(v3, ntc_pullup_res), ntc_res, beta))), ts_list);
-	ts_list = lbm_cons(lbm_enc_float(NAN_TO_M1(
-			NTC_TEMP(ntc_measured_res(v4, ntc_pullup_res), ntc_res, beta))), ts_list);
-	ts_list = lbm_cons(lbm_enc_float(NAN_TO_M1(
-			NTC_TEMP(ntc_measured_res(v5, 18000.0), ntc_smd_res, ntc_smd_beta))), ts_list);
+	ts_list = lbm_cons(lbm_enc_float(ntc_temperature(v1, ntc_pullup_res, ntc_res, beta)), ts_list);
+	ts_list = lbm_cons(lbm_enc_float(ntc_temperature(v2, ntc_pullup_res, ntc_res, beta)), ts_list);
+	ts_list = lbm_cons(lbm_enc_float(ntc_temperature(v3, ntc_pullup_res, ntc_res, beta)), ts_list);
+	ts_list = lbm_cons(lbm_enc_float(ntc_temperature(v4, ntc_pullup_res, ntc_res, beta)), ts_list);
+	ts_list = lbm_cons(lbm_enc_float(ntc_temperature(v5, 18000.0, ntc_smd_res, ntc_smd_beta)), ts_list);
 
 	if (m_cells_ic2 != 0) {
 		ts_list = lbm_cons(
@@ -1200,11 +1300,10 @@ static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
 			goto exit_error2;
 		}
 
-		ts_list = lbm_cons(lbm_enc_float(NAN_TO_M1(
-				NTC_TEMP(ntc_measured_res(v6, 18000.0), ntc_smd_res, ntc_smd_beta))), ts_list);
+		ts_list = lbm_cons(lbm_enc_float(ntc_temperature(v6, 18000.0, ntc_smd_res, ntc_smd_beta)), ts_list);
 	} else {
-		ts_list = lbm_cons(lbm_enc_float(-1.0), ts_list);
-		ts_list = lbm_cons(lbm_enc_float(-1.0), ts_list);
+		ts_list = lbm_cons(lbm_enc_float(-273.0), ts_list);
+		ts_list = lbm_cons(lbm_enc_float(-273.0), ts_list);
 	}
 
 	return lbm_list_destructive_reverse(ts_list);
@@ -1383,6 +1482,10 @@ static lbm_value ext_bms_fail_close_outputs(lbm_value *args, lbm_uint argn) {
 
 static lbm_value ext_set_bal(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(2);
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+		lbm_set_error_reason("bq_mutex timeout in bms-set-bal");
+		return ENC_SYM_EERROR;
+	}
 
 	unsigned int ch = lbm_dec_as_u32(args[0]);
 	int state       = lbm_dec_as_i32(args[1]);
@@ -1412,6 +1515,7 @@ static lbm_value ext_set_bal(lbm_value *args, lbm_uint argn) {
 		}
 	}
 
+	xSemaphoreGive(bq_mutex);
 	return res ? ENC_SYM_TRUE : ENC_SYM_EERROR;
 }
 
@@ -1921,6 +2025,10 @@ static void load_extensions(bool main_found) {
 
 	lbm_add_extension("bms-disable-balancing", ext_bms_disable_balancing);
 	lbm_add_extension("bms-fail-close-outputs", ext_bms_fail_close_outputs);
+	lbm_add_extension("bms-control-start", ext_control_start);
+	lbm_add_extension("bms-control-feed", ext_control_feed);
+	lbm_add_extension("bms-control-ok", ext_control_ok);
+	lbm_add_extension("bms-control-stop", ext_control_stop);
 
 	// Enable/disable output switch
 	lbm_add_extension("bms-set-out", ext_set_out);
@@ -2011,6 +2119,10 @@ void hw_init(void) {
 
 	i2c_param_config(0, &conf);
 	i2c_driver_install(0, conf.mode, 0, 0, 0);
+	if (xTaskCreate(control_watchdog_task, "bms-control-wdt", 2048, NULL, 8,
+			&m_control_watchdog_task) != pdPASS) {
+		m_control_watchdog_task = NULL;
+	}
 
 	lispif_add_ext_load_callback(load_extensions);
 }

@@ -29,6 +29,7 @@
 (def t-max 0.0)
 (def t-mos 0.0)
 (def t-ic 0.0)
+(def temps-valid false)
 (def charge-wakeup false)
 (def init-done false)
 
@@ -555,10 +556,29 @@ loopwhile-thd
 })
 
 (defun balance-safe-now () (and
+        temps-valid
         (<= (* (abs iout) (if is-balancing 0.8 1.0)) (bms-get-param 'balance_max_current))
         (>= c-min (bms-get-param 'vc_balance_min))
         (<= t-max (bms-get-param 't_bal_max_cell))
         (<= t-ic (bms-get-param 't_bal_max_ic))
+))
+
+(defun temp-valid (value) (and (number? value) (>= value -50.0) (<= value 150.0)))
+
+; The first unmet condition is also the reason shown when a charger is present.
+(defun charge-block-reason () (cond
+        ((not temps-valid) "TEMP_INVALID")
+        (bq-scd-latched "BQ_SCD_LATCH")
+        ((bq-current-fault-active) "BQ_CURRENT_FAULT")
+        ((assoc rtc-val 'charge-fault) "FLT_CHG_OC")
+        (charge-complete "CHG_COMPLETE")
+        ((not chg-allowed) "CHG_DISABLED")
+        ((>= c-max (bms-get-param (if is-charging 'vc_charge_end 'vc_charge_start))) "CHG_CELL_HIGH")
+        ((<= c-min (bms-get-param 'vc_charge_min)) "CHG_CELL_LOW")
+        ((>= t-max (bms-get-param 't_charge_max)) "CHG_CELL_HOT")
+        ((<= t-min (bms-get-param 't_charge_min)) "CHG_CELL_COLD")
+        ((>= t-mos (bms-get-param 't_charge_max_mos)) "CHG_MOS_HOT")
+        (true "")
 ))
 
 (defun update-temps () {
@@ -598,18 +618,35 @@ loopwhile-thd
         (var temp-ext-num (truncate (bms-get-param 'temp_num) 0 4))
 
         ; bms-temps: BQ1 IC, BQ1 TS1/TS3/ALERT/DCHG, BQ1 HDQ, BQ2 IC, BQ2 HDQ
+        ; Validate each fitted sensor so a healthy sensor cannot hide a failed one.
+        (var valid (and (temp-valid (ix bms-temps 0)) (temp-valid (ix bms-temps 5))))
+        (looprange i 0 temp-ext-num {
+            (if (not (temp-valid (ix bms-temps (+ i 1)))) (setq valid false))
+        })
+        (if has-ic2 {
+            (if (not (and (temp-valid (ix bms-temps 6)) (temp-valid (ix bms-temps 7))))
+                (setq valid false))
+        })
+        (setq temps-valid valid)
+        (if (not temps-valid) {
+            (set-chg false)
+            (setq bal-ok false)
+            (setq trigger-bal-after-charge false)
+            (disable-balancing)
+        })
+
         (var t-sorted (sort < (map
                     (fn (x) (ix bms-temps (+ x 1)))
                     (range 0 temp-ext-num)
         )))
 
-        ; If all sensors are disabled pretend we are at 24c
+        ; Keep charging available with zero external cell sensors.
         (if (= (length t-sorted) 0) (setq t-sorted '(24)))
 
         (setq t-min (ix t-sorted 0))
         (setq t-max (ix t-sorted -1))
-        (setq t-mos (if (> (ix bms-temps 5) (ix bms-temps 7)) (ix bms-temps 5) (ix bms-temps 7)))
-        (setq t-ic  (if (> (ix bms-temps 0) (ix bms-temps 6)) (ix bms-temps 0) (ix bms-temps 6)))
+        (setq t-mos (if (and has-ic2 (> (ix bms-temps 7) (ix bms-temps 5))) (ix bms-temps 7) (ix bms-temps 5)))
+        (setq t-ic  (if (and has-ic2 (> (ix bms-temps 6) (ix bms-temps 0))) (ix bms-temps 6) (ix bms-temps 0)))
 
         bms-temps
 })
@@ -776,15 +813,7 @@ loopwhile-thd
 
         (setq init-done true)
 
-        (setq charge-ok (and
-                (< c-max (bms-get-param 'vc_charge_start))
-                (> c-min (bms-get-param 'vc_charge_min))
-                (< t-max (bms-get-param 't_charge_max))
-                (> t-min (bms-get-param 't_charge_min))
-                (< t-mos (bms-get-param 't_charge_max_mos))
-                (not (assoc rtc-val 'charge-fault))
-                (not charge-complete)
-        ))
+        (setq charge-ok (= (str-len (charge-block-reason)) 0))
 
         (var ichg 0.0)
          (if (and charge-ok charge-wakeup (test-chg 400)) {
@@ -993,7 +1022,7 @@ loopwhile-thd
 })
 
 (defun set-chg (chg) {
-        (if chg
+        (if (and chg temps-valid (bms-control-ok))
             {
                 (if (not is-charging) (setq charge-ts (systime)))
                 (gpio-write 9 0)
@@ -1006,6 +1035,8 @@ loopwhile-thd
                 (if (and
                         is-charging
                         charge-session-valid
+                        temps-valid
+                        (bms-control-ok)
                         (not (assoc rtc-val 'charge-fault))
                         (not bq-scd-latched)
                     ) {
@@ -1042,7 +1073,10 @@ loopwhile-thd
    (bms-sleep)
 })
 
-(defun main-ctrl () (loopwhile t {
+(defun main-ctrl () {
+        ; Opt in only for normal operation. Direct hardware calls do not arm this.
+        (bms-control-start)
+        (loopwhile t {
         ; Exit if any of the BQs has fallen asleep
             (if (or
                     (= (bms-direct-cmd 1 0x00) 4)
@@ -1176,20 +1210,7 @@ loopwhile-thd
                 (setq charge-complete-msg true)
         })
 
-        (setq charge-ok (and
-                (< c-max (if is-charging
-                        (bms-get-param 'vc_charge_end)
-                        (bms-get-param 'vc_charge_start)
-                ))
-                (> c-min (bms-get-param 'vc_charge_min))
-                (< t-max (bms-get-param 't_charge_max))
-                (> t-min (bms-get-param 't_charge_min))
-                (< t-mos (bms-get-param 't_charge_max_mos))
-                chg-allowed
-                (not (assoc rtc-val 'charge-fault))
-                (not charge-complete)
-                (not bq-scd-latched)
-        ))
+        (setq charge-ok (= (str-len (charge-block-reason)) 0))
 
         (if (bq-current-fault-active) {
                 (setq charge-ok false)
@@ -1212,8 +1233,34 @@ loopwhile-thd
                 (setq charge-complete-msg false)
         })
 
+        (var charger-detected (test-chg 1))
+        (if (and charger-detected (not charger-detected-prev)) {
+                (recover-bq-scd-on-charger-detect)
+                (setq charge-ts (systime))
+        })
+        (setq charger-detected-prev charger-detected)
+
+        (if (and charger-detected charge-ok)
+        {
+                (if (< (secs-since charge-ts) charger-max-delay)
+                (set-chg true)
+                (set-chg (> (- iout) (bms-get-param 'min_charge_current)))
+                )
+        }
+        {
+                (set-chg false)
+
+                ; Reset coulomb counter when battery is full
+                (if (>= c-max (bms-get-param 'vc_charge_start)) {
+                        (setq ah-cnt-soc (bms-get-param 'batt_ah))
+                })
+        }
+        )
+
+        ; Report the output state after applying this scan's charge decision.
         (setq chg-status
         (cond
+                ((not temps-valid) "TEMP_INVALID")
                 ((assoc rtc-val 'charge-fault) {
                         (setq charge-complete-msg false)
                         "FLT_CHG_OC"
@@ -1222,6 +1269,10 @@ loopwhile-thd
                 (is-charging {
                         (setq charge-complete-msg false)
                         "CHARGING"
+                })
+                (charger-detected {
+                        (var reason (charge-block-reason))
+                        (if (> (str-len reason) 0) reason "CHG_NO_CURRENT")
                 })
                 (true "")
         ))
@@ -1246,30 +1297,6 @@ loopwhile-thd
                         (status-append (status-append chg-status bq-status-display) bal-status)
                         output-fault-status
                 )
-        )
-
-        (var charger-detected (test-chg 1))
-        (if (and charger-detected (not charger-detected-prev)) {
-                (recover-bq-scd-on-charger-detect)
-                (setq charge-ts (systime))
-        })
-        (setq charger-detected-prev charger-detected)
-
-        (if (and charger-detected charge-ok)
-        {
-                (if (< (secs-since charge-ts) charger-max-delay)
-                (set-chg true)
-                (set-chg (> (- iout) (bms-get-param 'min_charge_current)))
-                )
-        }
-        {
-                (set-chg false)
-
-                ; Reset coulomb counter when battery is full
-                (if (>= c-max (bms-get-param 'vc_charge_start)) {
-                        (setq ah-cnt-soc (bms-get-param 'batt_ah))
-                })
-        }
         )
 
         ;;; Sleep
@@ -1314,9 +1341,19 @@ loopwhile-thd
                 (setq ah-cnt-soc 0.0)
         })
 
+        ; Only a completed scan with valid sensors renews the five-second timer.
+        ; A late scan cannot clear a timeout; supervised reinitialization is needed.
+        (if temps-valid {
+                (if (not (bms-control-feed)) {
+                        (set-bms-val 'bms-status "CTRL_TIMEOUT")
+                        (fail-close-outputs true)
+                        (exit-error 0)
+                })
+        })
         (wdt-reset)
         (sleep 0.1)
-}))
+        })
+})
 
 ; Balancing
 (defun balance () (loopwhile t {
@@ -1340,6 +1377,9 @@ loopwhile-thd
             (if is-charging {
                     (setq bal-ok false)
             })
+
+            (if (not temps-valid) (setq bal-ok false))
+            (if (not (bms-control-ok)) (setq bal-ok false))
 
             (if (> (* (abs iout) (if is-balancing 0.8 1.0)) (bms-get-param 'balance_max_current)) {
                     (setq bal-ok false)
@@ -1388,7 +1428,10 @@ loopwhile-thd
 
                     (if (> ch-cnt 0) {
                             (setq trigger-bal-after-charge false)
-                            (looprange i 0 vc-len (with-com `(bms-set-bal ,i ,(ix bal-chs i))))
+                            (looprange i 0 vc-len {
+                                    (if (not (bms-control-ok)) (exit-error 0))
+                                    (with-com `(bms-set-bal ,i ,(ix bal-chs i)))
+                            })
                             (setq is-balancing true)
                     } {
                             (setq bal-ok false)
