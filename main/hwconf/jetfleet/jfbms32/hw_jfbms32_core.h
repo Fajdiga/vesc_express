@@ -21,8 +21,8 @@
 #define OVR_CONF_XML_C				"jfbms32_confxml.c"
 #define OVR_CONF_XML_H				"jfbms32_confxml.h"
 #define OVR_CONF_DEFAULT			"jfbms32_conf_default.h"
-#define OVR_CONF_SERIALIZE			jfbms32_confparser_serialize_main_config_t
-#define OVR_CONF_DESERIALIZE		jfbms32_confparser_deserialize_main_config_t
+#define OVR_CONF_SERIALIZE_BOUNDED	jfbms32_confparser_serialize_main_config_t
+#define OVR_CONF_DESERIALIZE_BOUNDED	jfbms32_confparser_deserialize_main_config_t
 #define OVR_CONF_SET_DEFAULTS		jfbms32_confparser_set_defaults_main_config_t
 #define OVR_CONF_MAIN_CONFIG
 #define VAR_INIT_CODE				259763459
@@ -118,9 +118,6 @@ typedef struct {
 	// Enter sleep mode when the current magnitude is below this value
 	float min_current_sleep;
 
-	// Charge port voltage at which a charger is considered plugged in
-	float v_charge_detect;
-
 	// Only allow charging when the cell temperature is below this value
 	float t_charge_max;
 
@@ -153,6 +150,11 @@ typedef struct {
 
 	// Enable temperature monitoring during charging
 	bool t_charge_mon_en;
+
+	// Independent BQ current-protection thresholds.
+	float hw_occ_current;
+	float hw_ocd_current;
+	int psw_scd_tres;
 } main_config_t;
 
 // Default setting Overrides

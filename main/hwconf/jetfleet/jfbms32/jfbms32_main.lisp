@@ -4,7 +4,7 @@
 
 ; Wait this long for charger to start charging
 (def charger-max-delay 10.0)
-(def current-scale 0.9675) ; Meter calibration: 1.19A actual / 1.23A reported
+(def current-scale 0.9675) ; Shared V1/V2 meter calibration: 1.19A actual / 1.23A reported
 (def sleep-unblock-en true) ; Enable automatic sleep unblocking
 (def app-wdt-timeout 120) ; Seconds. Set to 0 to disable the app watchdog.
 (def user-beeps-en true) ; Enable normal user feedback beeps.
@@ -21,6 +21,7 @@
 (def is-charging false)
 (def charge-ok false)
 (def charge-complete false)
+(def charge-no-current false)
 (def charge-complete-msg false)
 (def charger-detected-prev false)
 (def c-min 0.0)
@@ -37,10 +38,11 @@
 (def bq-status "")
 (def bq-status-latched "")
 (def bal-status "")
-(def bq-safety-a1 0)
-(def bq-safety-a2 0)
-(def bq-scd-latched false)
-(def bq-scd-recovery-armed false)
+(def bq-safety-flags 0)
+(def bq-hard-fault-mask 0)
+(def bq-reset-requested false)
+(def bq-reset-ts nil)
+(def bq-reset-message "")
 (def bal-off-failed false)
 (def fail-close-failed false)
 
@@ -56,23 +58,22 @@
 (def last-bq-wake-time-s 0)
 
 (def rtc-val '(
-        (wakeup-cnt . 0)
-        (sleep-enter-time-s . 0)
-        (sleep-total-time-s . 0)
-        (c-min . 3.5)
-        (c-max . 3.5)
-        (v-tot . 50.0)
-        (soc . 0.5)
-        (charge-fault . false)
-        (updated . false)
-        (last-bq-init-attempts . 0)
-        (last-bq-detect-08 . 0)
-        (last-bq-detect-10 . 0)
-        (last-bq-wake-stage . 0)
-        (last-bq-wake-time-s . 0)
-))
+    (wakeup-cnt . 0)
+    (sleep-enter-time-s . 0)
+    (sleep-total-time-s . 0)
+    (c-min . 3.5)
+    (c-max . 3.5)
+    (v-tot . 50.0)
+    (soc . 0.5)
+    (charge-fault . false)
+    (bq-hard-fault-mask . 0)
+    (updated . false)
+    (last-bq-init-attempts . 0)
+    (last-bq-detect-08 . 0)
+    (last-bq-detect-10 . 0)
+    (last-bq-wake-stage . 0)
+    (last-bq-wake-time-s . 0)))
 
-(def is-bal false)
 (def vtot 0.0)
 (def vout 0.0)
 (def vt-vchg 0.0)
@@ -115,42 +116,27 @@ loopwhile-thd
 
 ;;; Hack End ;;;
 
-; Current inverted compared to stock FW
+; Invert the reporting sign and apply the shared meter calibration.
 (defun bms-current-raw () (* (bms-get-current) -1.0 current-scale))
 (defun bms-current () (- (bms-current-raw) current-zero-offset))
 
 (defun beep-duty (times dt duty) {
-        (mutex-lock buz-mutex)
-
-        (loopwhile (> times 0) {
-                (pwm-set-duty duty 0)
-                (sleep dt)
-                (pwm-set-duty 0.0 0)
-                (sleep dt)
-                (setq times (- times 1))
-        })
-
-        (mutex-unlock buz-mutex)
+    (mutex-lock buz-mutex)
+    (loopwhile (> times 0) {
+        (pwm-set-duty duty 0)
+        (sleep dt)
+        (pwm-set-duty 0.0 0)
+        (sleep dt)
+        (setq times (- times 1))
+    })
+    (mutex-unlock buz-mutex)
 })
 
-(defun beep (times dt) {
-        (beep-duty times dt 0.01)
-})
+(defun beep (times dt) { (beep-duty times dt 0.01) })
 
-(defun critical-beep (times dt) {
-        (beep-duty times dt critical-beep-duty)
-})
+(defun critical-beep (times dt) { (beep-duty times dt critical-beep-duty) })
 
-(defun user-beep (times dt) {
-        (if user-beeps-en (beep times dt))
-})
-
-(defun beeper-on () {
-    (loopwhile t
-        (pwm-set-duty 0.01 0)
-        (sleep 5)
-    )
-})
+(defun user-beep (times dt) { (if user-beeps-en (beep times dt)) })
 
 (def rtc-val-magic 124)
 
@@ -160,196 +146,145 @@ loopwhile-thd
 ; Exit deepsleep
 ; (bms-subcmd-cmdonly 1 0x000e)
 
-(defun bq-wake-report-due (attempts)
-        (or
-                (= attempts 1)
-                (and (> bq-wake-alarm-period 0) (= (mod attempts bq-wake-alarm-period) 0))
-        )
-)
+(defun bq-wake-report-due (attempts) (or
+    (= attempts 1)
+    (and (> bq-wake-alarm-period 0) (= (mod attempts bq-wake-alarm-period) 0))))
+
+(defun check-bq-awake (ic read-failed-stage asleep-stage attempts) {
+    (var status (bq-status-read ic))
+    (if (= status -1) {
+        (record-bq-wake-debug read-failed-stage attempts)
+        (bq-wake-debug-beep last-bq-wake-stage)
+        (exit-error 0)
+    })
+    (if (= status 4) {
+        (var tries 0)
+        (loopwhile (and (= status 4) (< tries 20)) {
+            (bq-exit-deepsleep-all)
+            (wdt-reset)
+            (sleep 0.05)
+            (setq status (bq-status-read ic))
+            (setq tries (+ tries 1))
+        })
+        (if (or (= status -1) (= status 4)) {
+            (record-bq-wake-debug (if (= status -1) read-failed-stage asleep-stage) attempts)
+            (bq-wake-debug-beep last-bq-wake-stage)
+            (exit-error 0)
+        })
+    })
+})
 
 (defun init-hw () {
-        (var attempts 0)
+    (var attempts 0)
+    ; Restore the native gate interlock before init can allow BQ outputs.
+    (bms-protection-lock bq-hard-fault-mask)
+    (loopwhile (not (bms-init (bms-get-param 'cells_ic1) (bms-get-param 'cells_ic2))) {
+        (setq attempts (+ attempts 1))
+        (record-bq-wake-debug 0 attempts)
 
-        (loopwhile (not (bms-init (bms-get-param 'cells_ic1) (bms-get-param 'cells_ic2))) {
-                (setq attempts (+ attempts 1))
-                (record-bq-wake-debug 0 attempts)
-
-                ; Fault alarm: 6 fast marker beeps, then a stage code.
-                ; Rate-limit it so a missing BQ warns loudly without wasting
-                ; more pack energy on a continuous buzzer.
-                (if (bq-wake-report-due attempts)
-                        (bq-wake-debug-beep last-bq-wake-stage)
-                )
-
-                (bq-exit-deepsleep-all)
-                (wdt-reset)
-                (sleep (if (< attempts 5) 1.0 3.0))
-        })
-
-        (var st1 (bq-status-read 1))
-        (if (= st1 -1) {
-                (record-bq-wake-debug 5 attempts)
-                (bq-wake-debug-beep last-bq-wake-stage)
-                (exit-error 0)
-        })
-
-        (if (= st1 4) {
-                (var tries 0)
-                (loopwhile (and (= st1 4) (< tries 20)) {
-                        (bq-exit-deepsleep-all)
-                        (wdt-reset)
-                        (sleep 0.05)
-                        (setq st1 (bq-status-read 1))
-                        (setq tries (+ tries 1))
-                })
-
-                (if (= st1 4) {
-                        (record-bq-wake-debug 6 attempts)
-                        (bq-wake-debug-beep last-bq-wake-stage)
-                        (exit-error 0)
-                })
-        })
-
-        (if (> (bms-get-param 'cells_ic2) 0) {
-                (var st2 (bq-status-read 2))
-                (if (= st2 -1) {
-                        (record-bq-wake-debug 7 attempts)
-                        (bq-wake-debug-beep last-bq-wake-stage)
-                        (exit-error 0)
-                })
-
-                (if (= st2 4) {
-                        (var tries2 0)
-                        (loopwhile (and (= st2 4) (< tries2 20)) {
-                                (bq-exit-deepsleep-all)
-                                (wdt-reset)
-                                (sleep 0.05)
-                                (setq st2 (bq-status-read 2))
-                                (setq tries2 (+ tries2 1))
-                        })
-
-                        (if (= st2 4) {
-                                (record-bq-wake-debug 8 attempts)
-                                (bq-wake-debug-beep last-bq-wake-stage)
-                                (exit-error 0)
-                        })
-                })
-        })
+        ; Fault alarm: 6 fast marker beeps, then a stage code.
+        ; Rate-limit it so a missing BQ warns loudly without wasting
+        ; more pack energy on a continuous buzzer.
+        (if (bq-wake-report-due attempts) (bq-wake-debug-beep last-bq-wake-stage))
+        (bq-exit-deepsleep-all)
+        (wdt-reset)
+        (sleep (if (< attempts 5) 1.0 3.0))
+    })
+    (check-bq-awake 1 5 6 attempts)
+    (if (> (bms-get-param 'cells_ic2) 0) (check-bq-awake 2 7 8 attempts))
 })
 
 (defun save-rtc-val () {
-        (var tmp (flatten rtc-val))
-        (bufcpy (rtc-data) 0 tmp 0 (buflen tmp))
-        (bufset-u8 (rtc-data) 900 rtc-val-magic)
+    (var tmp (flatten rtc-val))
+    (bufcpy (rtc-data) 0 tmp 0 (buflen tmp))
+    (bufset-u8 (rtc-data) 900 rtc-val-magic)
 })
 
-(defun rtc-get (name default)
-        (let ((v (assoc rtc-val name)))
-                (if v v default)
+(defun rtc-get (name default) (let ((v (assoc rtc-val name))) (if v v default)))
+
+(defun bq-probe-addr (addr) (match (trap (eval `(i2c-detect-addr ,addr))) ((exit-ok (? a)) (if a 1 0)) (_ 0)))
+
+(defun bq-probe-stage () (cond
+    ((and (= last-bq-detect-08 0) (= last-bq-detect-10 0)) 1) ; no BQ address responds
+    ((and (= last-bq-detect-08 1) (= last-bq-detect-10 0)) 2) ; only default address responds
+    ((and (= last-bq-detect-08 0) (= last-bq-detect-10 1)) 3) ; only BQ1 target address responds
+    (true 4)                                                   ; both addresses respond
 ))
 
-(defun bq-probe-addr (addr)
-        (match (trap (eval `(i2c-detect-addr ,addr)))
-                ((exit-ok (? a)) (if a 1 0))
-                (_ 0)
-        )
-)
-
-(defun bq-probe-stage ()
-        (cond
-                ((and (= last-bq-detect-08 0) (= last-bq-detect-10 0)) 1) ; no BQ address responds
-                ((and (= last-bq-detect-08 1) (= last-bq-detect-10 0)) 2) ; only default address responds
-                ((and (= last-bq-detect-08 0) (= last-bq-detect-10 1)) 3) ; only BQ1 target address responds
-                (true 4)                                                   ; both addresses respond
-))
-
-(defun bq-wake-stage-name (stage)
-        (cond
-                ((= stage 1) "no-address")
-                ((= stage 2) "only-0x08")
-                ((= stage 3) "only-0x10")
-                ((= stage 4) "both-addresses")
-                ((= stage 5) "bq1-status-read-failed")
-                ((= stage 6) "bq1-stuck-deepsleep")
-                ((= stage 7) "bq2-status-read-failed")
-                ((= stage 8) "bq2-stuck-deepsleep")
-                (true "none")
-))
+(defun bq-wake-stage-name (stage) (cond
+    ((= stage 1) "no-address")
+    ((= stage 2) "only-0x08")
+    ((= stage 3) "only-0x10")
+    ((= stage 4) "both-addresses")
+    ((= stage 5) "bq1-status-read-failed")
+    ((= stage 6) "bq1-stuck-deepsleep")
+    ((= stage 7) "bq2-status-read-failed")
+    ((= stage 8) "bq2-stuck-deepsleep")
+    (true "none")))
 
 (defun bq-wake-debug-beep (stage) {
-        ; BQ wake/init issue marker: 6 fast beeps, pause, then stage count.
-        (critical-beep 6 0.04)
-        (sleep 0.4)
-        (critical-beep stage 0.18)
+    ; BQ wake/init issue marker: 6 fast beeps, pause, then stage count.
+    (critical-beep 6 0.04)
+    (sleep 0.4)
+    (critical-beep stage 0.18)
 })
 
 (defun bq-exit-deepsleep-all () {
-        ; Try both expected BQ logical addresses. Failures are diagnostic only:
-        ; the recovery loop below will re-run bms-init until communication is sane.
-        (trap (bms-subcmd-cmdonly 1 0x000e))
-        (trap (bms-subcmd-cmdonly 1 0x000e))
-        (trap (bms-subcmd-cmdonly 2 0x000e))
-        (trap (bms-subcmd-cmdonly 2 0x000e))
+    ; Try both expected BQ logical addresses. Failures are diagnostic only:
+    ; the recovery loop below will re-run bms-init until communication is sane.
+    (trap (bms-subcmd-cmdonly 1 0x000e))
+    (trap (bms-subcmd-cmdonly 1 0x000e))
+    (trap (bms-subcmd-cmdonly 2 0x000e))
+    (trap (bms-subcmd-cmdonly 2 0x000e))
 })
 
-(defun bq-status-read (ic)
-        (match (trap (eval `(bms-direct-cmd ,ic 0x00)))
-                ((exit-ok (? a)) a)
-                (_ -1)
-        )
-)
+(defun bq-status-read (ic) (match (trap (eval `(bms-direct-cmd ,ic 0x00))) ((exit-ok (? a)) a) (_ -1)))
 
 (defun record-bq-wake-debug (stage attempts) {
-        (setq last-bq-init-attempts attempts)
-        (setq last-bq-detect-08 (bq-probe-addr 0x08))
-        (setq last-bq-detect-10 (bq-probe-addr 0x10))
-        (setq last-bq-wake-stage (if (= stage 0) (bq-probe-stage) stage))
-        (setq last-bq-wake-time-s (get-time-of-day-s))
-
-        (setassoc rtc-val 'last-bq-init-attempts last-bq-init-attempts)
-        (setassoc rtc-val 'last-bq-detect-08 last-bq-detect-08)
-        (setassoc rtc-val 'last-bq-detect-10 last-bq-detect-10)
-        (setassoc rtc-val 'last-bq-wake-stage last-bq-wake-stage)
-        (setassoc rtc-val 'last-bq-wake-time-s last-bq-wake-time-s)
-        (save-rtc-val)
-
-        (if (bq-wake-report-due attempts) {
-                (print "BQ wake:" (bq-wake-stage-name last-bq-wake-stage)
-                        "attempts" attempts
-                        "0x08" last-bq-detect-08
-                        "0x10" last-bq-detect-10)
-        })
+    (setq last-bq-init-attempts attempts)
+    (setq last-bq-detect-08 (bq-probe-addr 0x08))
+    (setq last-bq-detect-10 (bq-probe-addr 0x10))
+    (setq last-bq-wake-stage (if (= stage 0) (bq-probe-stage) stage))
+    (setq last-bq-wake-time-s (get-time-of-day-s))
+    (setassoc rtc-val 'last-bq-init-attempts last-bq-init-attempts)
+    (setassoc rtc-val 'last-bq-detect-08 last-bq-detect-08)
+    (setassoc rtc-val 'last-bq-detect-10 last-bq-detect-10)
+    (setassoc rtc-val 'last-bq-wake-stage last-bq-wake-stage)
+    (setassoc rtc-val 'last-bq-wake-time-s last-bq-wake-time-s)
+    (save-rtc-val)
+    (if (bq-wake-report-due attempts) {
+        (print "BQ wake:" (bq-wake-stage-name last-bq-wake-stage)
+            "attempts" attempts
+            "0x08" last-bq-detect-08
+            "0x10" last-bq-detect-10)
+    })
 })
 
 (defun sync-bq-wake-debug-globals () {
-        (setq last-bq-init-attempts (rtc-number 'last-bq-init-attempts 0))
-        (setq last-bq-detect-08 (rtc-number 'last-bq-detect-08 0))
-        (setq last-bq-detect-10 (rtc-number 'last-bq-detect-10 0))
-        (setq last-bq-wake-stage (rtc-number 'last-bq-wake-stage 0))
-        (setq last-bq-wake-time-s (rtc-number 'last-bq-wake-time-s 0))
+    (setq last-bq-init-attempts (rtc-number 'last-bq-init-attempts 0))
+    (setq last-bq-detect-08 (rtc-number 'last-bq-detect-08 0))
+    (setq last-bq-detect-10 (rtc-number 'last-bq-detect-10 0))
+    (setq last-bq-wake-stage (rtc-number 'last-bq-wake-stage 0))
+    (setq last-bq-wake-time-s (rtc-number 'last-bq-wake-time-s 0))
 })
 
-(defun shutdown-reason-name (reason)
-        (cond
-                ((= reason shutdown-reason-timer) "timer")
-                ((= reason shutdown-reason-low-soc-timer) "low-soc-timer")
-                ((= reason shutdown-reason-app) "app")
-                (true "unknown")
-))
+(defun shutdown-reason-name (reason) (cond
+    ((= reason shutdown-reason-timer) "timer")
+    ((= reason shutdown-reason-low-soc-timer) "low-soc-timer")
+    ((= reason shutdown-reason-app) "app")
+    (true "unknown")))
 
 (defun shutdown-reason-beep (reason) {
-        ; Final local warning before power-off. Keep the original rapid
-        ; shutdown pattern, but drive it with the loud critical duty cycle.
-        (critical-beep 30 0.1)
+    ; Final local warning before power-off. Keep the original rapid
+    ; shutdown pattern, but drive it with the loud critical duty cycle.
+    (critical-beep 30 0.1)
 })
 
-(defun print-shutdown-reason (reason) {
-        (print "Shutdown reason:" (shutdown-reason-name reason))
-})
+(defun print-shutdown-reason (reason) { (print "Shutdown reason:" (shutdown-reason-name reason)) })
 
 (defun prepare-external-wakeup () {
-        ; JFBMS32 wakes from external requests on IO2.
-        (bms-set-btn-wakeup-state 1)
+    ; JFBMS32 wakes from external requests on IO2.
+    (bms-set-btn-wakeup-state 1)
 })
 
 (defun external-wake-active () (= (bms-get-btn) 1))
@@ -359,296 +294,231 @@ loopwhile-thd
 (defun sleep-duration-s () (* (bms-get-param 'sleep) 3600))
 
 (defun test-chg (samples) {
-        ; Many chargers "pulse" before starting, try to catch a pulse
-        (var vchg 0.0)
-        (looprange i 0 samples {
-                (if (> i 0) (sleep 0.01))
-                (setq vchg (bms-get-vchg))
-                (if (> vchg (bms-get-param 'v_charge_detect)) (break))
-        })
-
-        (var res (> vchg (bms-get-param 'v_charge_detect)))
-
-        (if res (setq charge-dis-ts (systime)))
-
-        res
+    ; Harmony16's 0.7 V margin, using the full pack across both BQs.
+    (var vbat (apply + (with-com '(bms-get-vcells))))
+    (if (not (> vbat 0.0)) (exit-error 0))
+    (var threshold (+ vbat 0.7))
+    ; Many chargers pulse before starting; sample until one exceeds the threshold.
+    (var vchg 0.0)
+    (looprange i 0 samples {
+        (if (> i 0) (sleep 0.01))
+        (setq vchg (bms-get-vchg))
+        (if (> vchg threshold) (break))
+    })
+    (var res (> vchg threshold))
+    (if res (setq charge-dis-ts (systime)))
+    res
 })
 
-(defun truncate (n min max)
-    (if (< n min)
-        min
-        (if (> n max)
-            max
-            n
-)))
+(defun truncate (n min max) (if (< n min) min (if (> n max) max n)))
 
 ; SOC from battery voltage
 (defun calc-soc (v-cell) {
-        (var empty (bms-get-param 'vc_empty))
-        (var full (bms-get-param 'vc_full))
-        (var den (- full empty))
-
-        (if (= den 0.0)
-                0.0
-                (truncate (/ (- v-cell empty) den) 0.0 1.0)
-        )
+    (var empty (bms-get-param 'vc_empty))
+    (var full (bms-get-param 'vc_full))
+    (var den (- full empty))
+    (if (= den 0.0) 0.0 (truncate (/ (- v-cell empty) den) 0.0 1.0))
 })
 
 (defun valid-pack-reading () (and
-        init-done
-        (> cell-num 0)
-        (> c-min 1.0)
-        (> c-max 2.0)
-        (< c-min 5.0)
-        (< c-max 5.0)
-        (>= c-max c-min)
-        (> vtot (* cell-num 1.5))
-        (>= soc 0.0)
-))
+    init-done
+    (> cell-num 0)
+    (> c-min 1.0)
+    (> c-max 2.0)
+    (< c-min 5.0)
+    (< c-max 5.0)
+    (>= c-max c-min)
+    (> vtot (* cell-num 1.5))
+    (>= soc 0.0)))
 
 ; True when a real communication interface is connected.
 (defun is-comm-connected () (or (connected-wifi) (connected-usb) (connected-ble)))
 
 ; True when VESC Tool is connected or sleep is intentionally blocked.
 (defun is-connected () (or (is-comm-connected) (= (bms-get-param 'block_sleep) 1)))
-;(defun is-connected () (or (connected-wifi) (connected-ble) (= (bms-get-param 'block_sleep) 1)))
 
 (defunret can-active () {
-        (var devs (can-list-devs))
-        (if (eq devs nil) (return false))
-
-        (looprange i 1 7 {
-                (var res (can-msg-age (first devs) i))
-                (if (and res (< res 0.1)) (return true))
-        })
-
-        false
+    (var devs (can-list-devs))
+    (if (eq devs nil) (return false))
+    (looprange i 1 7 {
+        (var res (can-msg-age (first devs) i))
+        (if (and res (< res 0.1)) (return true))
+    })
+    false
 })
 
 (defun can-sum-current () {
-        (var devs (can-list-devs))
-        (var i-sum 0.0)
-
-        (loopforeach d devs {
-                (var res (can-msg-age d 4))
-                (if (and res (< res 0.1)) {
-                        (var cur (canget-current-in d))
-                        (if (number? cur)
-                                (setq i-sum (+ i-sum cur))
-                                {
-                                        (print "CAN current invalid for id" d)
-                                        (exit-error 0)
-                                }
-                        )
-                })
+    (var devs (can-list-devs))
+    (var i-sum 0.0)
+    (loopforeach d devs {
+        (var res (can-msg-age d 4))
+        (if (and res (< res 0.1)) {
+            (var cur (canget-current-in d))
+            (if (number? cur)
+                (setq i-sum (+ i-sum cur)) {
+                    (print "CAN current invalid for id" d)
+                    (exit-error 0)
+            })
         })
-
-        i-sum
+    })
+    i-sum
 })
 
 ; Run expression with communication enabled. Use up to 4 attempts in case of
 ; glithces from transients. Disable communication again when it is not needed
 ; to save power.
 (defun with-com (expr) {
-        (mutex-lock com-mutex)
-
-        (gpio-write 9 0)
-
-        (var res (looprange i 0 4 {
-                    (match (trap (eval expr))
-                        ((exit-ok (? a)) (break a))
-                        (_ (if (= i 3) {
-                                    (mutex-unlock com-mutex)
-                                    (exit-error 0)
-                        }))
-                    )
-        }))
-
-        (if (and
-                (not (can-active))
-                (external-wake-inactive)
-                (not com-force-on)
-                (not (is-connected))
-                (not is-charging)
-            )
-            (gpio-write 9 1)
-        )
-
-        (mutex-unlock com-mutex)
-        res
+    (mutex-lock com-mutex)
+    (gpio-write 9 0)
+    (var res (looprange i 0 4 {
+        (match (trap (eval expr))
+            ((exit-ok (? a)) (break a))
+            (_ (if (= i 3) {
+                (mutex-unlock com-mutex)
+                (exit-error 0)
+        })))
+    }))
+    (if (and
+        (not (can-active))
+        (external-wake-inactive)
+        (not com-force-on)
+        (not (is-connected))
+        (not is-charging))
+        (gpio-write 9 1))
+    (mutex-unlock com-mutex)
+    res
 })
 
 (defun com-force (en)
-    (if en
-        {
-            (setq com-force-on true)
-            (gpio-write 9 0)
-        }
-        {
-            (setq com-force-on false)
-        }
-    )
-)
+    (if en {
+        (setq com-force-on true)
+        (gpio-write 9 0)
+    } {
+        (setq com-force-on false)
+}))
 
 (defun disable-balancing () {
-        (var bal-off-ok false)
-
-        (match (trap (bms-disable-balancing))
-                ((exit-ok _) (setq bal-off-ok true))
-                (_ {
-                        (setq bal-off-ok true)
-                        (looprange i 0 cell-num {
-                                (match (trap (with-com `(bms-set-bal ,i 0)))
-                                        ((exit-ok _) nil)
-                                        (_ (setq bal-off-ok false))
-                                )
-                        })
-                })
-        )
-
-        (if bal-off-ok
-                {
-                        (if bal-off-failed (print "Balancing disabled after retry"))
-                        (setq bal-off-failed false)
-                        (setq is-balancing false)
-                        (setq bal-status "")
-                }
-                {
-                        (if (not bal-off-failed) (print "Failed to disable balancing"))
-                        (setq bal-off-failed true)
-                }
-        )
-
-        bal-off-ok
+    (var bal-off-ok false)
+    (match (trap (bms-disable-balancing))
+        ((exit-ok _) (setq bal-off-ok true))
+        (_ {
+            (setq bal-off-ok true)
+            (looprange i 0 cell-num {
+                (match (trap (with-com `(bms-set-bal ,i 0))) ((exit-ok _) nil) (_ (setq bal-off-ok false)))
+            })
+    }))
+    (if bal-off-ok {
+        (if bal-off-failed (print "Balancing disabled after retry"))
+        (setq bal-off-failed false)
+        (setq is-balancing false)
+        (setq bal-status "")
+    } {
+        (if (not bal-off-failed) (print "Failed to disable balancing"))
+        (setq bal-off-failed true)
+    })
+    bal-off-ok
 })
 
 (defun fail-close-outputs (clear-bal-trigger) {
-        (var close-ok false)
-
-        (match (trap (bms-fail-close-outputs))
-                ((exit-ok _) (setq close-ok true))
-                (_ {
-                        (trap (bms-set-chg 0))
-                        (setq close-ok (disable-balancing))
-                })
-        )
-
-        (setq is-charging false)
-        (setq charge-ok false)
-        (setq charge-session-valid false)
-        (if clear-bal-trigger (setq trigger-bal-after-charge false))
-
-        (if close-ok
-                {
-                        (if fail-close-failed (print "BMS fail-close recovered"))
-                        (setq fail-close-failed false)
-                        (setq bal-off-failed false)
-                        (setq is-balancing false)
-                        (setq bal-status "")
-                }
-                {
-                        (if (not fail-close-failed) (print "BMS fail-close failed"))
-                        (setq fail-close-failed true)
-                }
-        )
-
-        close-ok
+    (var close-ok false)
+    (match (trap (bms-fail-close-outputs))
+        ((exit-ok _) (setq close-ok true))
+        (_ {
+            (trap (bms-set-chg 0))
+            (setq close-ok (disable-balancing))
+    }))
+    (setq is-charging false)
+    (setq charge-ok false)
+    (setq charge-session-valid false)
+    (if clear-bal-trigger (setq trigger-bal-after-charge false))
+    (if close-ok {
+        (if fail-close-failed (print "BMS fail-close recovered"))
+        (setq fail-close-failed false)
+        (setq bal-off-failed false)
+        (setq is-balancing false)
+        (setq bal-status "")
+    } {
+        (if (not fail-close-failed) (print "BMS fail-close failed"))
+        (setq fail-close-failed true)
+    })
+    close-ok
 })
 
 (defun balance-safe-now () (and
-        temps-valid
-        (<= (* (abs iout) (if is-balancing 0.8 1.0)) (bms-get-param 'balance_max_current))
-        (>= c-min (bms-get-param 'vc_balance_min))
-        (<= t-max (bms-get-param 't_bal_max_cell))
-        (<= t-ic (bms-get-param 't_bal_max_ic))
-))
+    (= bq-hard-fault-mask 0)
+    temps-valid
+    (<= (* (abs iout) (if is-balancing 0.8 1.0)) (bms-get-param 'balance_max_current))
+    (>= c-min (bms-get-param 'vc_balance_min))
+    (<= t-max (bms-get-param 't_bal_max_cell))
+    (<= t-ic (bms-get-param 't_bal_max_ic))))
 
 (defun temp-valid (value) (and (number? value) (>= value -50.0) (<= value 150.0)))
 
 ; The first unmet condition is also the reason shown when a charger is present.
 (defun charge-block-reason () (cond
-        ((not temps-valid) "TEMP_INVALID")
-        (bq-scd-latched "BQ_SCD_LATCH")
-        ((bq-current-fault-active) "BQ_CURRENT_FAULT")
-        ((assoc rtc-val 'charge-fault) "FLT_CHG_OC")
-        (charge-complete "CHG_COMPLETE")
-        ((not chg-allowed) "CHG_DISABLED")
-        ((>= c-max (bms-get-param (if is-charging 'vc_charge_end 'vc_charge_start))) "CHG_CELL_HIGH")
-        ((<= c-min (bms-get-param 'vc_charge_min)) "CHG_CELL_LOW")
-        ((>= t-max (bms-get-param 't_charge_max)) "CHG_CELL_HOT")
-        ((<= t-min (bms-get-param 't_charge_min)) "CHG_CELL_COLD")
-        ((>= t-mos (bms-get-param 't_charge_max_mos)) "CHG_MOS_HOT")
-        (true "")
-))
+    ((not temps-valid) "TEMP_INVALID")
+    ((!= bq-hard-fault-mask 0) "BQ_HARD_FAULT")
+    ((bq-current-fault-active) "BQ_CURRENT_FAULT")
+    ((assoc rtc-val 'charge-fault) "FLT_CHG_OC")
+    (charge-complete "CHG_COMPLETE")
+    (charge-no-current "CHG_NO_CURRENT")
+    ((not chg-allowed) "CHG_DISABLED")
+    ((>= c-max (bms-get-param (if is-charging 'vc_charge_end 'vc_charge_start))) "CHG_CELL_HIGH")
+    ((<= c-min (bms-get-param 'vc_charge_min)) "CHG_CELL_LOW")
+    ((>= t-max (bms-get-param 't_charge_max)) "CHG_CELL_HOT")
+    ((<= t-min (bms-get-param 't_charge_min)) "CHG_CELL_COLD")
+    ((>= t-mos (bms-get-param 't_charge_max_mos)) "CHG_MOS_HOT")
+    (true "")))
+
+(defun bq-temp-settings-valid (v1 h1 has-ic2) {
+    (var v2 (if has-ic2 (with-com '(bms-read-reg 2 0x92fd 1)) 0x3b)) ; default to valid when no IC2
+    (var h2 (if has-ic2 (with-com '(bms-read-reg 2 0x9300 1)) 0x3b)) ; default to valid when no IC2
+    (not (or
+        (and (!= v1 0x3b) (!= v1 0x7b))
+        (!= h1 0x3b)
+        (and has-ic2 (and (!= v2 0x3b) (!= v2 0x7b)))
+        (and has-ic2 (!= h2 0x3b))))
+})
 
 (defun update-temps () {
-        ; Exit if any of the BQs has invalid temperature settings
-        (var v1 (bms-read-reg 1 0x92fd 1))
-        (var h1 (bms-read-reg 1 0x9300 1))
-        (var has-ic2 (> (bms-get-param 'cells_ic2) 0))
-        (var v2 (if has-ic2 (with-com '(bms-read-reg 2 0x92fd 1)) 0x3b)) ; default to valid when no IC2
-        (var h2 (if has-ic2 (with-com '(bms-read-reg 2 0x9300 1)) 0x3b)) ; default to valid when no IC2
-
-        (if (or
-                (and (!= v1 0x3b) (!= v1 0x7b))
-                (!= h1 0x3b)
-                (and has-ic2 (and (!= v2 0x3b) (!= v2 0x7b)))
-                (and has-ic2 (!= h2 0x3b))
-            ) {
-            (print "Invalid temperature settings, retrying...")
-            (sleep 0.01)
-
-            (setq v1 (bms-read-reg 1 0x92fd 1))
-            (setq h1 (bms-read-reg 1 0x9300 1))
-            (setq v2 (if has-ic2 (with-com '(bms-read-reg 2 0x92fd 1)) 0x3b))
-            (setq h2 (if has-ic2 (with-com '(bms-read-reg 2 0x9300 1)) 0x3b))
-
-            (if (or
-                    (and (!= v1 0x3b) (!= v1 0x7b))
-                    (!= h1 0x3b)
-                    (and has-ic2 (and (!= v2 0x3b) (!= v2 0x7b)))
-                    (and has-ic2 (!= h2 0x3b))
-                ) {
-                (print "BQs with invalid temperature settings")
-                (exit-error 0)
-            })
+    ; Exit if either BQ still has invalid temperature settings after one retry.
+    (var v1 (bms-read-reg 1 0x92fd 1))
+    (var h1 (bms-read-reg 1 0x9300 1))
+    (var has-ic2 (> (bms-get-param 'cells_ic2) 0))
+    (if (not (bq-temp-settings-valid v1 h1 has-ic2)) {
+        (print "Invalid temperature settings, retrying...")
+        (sleep 0.01)
+        (if (not (bq-temp-settings-valid (bms-read-reg 1 0x92fd 1) (bms-read-reg 1 0x9300 1) has-ic2)) {
+            (print "BQs with invalid temperature settings")
+            (exit-error 0)
         })
+    })
+    (var bms-temps (with-com '(bms-get-temps)))
+    (var temp-ext-num (truncate (bms-get-param 'temp_num) 0 4))
 
-        (var bms-temps (with-com '(bms-get-temps)))
-        (var temp-ext-num (truncate (bms-get-param 'temp_num) 0 4))
+    ; bms-temps: BQ1 IC, BQ1 TS1/TS3/ALERT/DCHG, BQ1 HDQ, BQ2 IC, BQ2 HDQ
+    ; Validate each fitted sensor so a healthy sensor cannot hide a failed one.
+    (var valid (and (temp-valid (ix bms-temps 0)) (temp-valid (ix bms-temps 5))))
+    (looprange i 0 temp-ext-num { (if (not (temp-valid (ix bms-temps (+ i 1)))) (setq valid false)) })
+    (if has-ic2 {
+        (if (not (and (temp-valid (ix bms-temps 6)) (temp-valid (ix bms-temps 7)))) (setq valid false))
+    })
+    (setq temps-valid valid)
+    (if (not temps-valid) {
+        (set-chg false)
+        (setq bal-ok false)
+        (setq trigger-bal-after-charge false)
+        (disable-balancing)
+    })
+    (var t-sorted (sort < (map (fn (x) (ix bms-temps (+ x 1))) (range 0 temp-ext-num))))
 
-        ; bms-temps: BQ1 IC, BQ1 TS1/TS3/ALERT/DCHG, BQ1 HDQ, BQ2 IC, BQ2 HDQ
-        ; Validate each fitted sensor so a healthy sensor cannot hide a failed one.
-        (var valid (and (temp-valid (ix bms-temps 0)) (temp-valid (ix bms-temps 5))))
-        (looprange i 0 temp-ext-num {
-            (if (not (temp-valid (ix bms-temps (+ i 1)))) (setq valid false))
-        })
-        (if has-ic2 {
-            (if (not (and (temp-valid (ix bms-temps 6)) (temp-valid (ix bms-temps 7))))
-                (setq valid false))
-        })
-        (setq temps-valid valid)
-        (if (not temps-valid) {
-            (set-chg false)
-            (setq bal-ok false)
-            (setq trigger-bal-after-charge false)
-            (disable-balancing)
-        })
-
-        (var t-sorted (sort < (map
-                    (fn (x) (ix bms-temps (+ x 1)))
-                    (range 0 temp-ext-num)
-        )))
-
-        ; Keep charging available with zero external cell sensors.
-        (if (= (length t-sorted) 0) (setq t-sorted '(24)))
-
-        (setq t-min (ix t-sorted 0))
-        (setq t-max (ix t-sorted -1))
-        (setq t-mos (if (and has-ic2 (> (ix bms-temps 7) (ix bms-temps 5))) (ix bms-temps 7) (ix bms-temps 5)))
-        (setq t-ic  (if (and has-ic2 (> (ix bms-temps 6) (ix bms-temps 0))) (ix bms-temps 6) (ix bms-temps 0)))
-
-        bms-temps
+    ; Keep charging available with zero external cell sensors.
+    (if (= (length t-sorted) 0) (setq t-sorted '(24)))
+    (setq t-min (ix t-sorted 0))
+    (setq t-max (ix t-sorted -1))
+    (setq t-mos (if (and has-ic2 (> (ix bms-temps 7) (ix bms-temps 5))) (ix bms-temps 7) (ix bms-temps 5)))
+    (setq t-ic  (if (and has-ic2 (> (ix bms-temps 6) (ix bms-temps 0))) (ix bms-temps 6) (ix bms-temps 0)))
+    bms-temps
 })
 
 (defun bms-shutdown-failed-alarm () {
@@ -665,28 +535,19 @@ loopwhile-thd
     (print-shutdown-reason reason)
     (fail-close-outputs true)
     (shutdown-reason-beep reason)
-
     (setassoc rtc-val 'sleep-enter-time-s (get-time-of-day-s))
     (save-rtc-val)
     (if save-counters (save-settings))
-
-    (match (trap (bms-hw-shutdown))
-        ((exit-ok _) nil)
-        (_ (bms-shutdown-failed-alarm))
-    )
+    (match (trap (bms-hw-shutdown)) ((exit-ok _) nil) (_ (bms-shutdown-failed-alarm)))
 })
 
 (defun bms-shutdown () (bms-shutdown-impl true shutdown-reason-unknown))
-
-(defun bms-shutdown-no-save () (bms-shutdown-impl false shutdown-reason-unknown))
 
 ; Counter settings are loaded before start-fun, so timer shutdown can save
 ; them again before entering hardware shutdown.
 (defun bms-shutdown-timer () (bms-shutdown-impl true shutdown-reason-timer))
 
-(defun bms-shutdown-low-soc-timer ()
-        (bms-shutdown-impl true shutdown-reason-low-soc-timer)
-)
+(defun bms-shutdown-low-soc-timer () (bms-shutdown-impl true shutdown-reason-low-soc-timer))
 
 (defun bms-shutdown-app () (bms-shutdown-impl true shutdown-reason-app))
 
@@ -695,175 +556,128 @@ loopwhile-thd
 ; SOC and charge-control flow. The charger guard is retained as a safety
 ; check if a timer wake races with charger detection.
 (defun low-soc-timer-wake (wake-source chg-detected) (and
-        (= wake-source 2)
-        (not chg-detected)
-        (valid-pack-reading)
-        (< soc 0.05)
-        (not trigger-bal-after-charge)
-        (external-wake-inactive)
-        ; block_sleep is intentionally honored here so a fresh, unconfigured
-        ; pack cannot shut itself down before setup is complete.
-        (not (is-connected))
-        (not (can-active))
-))
+    (= wake-source 2)
+    (not chg-detected)
+    (valid-pack-reading)
+    (< soc 0.05)
+    (not trigger-bal-after-charge)
+    (external-wake-inactive)
+    ; block_sleep is intentionally honored here so a fresh, unconfigured
+    ; pack cannot shut itself down before setup is complete.
+    (not (is-connected))
+    (not (can-active))))
 
 (defun shutdown-timer-due () (and
-        (> (bms-get-param 'shutdown) 0)
-        (>= (rtc-number 'sleep-total-time-s 0) (* (bms-get-param 'shutdown) 86400.0))
-))
+    (> (bms-get-param 'shutdown) 0)
+    (>= (rtc-number 'sleep-total-time-s 0) (* (bms-get-param 'shutdown) 86400.0))))
 
 (defun process-sleep-time () {
-        (var source (bms-wakeup-source))
-
-        (cond
-                ; Woke up on GPIO/RTC IO: this is external use, so reset the
-                ; shutdown-days counter.
-                ((= source 1) {
-                        (setassoc rtc-val 'sleep-total-time-s 0)
-                })
-                ; Woke up on timer. Prefer the RTC wall-clock delta, but if it
-                ; did not advance across deep sleep, a timer wake still means
-                ; one configured sleep interval elapsed.
-                ((= source 2) {
-                        (var entered (rtc-number 'sleep-enter-time-s 0))
-                        (if (> entered 0) {
-                                (var slept-time (- (get-time-of-day-s) entered))
-                                (var total-time (rtc-number 'sleep-total-time-s 0))
-                                (if (<= slept-time 0.0)
-                                        (setq slept-time (sleep-duration-s))
-                                )
-                                (if (< total-time 0.0)
-                                        (setq total-time 0)
-                                )
-                                (setassoc rtc-val 'sleep-total-time-s
-                                        (+ total-time slept-time))
-                        })
-                })
-        )
-
-        (setassoc rtc-val 'sleep-enter-time-s 0)
-        (save-rtc-val)
-
-        (if (shutdown-timer-due)
-                (bms-shutdown-timer)
-        )
-
-        source
+    (var source (bms-wakeup-source))
+    (cond
+        ; Woke up on GPIO/RTC IO: this is external use, so reset the
+        ; shutdown-days counter.
+        ((= source 1) { (setassoc rtc-val 'sleep-total-time-s 0) })
+        ; Woke up on timer. Prefer the RTC wall-clock delta, but if it
+        ; did not advance across deep sleep, a timer wake still means
+        ; one configured sleep interval elapsed.
+        ((= source 2) {
+            (var entered (rtc-number 'sleep-enter-time-s 0))
+            (if (> entered 0) {
+                (var slept-time (- (get-time-of-day-s) entered))
+                (var total-time (rtc-number 'sleep-total-time-s 0))
+                (if (<= slept-time 0.0) (setq slept-time (sleep-duration-s)))
+                (if (< total-time 0.0) (setq total-time 0))
+                (setassoc rtc-val 'sleep-total-time-s (+ total-time slept-time))
+            })
+    }))
+    (setassoc rtc-val 'sleep-enter-time-s 0)
+    (save-rtc-val)
+    (if (shutdown-timer-due) (bms-shutdown-timer))
+    source
 })
 
-
 (defun start-fun () {
-        (setassoc rtc-val 'wakeup-cnt (+ (rtc-number 'wakeup-cnt 0) 1))
+    (setassoc rtc-val 'wakeup-cnt (+ (rtc-number 'wakeup-cnt 0) 1))
+    (var do-sleep true)
+    (if (external-wake-active) { (setq do-sleep false) })
+    (init-hw) ; Battery measurements must be available for charger detection.
+    (var chg-detected (test-chg 5))
+    (if (or charge-wakeup chg-detected) {
+        (setq do-sleep false)
+        (if (not (assoc rtc-val 'charge-fault)) { (setq charge-wakeup true) })
+    })
 
-        (var do-sleep true)
+    ; Reset charge fault when the charger is not connected at boot
+    (if (not chg-detected) {
+        (setassoc rtc-val 'charge-fault false)
+        (setq charge-complete false)
+        (setq charge-complete-msg false)
+    })
+    (if (is-connected) (setq do-sleep false))
+    (if (can-active) (setq do-sleep false))
+    (user-beep 2 0.1)
+    (var wake-source (process-sleep-time))
+    (if (can-active) (setq do-sleep false))
+    (var soc -2.0)
+    (var v-cells nil)
 
-        (if (external-wake-active) {
+    ; It takes a few reads to get valid voltages the first time
+    (loopwhile (< soc -1.5) {
+        (setq v-cells (with-com '(bms-get-vcells)))
+        (var v-sorted (sort < v-cells))
+        (setq c-min (ix v-sorted 0))
+        (setq c-max (ix v-sorted -1))
+        (setq soc (calc-soc c-min))
+        (sleep 0.1)
+    })
+    (setassoc rtc-val 'c-min c-min)
+    (setassoc rtc-val 'c-max c-max)
+    (setassoc rtc-val 'v-tot (apply + v-cells))
+    (setassoc rtc-val 'soc soc)
+    (setassoc rtc-val 'updated true)
+    (save-rtc-val)
+    (update-temps)
+    (setq bq-status (update-bq-status))
+    (setq init-done true)
+    (setq charge-ok (= (str-len (charge-block-reason)) 0))
+    (var ichg 0.0)
+    (if (and charge-ok charge-wakeup (test-chg 400)) {
+        (set-chg true)
+        (looprange i 0 (* charger-max-delay 10.0) {
+            (sleep 0.1)
+            (setq bq-status (update-bq-status))
+            (if (!= bq-hard-fault-mask 0) (break))
+            (setq ichg (- (bms-current)))
+            (if (> ichg (bms-get-param 'min_charge_current)) {
                 (setq do-sleep false)
+                (setq charge-session-valid true)
+                (break)
+            })
         })
+    })
 
-        (var chg-detected (test-chg 5))
-        (if (or charge-wakeup chg-detected) {
-                (setq do-sleep false)
-                (if (not (assoc rtc-val 'charge-fault)) {
-                        (setq charge-wakeup true)
-                })
-        })
+    ; Match VBMS32's low-SOC sleep policy, except that JFBMS32 shuts down
+    ; instead of selecting a longer sleep interval. This is intentionally
+    ; evaluated only after a deep-sleep timer wake.
+    (if (low-soc-timer-wake wake-source chg-detected) (bms-shutdown-low-soc-timer))
 
-        ; Reset charge fault when the charger is not connected at boot
-        (if (not chg-detected) {
-                (setassoc rtc-val 'charge-fault false)
-                (setq charge-complete false)
-                (setq charge-complete-msg false)
-        })
-
-        (if (is-connected) (setq do-sleep false))
-        (if (can-active) (setq do-sleep false))
-
-        (init-hw)
-
-        (user-beep 2 0.1)
-
-        (var wake-source (process-sleep-time))
-
-        (if (can-active) (setq do-sleep false))
-
-        (var soc -2.0)
-        (var v-cells nil)
-        (var tries 0)
-
-        ; It takes a few reads to get valid voltages the first time
-        (loopwhile (< soc -1.5) {
-                (setq v-cells (with-com '(bms-get-vcells)))
-                (var v-sorted (sort < v-cells))
-                (setq c-min (ix v-sorted 0))
-                (setq c-max (ix v-sorted -1))
-                (setq soc (calc-soc c-min))
-                (setq tries (+ tries 1))
-                (sleep 0.1)
-        })
-
-        (setassoc rtc-val 'c-min c-min)
-        (setassoc rtc-val 'c-max c-max)
-        (setassoc rtc-val 'v-tot (apply + v-cells))
-        (setassoc rtc-val 'soc soc)
-        (setassoc rtc-val 'updated true)
-        (save-rtc-val)
-
-        (update-temps)
-
-        (setq init-done true)
-
-        (setq charge-ok (= (str-len (charge-block-reason)) 0))
-
-        (var ichg 0.0)
-         (if (and charge-ok charge-wakeup (test-chg 400)) {
-                (set-chg true)
-
-                (looprange i 0 (* charger-max-delay 10.0) {
-                        (sleep 0.1)
-                        (setq ichg (- (bms-current)))
-                        (if (> ichg (bms-get-param 'min_charge_current)) {
-                                (setq do-sleep false)
-                                (setq charge-session-valid true)
-                                (break)
-                        })
-                })
-        })
-
-        ; Match VBMS32's low-SOC sleep policy, except that JFBMS32 shuts down
-        ; instead of selecting a longer sleep interval. This is intentionally
-        ; evaluated only after a deep-sleep timer wake.
-        (if (low-soc-timer-wake wake-source chg-detected)
-                (bms-shutdown-low-soc-timer)
-        )
-
-        ;(sleep 5)
-        ;(print v-cells)
-        ;(print soc)
-        ;(print ichg)
-        ;(print do-sleep)
-        ;(print tries)
-
-        ; Trap bms-sleep failures so a transient mutex
-        ; timeout or BQ NAK doesn't put ESP into deep sleep with the BQs
-        ; still in ACTIVE mode (top-cell drain). On failure we defer the
-        ; sleep-deep call and let the next start-fun retry try again.
-        (if do-sleep
-            (match (trap (with-com '(do-bms-sleep)))
-                ((exit-ok _) {
-                    (print "bms-sleep ok, entering sleep-deep")
-                    (setassoc rtc-val 'sleep-enter-time-s (get-time-of-day-s))
-                    (save-rtc-val)
-
-                    (prepare-external-wakeup)
-                    (sleep-deep (sleep-duration-s))
-                })
-                (_ {
-                    (print "bms-sleep FAILED in start-fun -- deferring sleep-deep, will retry")
-                    (sleep 1.0)
-                })
-            )
-        )
+    ; Trap bms-sleep failures so a transient mutex
+    ; timeout or BQ NAK doesn't put ESP into deep sleep with the BQs
+    ; still in ACTIVE mode (top-cell drain). On failure we defer the
+    ; sleep-deep call and let the next start-fun retry try again.
+    (if do-sleep
+        (match (trap (with-com '(do-bms-sleep)))
+            ((exit-ok _) {
+                (print "bms-sleep ok, entering sleep-deep")
+                (setassoc rtc-val 'sleep-enter-time-s (get-time-of-day-s))
+                (save-rtc-val)
+                (prepare-external-wakeup)
+                (sleep-deep (sleep-duration-s))
+            })
+            (_ {
+                (print "bms-sleep FAILED in start-fun -- deferring sleep-deep, will retry")
+                (sleep 1.0)
+    })))
 })
 
 ; === TODO===
@@ -874,316 +688,350 @@ loopwhile-thd
 ; Persistent settings
 ; Format: (label . (offset type))
 (def eeprom-addrs '(
-        (ver-code    . (0 i))
-        (ah-cnt      . (1 f))
-        (wh-cnt      . (2 f))
-        (ah-chg-tot  . (3 f))
-        (wh-chg-tot  . (4 f))
-        (ah-dis-tot  . (5 f))
-        (wh-dis-tot  . (6 f))
-        (ah-cnt-soc  . (7 f))
-))
+    (ver-code    . (0 i))
+    (ah-cnt      . (1 f))
+    (wh-cnt      . (2 f))
+    (ah-chg-tot  . (3 f))
+    (wh-chg-tot  . (4 f))
+    (ah-dis-tot  . (5 f))
+    (wh-dis-tot  . (6 f))
+    (ah-cnt-soc  . (7 f))
+    (bq-hard-fault . (8 i))))
 
 ; Settings version
 (def settings-version 242i32)
 
 (defun read-setting (name)
     (let (
-            (addr (first (assoc eeprom-addrs name)))
-            (type (second (assoc eeprom-addrs name)))
-        )
+        (addr (first (assoc eeprom-addrs name)))
+        (type (second (assoc eeprom-addrs name))))
         (cond
             ((eq type 'i) (eeprom-read-i addr))
             ((eq type 'f) (eeprom-read-f addr))
-            ((eq type 'b) (!= (eeprom-read-i addr) 0))
-)))
+            ((eq type 'b) (!= (eeprom-read-i addr) 0)))))
 
 (defun write-setting (name val)
     (let (
-            (addr (first (assoc eeprom-addrs name)))
-            (type (second (assoc eeprom-addrs name)))
-        )
+        (addr (first (assoc eeprom-addrs name)))
+        (type (second (assoc eeprom-addrs name))))
         (cond
             ((eq type 'i) (eeprom-store-i addr val))
             ((eq type 'f) (eeprom-store-f addr val))
-            ((eq type 'b) (eeprom-store-i addr (if val 1 0)))
-)))
+            ((eq type 'b) (eeprom-store-i addr (if val 1 0))))))
 
-(defun number-or (value fallback)
-    (if (number? value) value fallback)
-)
+(defun number-or (value fallback) (if (number? value) value fallback))
 
-(defun rtc-number (name fallback)
-        (number-or (rtc-get name fallback) fallback)
-)
+(defun rtc-number (name fallback) (number-or (rtc-get name fallback) fallback))
 
 (defun sanitize-rtc-val () {
-        (setassoc rtc-val 'wakeup-cnt (rtc-number 'wakeup-cnt 0))
-        (setassoc rtc-val 'sleep-enter-time-s (rtc-number 'sleep-enter-time-s 0))
-        (setassoc rtc-val 'sleep-total-time-s (rtc-number 'sleep-total-time-s 0))
-        (setassoc rtc-val 'c-min (rtc-number 'c-min 3.5))
-        (setassoc rtc-val 'c-max (rtc-number 'c-max 3.5))
-        (setassoc rtc-val 'v-tot (rtc-number 'v-tot 50.0))
-        (setassoc rtc-val 'soc (truncate (rtc-number 'soc 0.5) 0.0 1.0))
-        (setassoc rtc-val 'last-bq-init-attempts (rtc-number 'last-bq-init-attempts 0))
-        (setassoc rtc-val 'last-bq-detect-08 (rtc-number 'last-bq-detect-08 0))
-        (setassoc rtc-val 'last-bq-detect-10 (rtc-number 'last-bq-detect-10 0))
-        (setassoc rtc-val 'last-bq-wake-stage (rtc-number 'last-bq-wake-stage 0))
-        (setassoc rtc-val 'last-bq-wake-time-s (rtc-number 'last-bq-wake-time-s 0))
-})
-
-(defun restore-settings () {
-        (write-setting 'ah-cnt 0.0)
-        (write-setting 'wh-cnt 0.0)
-        (write-setting 'ah-chg-tot 0.0)
-        (write-setting 'wh-chg-tot 0.0)
-        (write-setting 'ah-dis-tot 0.0)
-        (write-setting 'wh-dis-tot 0.0)
-        (write-setting 'ah-cnt-soc (* (calc-soc c-min) (bms-get-param 'batt_ah)))
-        (write-setting 'ver-code settings-version)
+    (setassoc rtc-val 'wakeup-cnt (rtc-number 'wakeup-cnt 0))
+    (setassoc rtc-val 'sleep-enter-time-s (rtc-number 'sleep-enter-time-s 0))
+    (setassoc rtc-val 'sleep-total-time-s (rtc-number 'sleep-total-time-s 0))
+    (setassoc rtc-val 'c-min (rtc-number 'c-min 3.5))
+    (setassoc rtc-val 'c-max (rtc-number 'c-max 3.5))
+    (setassoc rtc-val 'v-tot (rtc-number 'v-tot 50.0))
+    (setassoc rtc-val 'soc (truncate (rtc-number 'soc 0.5) 0.0 1.0))
+    (setassoc rtc-val 'last-bq-init-attempts (rtc-number 'last-bq-init-attempts 0))
+    (setassoc rtc-val 'last-bq-detect-08 (rtc-number 'last-bq-detect-08 0))
+    (setassoc rtc-val 'last-bq-detect-10 (rtc-number 'last-bq-detect-10 0))
+    (setassoc rtc-val 'last-bq-wake-stage (rtc-number 'last-bq-wake-stage 0))
+    (setassoc rtc-val 'last-bq-wake-time-s (rtc-number 'last-bq-wake-time-s 0))
 })
 
 (defun save-settings () {
-        (write-setting 'ah-cnt ah-cnt)
-        (write-setting 'wh-cnt wh-cnt)
-        (write-setting 'ah-chg-tot ah-chg-tot)
-        (write-setting 'wh-chg-tot wh-chg-tot)
-        (write-setting 'ah-dis-tot ah-dis-tot)
-        (write-setting 'wh-dis-tot wh-dis-tot)
-        (write-setting 'ah-cnt-soc ah-cnt-soc)
+    (write-setting 'ah-cnt ah-cnt)
+    (write-setting 'wh-cnt wh-cnt)
+    (write-setting 'ah-chg-tot ah-chg-tot)
+    (write-setting 'wh-chg-tot wh-chg-tot)
+    (write-setting 'ah-dis-tot ah-dis-tot)
+    (write-setting 'wh-dis-tot wh-dis-tot)
+    (write-setting 'ah-cnt-soc ah-cnt-soc)
 })
 
-(defun lpf (val sample tc)
-    (- val (* tc (- val sample)))
-)
+(defun lpf (val sample tc) (- val (* tc (- val sample))))
 
 (defun status-append (base part)
     (if (> (str-len part) 0)
-        (if (> (str-len base) 0)
-            (str-merge base " | " part)
-            part
-        )
-        base
-))
+        (if (> (str-len base) 0) (str-merge base " | " part) part)
+        base))
 
 (defun bq-fault-str-one (prefix flags) {
-        (var s "")
-        (if (!= (bitwise-and flags 0x80) 0) (setq s (status-append s (str-merge prefix "_SCD"))))
-        (if (!= (bitwise-and flags 0x40) 0) (setq s (status-append s (str-merge prefix "_OCD2"))))
-        (if (!= (bitwise-and flags 0x20) 0) (setq s (status-append s (str-merge prefix "_OCD1"))))
-        (if (!= (bitwise-and flags 0x10) 0) (setq s (status-append s (str-merge prefix "_OCC"))))
-        (if (!= (bitwise-and flags 0x08) 0) (setq s (status-append s (str-merge prefix "_COV"))))
-        (if (!= (bitwise-and flags 0x04) 0) (setq s (status-append s (str-merge prefix "_CUV"))))
-        s
+    (var s "")
+    (loopforeach fault '((0x80 "_SCD") (0x40 "_OCD2") (0x20 "_OCD1")
+                        (0x10 "_OCC") (0x08 "_COV") (0x04 "_CUV")
+                        (0x4000 "_SCDL") (0x2000 "_OCDL") (0x0200 "_HWDF")) {
+        (if (!= (bitwise-and flags (first fault)) 0)
+            (setq s (status-append s (str-merge prefix (second fault)))))
+    })
+    s
 })
 
 (defun update-bq-status () {
-        ; SafetyStatusA bits: SCD OCD2 OCD1 OCC COV CUV.
-        ; Only BQ1 has the current shunt, so BQ2 cannot produce meaningful
-        ; current-protection status on this hardware.
-        (setq bq-safety-a1 (bms-direct-cmd 1 0x03))
-        (setq bq-safety-a2 0)
-        (bq-fault-str-one "BQ1" bq-safety-a1)
+    ; BQ1 alone has the shunt; import native faults even after hardware recovery.
+    (var native-mask (bms-protection-status))
+    (setq bq-safety-flags (bitwise-or
+        (bitwise-and (bms-direct-cmd 1 0x03) 0xff)
+        (shl (bitwise-and (bms-direct-cmd 1 0x07) 0xff) 8)))
+    (var observed-mask (bitwise-or (bitwise-and bq-safety-flags 0x62f0) native-mask))
+    (if (!= observed-mask 0) {
+        (set-chg false)
+        (var latched (bitwise-or bq-hard-fault-mask observed-mask))
+        (if (!= latched bq-hard-fault-mask) {
+            (persist-bq-hard-fault latched)
+            (cancel-bq-reset "")
+        })
+    })
+    (bq-fault-str-one "BQ1" bq-safety-flags)
 })
 
-(defun bq-current-fault-active ()
-    (!= (bitwise-and bq-safety-a1 0xB0) 0)
-)
+(defun bq-current-fault-active () (!= (bitwise-and bq-safety-flags 0x62f0) 0))
 
-(defun bq-scd-fault-active ()
-    (!= (bitwise-and bq-safety-a1 0x80) 0)
-)
-
-(defun recover-bq-scd-after-disconnect () {
-        (if (bq-scd-fault-active) {
-                (setq bq-scd-latched true)
-                (setq bq-scd-recovery-armed false)
-                (set-chg false)
-        })
-
-        ; A charger-side short can also pull Vchg to zero, so absence only arms
-        ; recovery. The actual recover waits for a fresh charger-voltage detect.
-        (if (and bq-scd-latched (> (secs-since charge-dis-ts) 5.0)) {
-                (setq bq-scd-recovery-armed true)
-        })
+(defun persist-bq-hard-fault (mask) {
+    (setq bq-hard-fault-mask mask)
+    (setq rtc-val (setassoc rtc-val 'bq-hard-fault-mask mask))
+    (save-rtc-val)
+    ; Write only on latch changes. Marker distinguishes an unused EEPROM slot.
+    (write-setting 'bq-hard-fault (bitwise-or 0x4a460000 mask))
 })
 
-(defun recover-bq-scd-on-charger-detect () {
-        (if bq-scd-recovery-armed {
-                (with-com '(progn
-                        (bms-subcmd-cmdonly 1 0x009C) ; SCDL_RECOVER
-                ))
-                (setassoc rtc-val 'charge-fault false)
-                (setq bq-scd-latched false)
-                (setq bq-scd-recovery-armed false)
-                (setq bq-status-latched "")
-                (setq charge-ts (systime))
+(defun load-bq-hard-fault () {
+    (var stored (number-or (read-setting 'bq-hard-fault) 0))
+    (var flash-mask (if (= (bitwise-and stored 0xffff0000) 0x4a460000)
+        (bitwise-and stored 0x62f0) 0))
+    (setq bq-hard-fault-mask (bitwise-or flash-mask
+        (bitwise-and (rtc-number 'bq-hard-fault-mask 0) 0x62f0)))
+})
+
+(defun cancel-bq-reset (message) {
+    (setq bq-reset-requested false)
+    (setq bq-reset-ts nil) ; nil means no recovery command has been sent.
+    (setq bq-reset-message message)
+})
+
+(defun handle-charge-allow (allow) {
+    (cancel-bq-reset "")
+    (setq chg-allowed (= allow 1))
+    (if chg-allowed (setq charge-no-current false))
+    ; Each Chg En is a new request, even when permission was already true.
+    (setq bq-reset-requested (and chg-allowed (!= bq-hard-fault-mask 0)))
+})
+
+(defun bq-reset-step () {
+    (set-chg false)
+    (if (or (not chg-allowed) (not temps-valid) (not (bms-control-ok))
+            (> (abs (bms-get-current)) 0.2)) (exit-error 0))
+    ; Permanent faults are not recoverable through Chg En.
+    (loopforeach reg '(0x0b 0x0d 0x0f 0x11) {
+        (if (!= (bitwise-and (bms-direct-cmd 1 reg) 0xff) 0) (exit-error 0))
+    })
+    (if (not bq-reset-ts) {
+        (setq bq-reset-ts (systime))
+        ; One send per press; integer 0 means a failed command.
+        (loopforeach latch '((0x4000 0x009c) (0x2000 0x009b)) {
+            (if (!= (bitwise-and bq-safety-flags (first latch)) 0)
+                (if (!= (bms-subcmd-cmdonly 1 (second latch)) 1) (exit-error 0)))
         })
+    })
+    (setq bq-status (update-bq-status))
+    (if (or (not bq-reset-requested) (not chg-allowed)) (exit-error 0))
+    (if (not (bq-current-fault-active)) {
+        ; Revalidate authorization immediately before native DDSG release.
+        ; Native reset keeps the MCU gate off and verifies faults/current/DDSG.
+        (if (not (and bq-reset-requested chg-allowed temps-valid (bms-control-ok)))
+            (exit-error 0))
+        (if (!= (bms-protection-reset) 1) (exit-error 0))
+        (if (or (not bq-reset-requested) (not chg-allowed)) {
+            (bms-protection-lock bq-hard-fault-mask)
+            (exit-error 0)
+        })
+        (setassoc rtc-val 'charge-fault false)
+        (persist-bq-hard-fault 0)
+        (cancel-bq-reset "")
+        (setq bq-status-latched "")
+        (setq charge-ts (systime))
+    } {
+        ; Wait for the BQ safety engine; never re-send the recovery command.
+        (setq bq-reset-message "RESET_PENDING")
+        (if (> (secs-since bq-reset-ts) 6.0) (exit-error 0))
+    })
+})
+
+(defun process-bq-reset () {
+    (if bq-reset-requested {
+        ; One attempt per press: with-com's automatic retry is inappropriate here.
+        (mutex-lock com-mutex)
+        (gpio-write 9 0)
+        (var result (trap (bq-reset-step)))
+        (mutex-unlock com-mutex)
+        (match result
+            ((exit-ok _) true)
+            (_ (cancel-bq-reset "RESET_BLOCKED")))
+    })
 })
 
 (defun set-chg (chg) {
-        (if (and chg temps-valid (bms-control-ok))
-            {
-                (if (not is-charging) (setq charge-ts (systime)))
-                (gpio-write 9 0)
-                (bms-set-chg 1)
-                (setq is-charging true)
-            }
-            {
-                ; Trigger balancing only when a real, fault-free charge session
-                ; ends. Voltage alone must not arm balancing.
-                (if (and
-                        is-charging
-                        charge-session-valid
-                        temps-valid
-                        (bms-control-ok)
-                        (not (assoc rtc-val 'charge-fault))
-                        (not bq-scd-latched)
-                    ) {
-                        (setq trigger-bal-after-charge true)
-                })
+    (if (and chg temps-valid (bms-control-ok) (= bq-hard-fault-mask 0)
+            (not (bq-current-fault-active))) {
+        (if (not is-charging) (setq charge-ts (systime)))
+        (gpio-write 9 0)
+        (bms-set-chg 1)
+        (setq is-charging true)
+    } {
+        ; Trigger balancing only when a real, fault-free charge session
+        ; ends. Voltage alone must not arm balancing.
+        (if (and
+            is-charging
+            charge-session-valid
+            temps-valid
+            (bms-control-ok)
+            (not (assoc rtc-val 'charge-fault))
+            (= bq-hard-fault-mask 0)
+            (not (bq-current-fault-active))
+        ) {
+            (setq trigger-bal-after-charge true)
+        })
+        (setq charge-session-valid false)
+        (bms-set-chg 0)
+        (setq is-charging false)
+    })
+})
 
-                (setq charge-session-valid false)
-                (bms-set-chg 0)
-                (setq is-charging false)
-            }
-        )
+; Charger presence and permission to start are different measurements.
+; The original 5 V presence threshold remains valid with the charge gate on;
+; pack + 0.7 V is required only to start, before the charger is loaded.
+(defun charge-control-step () {
+    (var charger-detected (> vt-vchg 5.0))
+    ; Refresh presence before considering any five-second disconnect reset.
+    (if charger-detected (setq charge-dis-ts (systime)))
+    (if (and (not charger-detected) (> (secs-since charge-dis-ts) 5.0)) {
+        (setassoc rtc-val 'charge-fault false)
+        (setq charge-complete false)
+        (setq charge-complete-msg false)
+        (setq charge-no-current false)
+    })
+    (if (and charger-detected (not charger-detected-prev)) {
+        (setq charge-ts (systime))
+    })
+    (setq charger-detected-prev charger-detected)
+
+    ; Only the measured end voltage can complete a charging session.
+    (if (and is-charging (>= c-max (bms-get-param 'vc_charge_end))) {
+        (setq charge-complete true)
+        (setq charge-complete-msg true)
+    })
+    (if (and is-charging (> (- iout) (bms-get-param 'max_charge_current))) {
+        (setassoc rtc-val 'charge-fault true)
+    })
+    ; An idle charger is not a full battery. Hold the timeout until unplugged
+    ; or the user explicitly requests another attempt through Chg En.
+    (if (and is-charging (not charge-complete)
+            (>= (secs-since charge-ts) charger-max-delay)
+            (<= (- iout) (bms-get-param 'min_charge_current))) {
+        (setq charge-no-current true)
+    })
+    (process-bq-reset)
+    (setq charge-ok (= (str-len (charge-block-reason)) 0))
+    (if (and charger-detected charge-ok
+            (or is-charging (> vt-vchg (+ vtot 0.7)))) {
+        (set-chg true)
+    } {
+        (set-chg false)
+        ; Starting hysteresis is not evidence that the battery is full.
+        (if charge-complete (setq ah-cnt-soc (bms-get-param 'batt_ah)))
+    })
+    charger-detected
 })
 
 (defun send-can-info () {
-        (var buf-canid35 (array-create 8))
-
-        ;(var ah-left (- (bms-get-param 'batt_ah) ah-cnt-soc))
-        (var ah-left (* (bms-get-param 'batt_ah) (- 1.0 soc)))
-        (var min-left (if (< iout -1.0)
-                (* (/ ah-left (- iout)) 60.0)
-                0.0
-        ))
-
-        (bufset-i16 buf-canid35 0 (* soc 1000)) ; Battery A SOC
-        (bufset-u8 buf-canid35 2 (if (> vt-vchg (bms-get-param 'v_charge_detect)) 1 0)) ; Battery A Charging
-        (bufset-u16 buf-canid35 3 min-left) ; Battery A Charge Time Minutes
-        (bufset-u16 buf-canid35 5 (* (bms-get-param 'batt_ah) 10.0))
-        (can-send-sid 35 buf-canid35)
-
-        (send-bms-can)
+    (var buf-canid35 (array-create 8))
+    (var ah-left (* (bms-get-param 'batt_ah) (- 1.0 soc)))
+    (var min-left (if (< iout -1.0) (* (/ ah-left (- iout)) 60.0) 0.0))
+    (bufset-i16 buf-canid35 0 (* soc 1000)) ; Battery A SOC
+    (bufset-u8 buf-canid35 2 (if is-charging 1 0)) ; Battery A Charging
+    (bufset-u16 buf-canid35 3 min-left) ; Battery A Charge Time Minutes
+    (bufset-u16 buf-canid35 5 (* (bms-get-param 'batt_ah) 10.0))
+    (can-send-sid 35 buf-canid35)
+    (send-bms-can)
 })
 
-(defun do-bms-sleep () {
-   (bms-sleep)
-})
+(defun do-bms-sleep () { (bms-sleep) })
 
 (defun main-ctrl () {
-        ; Opt in only for normal operation. Direct hardware calls do not arm this.
-        (bms-control-start)
-        (loopwhile t {
+    ; Opt in only for normal operation. Direct hardware calls do not arm this.
+    (bms-control-start)
+    (loopwhile t {
         ; Exit if any of the BQs has fallen asleep
-            (if (or
-                    (= (bms-direct-cmd 1 0x00) 4)
-                    (and (> (bms-get-param 'cells_ic2) 0) (= (with-com '(bms-direct-cmd 2 0x00)) 4))
-                )
-                (exit-error 0)
-            )
-
-            (setq bq-status (update-bq-status))
-            (if (> (str-len bq-status) 0) (setq bq-status-latched bq-status))
-            (if (and (> (str-len bq-status-latched) 0) (not bq-scd-latched) (> (secs-since charge-dis-ts) 5.0)) {
-                    (setq bq-status-latched "")
-            })
-            (recover-bq-scd-after-disconnect)
-
-            (var v-cells (with-com '(bms-get-vcells)))
-            (var bms-temps (update-temps))
+        (if (or
+            (= (bms-direct-cmd 1 0x00) 4)
+            (and (> (bms-get-param 'cells_ic2) 0) (= (with-com '(bms-direct-cmd 2 0x00)) 4)))
+            (exit-error 0))
+        (setq bq-status (update-bq-status))
+        (if (> (str-len bq-status) 0) (setq bq-status-latched bq-status))
+        (if (and (> (str-len bq-status-latched) 0) (= bq-hard-fault-mask 0) (> (secs-since charge-dis-ts) 5.0)) {
+            (setq bq-status-latched "")
+        })
+        (var v-cells (with-com '(bms-get-vcells)))
+        (var bms-temps (update-temps))
         (var temp-ext-num (truncate (bms-get-param 'temp_num) 0 4))
-
         (var c-sorted (sort < v-cells))
         (setq c-min (ix c-sorted 0))
         (setq c-max (ix c-sorted -1))
-
         (setq vtot (apply + v-cells))
         (setq vout (with-com '(bms-get-vout)))
         (setq vt-vchg (bms-get-vchg))
         (setq iout (+ (with-com '(bms-current)) (can-sum-current)))
-
         (if (and is-charging (> (- iout) (bms-get-param 'min_charge_current))) {
-                (setq charge-session-valid true)
+            (setq charge-session-valid true)
         })
-
         (if (and is-balancing (not (balance-safe-now))) {
-                (setq bal-ok false)
-                (disable-balancing)
+            (setq bal-ok false)
+            (disable-balancing)
         })
-
         (var vc-len (length v-cells))
         (set-bms-val 'bms-cell-num vc-len)
         (var cell0-report-offset (bms-cell0-report-offset iout))
         (looprange i 0 vc-len {
-                (set-bms-val 'bms-v-cell i
-                        (- (ix v-cells i) (if (= i 0) cell0-report-offset 0.0))
-                )
-                (set-bms-val 'bms-bal-state i (bms-get-bal i))
+            (set-bms-val 'bms-v-cell i (- (ix v-cells i) (if (= i 0) cell0-report-offset 0.0)))
+            (set-bms-val 'bms-bal-state i (bms-get-bal i))
         })
-
         (set-bms-val 'bms-temp-adc-num (+ 5 temp-ext-num))
         (set-bms-val 'bms-temps-adc 0 t-ic) ; IC
         (set-bms-val 'bms-temps-adc 1 t-min) ; Cell Min
         (set-bms-val 'bms-temps-adc 2 t-max) ; Cell Max
         (set-bms-val 'bms-temps-adc 3 t-mos) ; Mosfet
         (set-bms-val 'bms-temps-adc 4 -300.0) ; Ambient
-        (looprange i 0 temp-ext-num {
-                (set-bms-val 'bms-temps-adc (+ 5 i) (ix bms-temps (+ i 1)))
-        })
+        (looprange i 0 temp-ext-num { (set-bms-val 'bms-temps-adc (+ 5 i) (ix bms-temps (+ i 1))) })
         (set-bms-val 'bms-data-version 1)
-
         (set-bms-val 'bms-v-cell-min c-min)
         (set-bms-val 'bms-v-cell-max c-max)
-
         (var batt-ah (bms-get-param 'batt_ah))
-        (if (> batt-ah 0.0)
-                (setq ah-cnt-soc (truncate ah-cnt-soc 0.0 batt-ah))
-        )
-
-        (if (and (= (bms-get-param 'soc_use_ah) 1) (> batt-ah 0.0))
-        {
-                ; Coulomb counting
-                (setq soc (/ ah-cnt-soc batt-ah))
-        }
-        {
-                (if (>= soc 0.0)
+        (if (> batt-ah 0.0) (setq ah-cnt-soc (truncate ah-cnt-soc 0.0 batt-ah)))
+        (if (and (= (bms-get-param 'soc_use_ah) 1) (> batt-ah 0.0)) {
+            ; Coulomb counting
+            (setq soc (/ ah-cnt-soc batt-ah))
+        } {
+            (if (>= soc 0.0)
                 (setq soc (lpf soc (calc-soc c-min) (* 100.0 (bms-get-param 'soc_filter_const))))
-                (setq soc (calc-soc c-min))
-                )
-        }
-        )
-
+                (setq soc (calc-soc c-min)))
+        })
         (var dt (secs-since t-last))
         (setq t-last (systime))
-        (var t-chg (mod (/ (systime) 1000 60) 255))
-
         (var ah (* iout (/ dt 3600.0)))
-        (if (> batt-ah 0.0)
-                (setq ah-cnt-soc (truncate (- ah-cnt-soc ah) 0.0 batt-ah))
-        )
+        (if (> batt-ah 0.0) (setq ah-cnt-soc (truncate (- ah-cnt-soc ah) 0.0 batt-ah)))
 
         ; Ah and Wh cnt
         (if (> (abs iout) (bms-get-param 'min_current_ah_wh_cnt)) {
-                (var wh (* ah vtot))
-
-                (setq ah-cnt (+ ah-cnt ah))
-                (setq wh-cnt (+ wh-cnt wh))
-
-                (if (> iout 0.0)
-                {
-                        (setq ah-dis-tot (+ ah-dis-tot ah))
-                        (setq wh-dis-tot (+ wh-dis-tot wh))
-                }
-                {
-                        (setq ah-chg-tot (- ah-chg-tot ah))
-                        (setq wh-chg-tot (- wh-chg-tot wh))
-                }
-                )
+            (var wh (* ah vtot))
+            (setq ah-cnt (+ ah-cnt ah))
+            (setq wh-cnt (+ wh-cnt wh))
+            (if (> iout 0.0) {
+                (setq ah-dis-tot (+ ah-dis-tot ah))
+                (setq wh-dis-tot (+ wh-dis-tot wh))
+            } {
+                (setq ah-chg-tot (- ah-chg-tot ah))
+                (setq wh-chg-tot (- wh-chg-tot wh))
+            })
         })
-
         (set-bms-val 'bms-v-tot vtot)
         (set-bms-val 'bms-v-charge vt-vchg)
         (set-bms-val 'bms-i-in-ic iout)
@@ -1197,110 +1045,54 @@ loopwhile-thd
         (set-bms-val 'bms-wh-cnt-chg-total wh-chg-tot)
         (set-bms-val 'bms-ah-cnt-dis-total ah-dis-tot)
         (set-bms-val 'bms-wh-cnt-dis-total wh-dis-tot)
-
         (with-com '(send-can-info))
 
         ;;; Charge control
 
-        ; Once a cell reaches the end voltage, hold charge off until the
-        ; charger is disconnected. Without this latch the unloaded cell voltage
-        ; can relax below vc_charge_start and make the charger cycle.
-        (if (and is-charging (>= c-max (bms-get-param 'vc_charge_end))) {
-                (setq charge-complete true)
-                (setq charge-complete-msg true)
-        })
-
-        (setq charge-ok (= (str-len (charge-block-reason)) 0))
-
-        (if (bq-current-fault-active) {
-                (setq charge-ok false)
-        })
-
-        ; If charging is enabled and maximum charge current is exceeded a charge fault is latched
-        (if (and is-charging (> (- iout) (bms-get-param 'max_charge_current))) {
-                (setq charge-ok false)
-                (setassoc rtc-val 'charge-fault true)
-        })
-
-        ; Reset latched charge fault after disconnecting charger for 5s
-        (if (and (assoc rtc-val 'charge-fault) (> (secs-since charge-dis-ts) 5.0)) {
-                (setassoc rtc-val 'charge-fault false)
-        })
-
-        ; Allow a new charge session only after the charger has been removed.
-        (if (and charge-complete (> (secs-since charge-dis-ts) 5.0)) {
-                (setq charge-complete false)
-                (setq charge-complete-msg false)
-        })
-
-        (var charger-detected (test-chg 1))
-        (if (and charger-detected (not charger-detected-prev)) {
-                (recover-bq-scd-on-charger-detect)
-                (setq charge-ts (systime))
-        })
-        (setq charger-detected-prev charger-detected)
-
-        (if (and charger-detected charge-ok)
-        {
-                (if (< (secs-since charge-ts) charger-max-delay)
-                (set-chg true)
-                (set-chg (> (- iout) (bms-get-param 'min_charge_current)))
-                )
-        }
-        {
-                (set-chg false)
-
-                ; Reset coulomb counter when battery is full
-                (if (>= c-max (bms-get-param 'vc_charge_start)) {
-                        (setq ah-cnt-soc (bms-get-param 'batt_ah))
-                })
-        }
-        )
+        (var charger-detected (charge-control-step))
 
         ; Report the output state after applying this scan's charge decision.
-        (setq chg-status
-        (cond
-                ((not temps-valid) "TEMP_INVALID")
-                ((assoc rtc-val 'charge-fault) {
-                        (setq charge-complete-msg false)
-                        "FLT_CHG_OC"
-                })
-                (charge-complete-msg "CHG_COMPLETE")
-                (is-charging {
-                        (setq charge-complete-msg false)
-                        "CHARGING"
-                })
-                (charger-detected {
-                        (var reason (charge-block-reason))
-                        (if (> (str-len reason) 0) reason "CHG_NO_CURRENT")
-                })
-                (true "")
-        ))
+        (setq chg-status (cond
+            ((not temps-valid) "TEMP_INVALID")
+            ((assoc rtc-val 'charge-fault) {
+                (setq charge-complete-msg false)
+                "FLT_CHG_OC"
+            })
+            (charge-complete-msg "CHG_COMPLETE")
+            (is-charging {
+                (setq charge-complete-msg false)
+                "CHARGING"
+            })
+            (charger-detected {
+                (var reason (charge-block-reason))
+                (if (> (str-len reason) 0) reason
+                    (if (<= vt-vchg (+ vtot 0.7)) "CHG_VOLTAGE_LOW" "CHG_NO_CURRENT"))
+            })
+            (true "")))
 
         ; Set combined BMS status
         (var bq-status-display (if (> (str-len bq-status) 0) bq-status bq-status-latched))
+        (if (!= bq-hard-fault-mask 0) {
+            (setq bq-status-display (status-append
+                (bq-fault-str-one "BQ1" bq-hard-fault-mask)
+                (if (> (str-len bq-reset-message) 0) bq-reset-message "PRESS_CHG_EN_TO_RESET")))
+        })
         (var output-fault-status "")
         (if bal-off-failed (setq output-fault-status (status-append output-fault-status "BAL_OFF_FAIL")))
         (if fail-close-failed (setq output-fault-status (status-append output-fault-status "FAIL_CLOSE_FAIL")))
         (if (and
-                charge-complete-msg
-                (or
-                        (> (str-len bq-status-display) 0)
-                        (> (str-len output-fault-status) 0)
-                )
+            charge-complete-msg
+            (or (> (str-len bq-status-display) 0) (> (str-len output-fault-status) 0))
         ) {
-                (setq charge-complete-msg false)
-                (setq chg-status "")
+            (setq charge-complete-msg false)
+            (setq chg-status "")
         })
         (set-bms-val 'bms-status
-                (status-append
-                        (status-append (status-append chg-status bq-status-display) bal-status)
-                        output-fault-status
-                )
-        )
+            (status-append
+                (status-append (status-append chg-status bq-status-display) bal-status)
+                output-fault-status))
 
         ;;; Sleep
-
         (setassoc rtc-val 'c-min c-min)
         (setassoc rtc-val 'c-max c-max)
         (setassoc rtc-val 'v-tot vtot)
@@ -1310,164 +1102,123 @@ loopwhile-thd
 
         ; Measure time without current
         (if (> (abs iout) (bms-get-param 'min_current_sleep))
-        (setq i-zero-time 0.0)
-        (setq i-zero-time (+ i-zero-time dt))
-        )
+            (setq i-zero-time 0.0)
+            (setq i-zero-time (+ i-zero-time dt)))
 
         ; Go to sleep when button is off, not balancing and not connected
         (if (and (external-wake-inactive) (> i-zero-time 1.0) (not is-balancing) (not (is-connected)) (not (can-active))) {
-                (sleep 0.1)
-                (if (external-wake-inactive) {
-                        (setassoc rtc-val 'sleep-enter-time-s (get-time-of-day-s))
-                        (save-rtc-val)
-                        (save-settings)
-                        ; See start-fun for rationale.
-                        (match (trap (with-com '(do-bms-sleep)))
-                            ((exit-ok _) {
-                                (print "bms-sleep ok, entering sleep-deep")
-                                (prepare-external-wakeup)
-                                (sleep-deep (sleep-duration-s))
-                            })
-                            (_ {
-                                (print "bms-sleep FAILED in main-ctrl idle path -- deferring sleep-deep, will retry")
-                                (sleep 1.0)
-                            })
-                        )
-                })
+            (sleep 0.1)
+            (if (external-wake-inactive) {
+                (setassoc rtc-val 'sleep-enter-time-s (get-time-of-day-s))
+                (save-rtc-val)
+                (save-settings)
+                ; See start-fun for rationale.
+                (match (trap (with-com '(do-bms-sleep)))
+                    ((exit-ok _) {
+                        (print "bms-sleep ok, entering sleep-deep")
+                        (prepare-external-wakeup)
+                        (sleep-deep (sleep-duration-s))
+                    })
+                    (_ {
+                        (print "bms-sleep FAILED in main-ctrl idle path -- deferring sleep-deep, will retry")
+                        (sleep 1.0)
+                }))
+            })
         })
 
         ; Set SOC to 0 below 2.9V and not under load.
-        (if (and (> i-zero-time 10.0) (<= c-min (bms-get-param 'vc_empty))) {
-                (setq ah-cnt-soc 0.0)
-        })
+        (if (and (> i-zero-time 10.0) (<= c-min (bms-get-param 'vc_empty))) { (setq ah-cnt-soc 0.0) })
 
         ; Only a completed scan with valid sensors renews the five-second timer.
         ; A late scan cannot clear a timeout; supervised reinitialization is needed.
         (if temps-valid {
-                (if (not (bms-control-feed)) {
-                        (set-bms-val 'bms-status "CTRL_TIMEOUT")
-                        (fail-close-outputs true)
-                        (exit-error 0)
-                })
+            (if (not (bms-control-feed)) {
+                (set-bms-val 'bms-status "CTRL_TIMEOUT")
+                (fail-close-outputs true)
+                (exit-error 0)
+            })
         })
         (wdt-reset)
         (sleep 0.1)
-        })
+    })
 })
 
 ; Balancing
 (defun balance () (loopwhile t {
-            ; Disable balancing and wait for a bit to get clean
-            ; measurements
-            (looprange i 0 cell-num (with-com `(bms-set-bal ,i 0)))
-            (sleep 2.0)
-
-            (var v-cells (with-com '(bms-get-vcells)))
-
-            (var vc-len (length v-cells))
-            (var cells-sorted (sort (fn (x y) (> (ix x 1) (ix y 1)))
-                (map (fn (x) (list x (ix v-cells x))) (range vc-len)))
-            )
-
-            (var c-min (second (ix cells-sorted -1)))
-            (var c-max (second (ix cells-sorted 0)))
-
-            (if trigger-bal-after-charge (setq bal-ok true))
-
-            (if is-charging {
-                    (setq bal-ok false)
+    ; Disable balancing and wait for a bit to get clean
+    ; measurements
+    (looprange i 0 cell-num (with-com `(bms-set-bal ,i 0)))
+    (sleep 2.0)
+    (var v-cells (with-com '(bms-get-vcells)))
+    (var vc-len (length v-cells))
+    (var cells-sorted (sort (fn (x y) (> (ix x 1) (ix y 1)))
+        (map (fn (x) (list x (ix v-cells x))) (range vc-len))))
+    (var c-min (second (ix cells-sorted -1)))
+    (var c-max (second (ix cells-sorted 0)))
+    (if trigger-bal-after-charge (setq bal-ok true))
+    (if is-charging { (setq bal-ok false) })
+    (if (not temps-valid) (setq bal-ok false))
+    (if (not (bms-control-ok)) (setq bal-ok false))
+    (if (> (* (abs iout) (if is-balancing 0.8 1.0)) (bms-get-param 'balance_max_current)) {
+        (setq bal-ok false)
+        (if (> iout (bms-get-param 'balance_max_current)) { (setq trigger-bal-after-charge false) })
+    })
+    (if (< c-min (bms-get-param 'vc_balance_min)) { (setq bal-ok false) })
+    (if (> t-max (bms-get-param 't_bal_max_cell)) { (setq bal-ok false) })
+    (if (> t-ic (bms-get-param 't_bal_max_ic)) { (setq bal-ok false) })
+    (if (<= (bms-get-param 'max_bal_ch) 0) (setq bal-ok false))
+    (if bal-ok {
+        (var bal-chs (map (fn (x) 0) (range vc-len)))
+        (var ch-cnt 0)
+        (loopforeach c cells-sorted {
+            (var n-cell (first c))
+            (var v-cell (second c))
+            (if (and
+                (> (- v-cell c-min)
+                    (if is-balancing
+                        (bms-get-param 'vc_balance_end)
+                        (bms-get-param 'vc_balance_start)))
+                ; Do not balance adjacent cells
+                (or (eq n-cell 0) (= (ix bal-chs (- n-cell 1)) 0))
+                (or (eq n-cell (- vc-len 1)) (= (ix bal-chs (+ n-cell 1)) 0))) {
+                    (setix bal-chs n-cell 1)
+                    (setq ch-cnt (+ ch-cnt 1))
             })
-
-            (if (not temps-valid) (setq bal-ok false))
-            (if (not (bms-control-ok)) (setq bal-ok false))
-
-            (if (> (* (abs iout) (if is-balancing 0.8 1.0)) (bms-get-param 'balance_max_current)) {
-                    (setq bal-ok false)
-                    (if (> iout (bms-get-param 'balance_max_current)) {
-                            (setq trigger-bal-after-charge false)
-                    })
+            (if (>= ch-cnt (bms-get-param 'max_bal_ch)) (break))
+        })
+        (if (> ch-cnt 0) {
+            (setq trigger-bal-after-charge false)
+            (looprange i 0 vc-len {
+                (if (not (bms-control-ok)) (exit-error 0))
+                (with-com `(bms-set-bal ,i ,(ix bal-chs i)))
             })
-
-            (if (< c-min (bms-get-param 'vc_balance_min)) {
-                    (setq bal-ok false)
-            })
-
-            (if (> t-max (bms-get-param 't_bal_max_cell)) {
-                    (setq bal-ok false)
-            })
-
-            (if (> t-ic (bms-get-param 't_bal_max_ic)) {
-                    (setq bal-ok false)
-            })
-
-            (if bal-ok {
-                    (var bal-chs (map (fn (x) 0) (range vc-len)))
-                    (var ch-cnt 0)
-
-                    (loopforeach c cells-sorted {
-                            (var n-cell (first c))
-                            (var v-cell (second c))
-
-                            (if (and
-                                    (> (- v-cell c-min)
-                                        (if is-balancing
-                                            (bms-get-param 'vc_balance_end)
-                                            (bms-get-param 'vc_balance_start)
-                                    ))
-                                    ; Do not balance adjacent cells
-                                    (or (eq n-cell 0) (= (ix bal-chs (- n-cell 1)) 0))
-                                    (or (eq n-cell (- vc-len 1)) (= (ix bal-chs (+ n-cell 1)) 0))
-                                )
-                                {
-                                    (setix bal-chs n-cell 1)
-                                    (setq ch-cnt (+ ch-cnt 1))
-                            })
-
-                            (if (>= ch-cnt (bms-get-param 'max_bal_ch)) (break))
-                    })
-
-                    (if (> ch-cnt 0) {
-                            (setq trigger-bal-after-charge false)
-                            (looprange i 0 vc-len {
-                                    (if (not (bms-control-ok)) (exit-error 0))
-                                    (with-com `(bms-set-bal ,i ,(ix bal-chs i)))
-                            })
-                            (setq is-balancing true)
-                    } {
-                            (setq bal-ok false)
-                            (setq trigger-bal-after-charge false)
-                    })
-            })
-
-            (if (not bal-ok) {
-                    (disable-balancing)
-            })
-
-            (setq bal-status (if is-balancing "BAL" ""))
-
-            (var bal-ok-before bal-ok)
-            (looprange i 0 15 {
-                    (if (not (eq bal-ok-before bal-ok)) (break))
-                    (sleep 1.0)
-            })
+            (setq is-balancing true)
+        } {
+            (setq bal-ok false)
+            (setq trigger-bal-after-charge false)
+        })
+    })
+    (if (not bal-ok) { (disable-balancing) })
+    (setq bal-status (if is-balancing "BAL" ""))
+    (var bal-ok-before bal-ok)
+    (looprange i 0 15 {
+        (if (not (eq bal-ok-before bal-ok)) (break))
+        (sleep 1.0)
+    })
 }))
 
 (defun event-handler ()
     (loopwhile t
         (recv
-            ((event-bms-chg-allow (? allow)) (setq chg-allowed (= allow 1)))
+            ((event-bms-chg-allow (? allow)) (handle-charge-allow allow))
             ((event-bms-reset-cnt (? ah) (? wh)) {
-                    (if (= ah 1) (setq ah-cnt 0.0))
-                    (if (= wh 1) (setq wh-cnt 0.0))
+                (if (= ah 1) (setq ah-cnt 0.0))
+                (if (= wh 1) (setq wh-cnt 0.0))
             })
-            ((event-bms-force-bal (? v)) (if (= v 1)
-                    (setq bal-ok true)
-                    (setq bal-ok false)
-            ))
+            ((event-bms-force-bal (? v)) (if (= v 1) (setq bal-ok true) (setq bal-ok false)))
             (event-bms-zero-ofs (setq current-zero-offset (with-com '(bms-current-raw))))
             ((event-data-rx ? data) (handle-app-data data))
             (_ nil)
-            ;((? a) (print a))
 )))
 
 (defun handle-app-data (data)
@@ -1476,189 +1227,139 @@ loopwhile-thd
             (print "APPUI requested BMS shutdown")
             (spawn (fn () (bms-shutdown-app)))
         })
-        (_ (print "Ignoring unsupported APPUI command"))
-))
+        (_ (print "Ignoring unsupported APPUI command"))))
+
+; First three entries are cell counts and external temperature-sensor count.
+(defun bms-hw-config () (map (fn (param) (bms-get-param param))
+    '(cells_ic1 cells_ic2 temp_num temp_res hw_occ_current hw_ocd_current psw_scd_tres)))
 
 (defun main () {
-        (if (> app-wdt-timeout 0)
-            (wdt-configure true app-wdt-timeout)
-            (wdt-disable)
-        )
+    (if (> app-wdt-timeout 0) (wdt-configure true app-wdt-timeout) (wdt-disable))
 
-        ; Compatibility Check
-        (loopwhile (!= (bms-fw-version) 6) {
-                (if (< (bms-fw-version) 6)
-                    (print "Firmware too old, please update")
-                    (print "Package too old, please update")
-                )
+    ; Compatibility Check
+    (loopwhile (!= (bms-fw-version) 9) {
+        (if (< (bms-fw-version) 9)
+            (print "Firmware too old, please update")
+            (print "Package too old, please update"))
+        (gpio-write 9 0) ; Enable CAN
+        (sleep 5)
+    })
+    (set-fw-name "")
+    (def charge-dis-ts (systime))
+    (def t-last (systime))
+    (def charge-ts (systime))
 
-                (gpio-write 9 0) ; Enable CAN
-                (sleep 5)
+    ; Buzzer
+    (pwm-start 2730 0.0 0 3)
+    (if (= (bufget-u8 (rtc-data) 900) rtc-val-magic) {
+        (var tmp (unflatten (rtc-data)))
+        (if tmp (setq rtc-val tmp))
+    })
+    (sanitize-rtc-val)
+    (load-bq-hard-fault)
+    (sync-bq-wake-debug-globals)
+    (def active-hw-config (bms-hw-config))
+    (def cell-num (+ (first active-hw-config) (second active-hw-config)))
+
+    ; Timer shutdown can happen inside start-fun, before the normal main
+    ; loop starts. Load counters now so save-settings is always safe.
+    (def settings-valid (not (not-eq (read-setting 'ver-code) settings-version)))
+    (def ah-cnt (number-or (read-setting 'ah-cnt) 0.0))
+    (def wh-cnt (number-or (read-setting 'wh-cnt) 0.0))
+    (def ah-chg-tot (number-or (read-setting 'ah-chg-tot) 0.0))
+    (def wh-chg-tot (number-or (read-setting 'wh-chg-tot) 0.0))
+    (def ah-dis-tot (number-or (read-setting 'ah-dis-tot) 0.0))
+    (def wh-dis-tot (number-or (read-setting 'wh-dis-tot) 0.0))
+    (def ah-cnt-soc (if settings-valid
+        (number-or (read-setting 'ah-cnt-soc) -1.0)
+        (* (rtc-number 'soc 0.5) (bms-get-param 'batt_ah))))
+    (loopwhile t {
+        (match (trap (start-fun)) ((exit-ok (? a)) (break)) (_ nil))
+        (sleep 1.0)
+    })
+
+    ; If the settings version changed, preserve the accumulated Ah/Wh
+    ; counters. Only re-seed the SOC counter from the measured cell
+    ; voltage and mark the EEPROM as using the current layout.
+    (if (not settings-valid) {
+        (setq ah-cnt-soc (* (calc-soc c-min) (bms-get-param 'batt_ah)))
+        (write-setting 'ah-cnt-soc ah-cnt-soc)
+        (write-setting 'ver-code settings-version)
+        (setq settings-valid true)
+    })
+    (event-register-handler (spawn event-handler))
+    (event-enable 'event-bms-chg-allow)
+    (event-enable 'event-bms-reset-cnt)
+    (event-enable 'event-bms-force-bal)
+    (event-enable 'event-bms-zero-ofs)
+    (event-enable 'event-data-rx)
+    (set-bms-val 'bms-cell-num cell-num)
+    (set-bms-val 'bms-can-id (can-local-id))
+    (loopwhile-thd ("main-ctrl" 200) t {
+        (trap (main-ctrl))
+        (setq did-crash true)
+        (loopwhile did-crash (sleep 1.0))
+    })
+    (loopwhile-thd ("balance" 200) t {
+        (trap (balance))
+        (setq did-crash true)
+        (loopwhile did-crash (sleep 1.0))
+    })
+    (loopwhile-thd ("re-init" 200) t {
+        (var cfg (bms-hw-config))
+        (if (not-eq cfg active-hw-config) {
+            (print "BMS config changed, reinitializing hardware")
+            (cancel-bq-reset "")
+            ; Fail closed before any BQ communication that could block.
+            (fail-close-outputs true)
+            (com-force true)
+            (init-hw)
+            (user-beep 2 0.05)
+            (setq active-hw-config cfg)
+            (setq cell-num (+ (first cfg) (second cfg)))
+            (set-bms-val 'bms-cell-num cell-num)
+            (set-bms-val 'bms-temp-adc-num (+ 5 (truncate (third cfg) 0 4)))
+            (com-force false)
         })
-
-        (set-fw-name "")
-
-        (def charge-dis-ts (systime))
-        (def t-last (systime))
-        (def charge-ts (systime))
-
-        ; Buzzer
-        (pwm-start 2730 0.0 0 3)
-
-        (if (= (bufget-u8 (rtc-data) 900) rtc-val-magic) {
-                (var tmp (unflatten (rtc-data)))
-                (if tmp (setq rtc-val tmp))
+        (if did-crash {
+            (cancel-bq-reset "")
+            ; Fail closed immediately. init-hw can loop while recovering
+            ; BQ communication, so do not leave the charge gate enabled
+            ; or balance channels active while recovery is waiting on the bus.
+            (fail-close-outputs true)
+            (com-force true)
+            (init-hw)
+            (com-force false)
+            (fail-close-outputs true)
+            (setq did-crash false)
+            (setq crash-cnt (+ crash-cnt 1))
         })
-        (sanitize-rtc-val)
-        (sync-bq-wake-debug-globals)
-
-        (def active-cells-ic1 (bms-get-param 'cells_ic1))
-        (def active-cells-ic2 (bms-get-param 'cells_ic2))
-        (def active-temp-num (bms-get-param 'temp_num))
-        (def active-temp-res (bms-get-param 'temp_res))
-        (def active-max-charge-current (bms-get-param 'max_charge_current))
-        (def cell-num (+ active-cells-ic1 active-cells-ic2))
-
-        ; Timer shutdown can happen inside start-fun, before the normal main
-        ; loop starts. Load counters now so save-settings is always safe.
-        (def settings-valid (not (not-eq (read-setting 'ver-code) settings-version)))
-        (def ah-cnt (number-or (read-setting 'ah-cnt) 0.0))
-        (def wh-cnt (number-or (read-setting 'wh-cnt) 0.0))
-        (def ah-chg-tot (number-or (read-setting 'ah-chg-tot) 0.0))
-        (def wh-chg-tot (number-or (read-setting 'wh-chg-tot) 0.0))
-        (def ah-dis-tot (number-or (read-setting 'ah-dis-tot) 0.0))
-        (def wh-dis-tot (number-or (read-setting 'wh-dis-tot) 0.0))
-        (def ah-cnt-soc (if settings-valid
-                (number-or (read-setting 'ah-cnt-soc) -1.0)
-                (* (rtc-number 'soc 0.5) (bms-get-param 'batt_ah))
-        ))
-
-        (def t-start-fun (secs-since 0))
-
-        (loopwhile t {
-                (match (trap (start-fun))
-                    ((exit-ok (? a)) (break))
-                    (_ nil)
-                )
-                (sleep 1.0)
+        (sleep 0.1)
+    })
+    (loopwhile-thd ("fail-close-retry" 100) t {
+        (if fail-close-failed { (fail-close-outputs true) })
+        (if (and bal-off-failed (not fail-close-failed)) { (disable-balancing) })
+        (sleep 0.5)
+    })
+    (loopwhile-thd ("sleep-unblock" 100) t {
+        (var sleep-unblock-ok (fn () (and
+            (= (bms-get-param 'block_sleep) 1)
+            (< (- c-max c-min) 0.05)
+            (> c-min 2.4)
+            (> (secs-since 0) 3600)
+            sleep-unblock-en)))
+        (var should-unblock true)
+        (looprange i 0 60 {
+            (if (not (sleep-unblock-ok)) { (setq should-unblock false) })
+            (sleep 1.0)
         })
-
-        ; If the settings version changed, preserve the accumulated Ah/Wh
-        ; counters. Only re-seed the SOC counter from the measured cell
-        ; voltage and mark the EEPROM as using the current layout.
-        (if (not settings-valid) {
-                (setq ah-cnt-soc (* (calc-soc c-min) (bms-get-param 'batt_ah)))
-                (write-setting 'ah-cnt-soc ah-cnt-soc)
-                (write-setting 'ver-code settings-version)
-                (setq settings-valid true)
+        (if should-unblock {
+            (bms-set-param 'block_sleep 0)
+            (bms-store-cfg)
+            (print "Block sleep disabled")
+            (user-beep 4 0.2)
         })
-
-        (event-register-handler (spawn event-handler))
-        (event-enable 'event-bms-chg-allow)
-        (event-enable 'event-bms-reset-cnt)
-        (event-enable 'event-bms-force-bal)
-        (event-enable 'event-bms-zero-ofs)
-        (event-enable 'event-data-rx)
-
-        (set-bms-val 'bms-cell-num cell-num)
-        (set-bms-val 'bms-can-id (can-local-id))
-
-        (loopwhile-thd ("main-ctrl" 200) t {
-                (trap (main-ctrl))
-                (setq did-crash true)
-                (loopwhile did-crash (sleep 1.0))
-        })
-
-        (loopwhile-thd ("balance" 200) t {
-                (trap (balance))
-                (setq did-crash true)
-                (loopwhile did-crash (sleep 1.0))
-        })
-
-        (loopwhile-thd ("re-init" 200) t {
-                (var cfg-cells-ic1 (bms-get-param 'cells_ic1))
-                (var cfg-cells-ic2 (bms-get-param 'cells_ic2))
-                (var cfg-temp-num (bms-get-param 'temp_num))
-                (var cfg-temp-res (bms-get-param 'temp_res))
-                (var cfg-max-charge-current (bms-get-param 'max_charge_current))
-
-                (if (or
-                        (!= cfg-cells-ic1 active-cells-ic1)
-                        (!= cfg-cells-ic2 active-cells-ic2)
-                        (!= cfg-temp-num active-temp-num)
-                        (!= cfg-temp-res active-temp-res)
-                        (!= cfg-max-charge-current active-max-charge-current)
-                    ) {
-                        (print "BMS config changed, reinitializing hardware")
-                        ; Fail closed before any BQ communication that could block.
-                        (fail-close-outputs true)
-                        (com-force true)
-                        (init-hw)
-                        (user-beep 2 0.05)
-                        (setq active-cells-ic1 cfg-cells-ic1)
-                        (setq active-cells-ic2 cfg-cells-ic2)
-                        (setq active-temp-num cfg-temp-num)
-                        (setq active-temp-res cfg-temp-res)
-                        (setq active-max-charge-current cfg-max-charge-current)
-                        (setq cell-num (+ active-cells-ic1 active-cells-ic2))
-                        (set-bms-val 'bms-cell-num cell-num)
-                        (set-bms-val 'bms-temp-adc-num (+ 5 (truncate active-temp-num 0 4)))
-                        (com-force false)
-                })
-
-                (if did-crash {
-                        ; Fail closed immediately. init-hw can loop while recovering
-                        ; BQ communication, so do not leave the charge gate enabled
-                        ; or balance channels active while recovery is waiting on the bus.
-                        (fail-close-outputs true)
-                        (com-force true)
-                        (init-hw)
-                        (com-force false)
-                        (fail-close-outputs true)
-                        (setq did-crash false)
-                        (setq crash-cnt (+ crash-cnt 1))
-                })
-
-                (sleep 0.1)
-        })
-
-        (loopwhile-thd ("fail-close-retry" 100) t {
-                (if fail-close-failed {
-                        (fail-close-outputs true)
-                })
-
-                (if (and bal-off-failed (not fail-close-failed)) {
-                        (disable-balancing)
-                })
-
-                (sleep 0.5)
-        })
-
-        (loopwhile-thd ("sleep-unblock" 100) t {
-                (var sleep-unblock-ok (fn () (and
-                            (= (bms-get-param 'block_sleep) 1)
-                            (< (- c-max c-min) 0.05)
-                            (> c-min 2.4)
-                            (> (secs-since 0) 3600)
-                            sleep-unblock-en
-                )))
-
-                (var should-unblock true)
-                (looprange i 0 60 {
-                        (if (not (sleep-unblock-ok)) {
-                                (setq should-unblock false)
-                        })
-                        (sleep 1.0)
-                })
-
-                (if should-unblock {
-                        (bms-set-param 'block_sleep 0)
-                        (bms-store-cfg)
-                        (print "Block sleep disabled")
-                        (user-beep 4 0.2)
-
-                })
-        })
+    })
 })
 
 @const-end

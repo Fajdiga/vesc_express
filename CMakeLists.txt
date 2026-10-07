@@ -21,7 +21,7 @@ if(NOT DEFINED HW_NAME OR "${HW_NAME}" STREQUAL "")
     endif()
 
     if(NOT DEFINED HW_NAME OR "${HW_NAME}" STREQUAL "")
-        set(HW_NAME "JFBMS_MASTER")
+        set(HW_NAME "JFBMS32v2")
     endif()
 endif()
 

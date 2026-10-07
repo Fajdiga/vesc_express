@@ -59,14 +59,21 @@ static portMUX_TYPE m_control_lock = portMUX_INITIALIZER_UNLOCKED;
 static bms_safety_state m_control_state = {.inhibited = true};
 static bool m_control_monitoring;
 static TaskHandle_t m_control_watchdog_task;
+// BQ mutex owns ready/lock state; the control spinlock owns the fault mask
+// and I/O permission, including the final GPIO enable decision.
+static uint16_t m_protection_faults;
+static bool m_protection_ready, m_protection_locked, m_protection_io_ok;
 
 // Error messages
 static char *error_comm_bq1 = "BQ1 communication error";
 static char *error_comm_bq2 = "BQ2 communication error";
 
 static void bms_set_chg_hw(bool enable) {
+	portENTER_CRITICAL(&m_control_lock);
+	enable &= !m_protection_faults && (!m_protection_ready || m_protection_io_ok);
 	gpio_set_level(PIN_PSW_EN, 1);
 	gpio_set_level(PIN_CHG_EN, enable ? 1 : 0);
+	portEXIT_CRITICAL(&m_control_lock);
 }
 
 static void bms_clear_balance_state(void) {
@@ -177,6 +184,7 @@ static uint8_t crc8(uint8_t *ptr, uint8_t len) {
 static bool bq_read_block(
 	uint8_t dev_addr, uint8_t reg, uint8_t *buf, uint8_t len
 ) {
+	if (!buf || len == 0) return false;
 	uint8_t read_data[2 * len];
 	esp_err_t res          = i2c_tx_rx(dev_addr, &reg, 1, read_data, 2 * len);
 	uint8_t *read_data_ptr = read_data;
@@ -221,6 +229,7 @@ static bool bq_read_block(
 static bool bq_write_block(
 	uint8_t dev_addr, uint8_t start_addr, uint8_t *buf, uint8_t len
 ) {
+	if (!buf || len == 0) return false;
 	uint8_t txbuf[2 * len + 2];
 	txbuf[0] = dev_addr << 1;
 	txbuf[1] = start_addr;
@@ -250,86 +259,52 @@ static uint8_t checksum(uint8_t *ptr, int len) {
 static bool bq_set_reg(
 	uint8_t dev_addr, uint16_t reg_addr, uint32_t reg_data, uint8_t datalen
 ) {
-	uint8_t TX_Buffer[2]  = {0x00, 0x00};
-	uint8_t TX_RegData[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-
-	bool res = false;
-
-	// TX_RegData in little endian format
-	TX_RegData[0] = reg_addr & 0xff;
-	TX_RegData[1] = (reg_addr >> 8) & 0xff;
-	TX_RegData[2] = reg_data & 0xff; //1st byte of data
-
-	switch (datalen) {
-		case 1: //1 byte datalength
-			bq_write_block(dev_addr, 0x3E, TX_RegData, 3);
-			vTaskDelay(2);
-			TX_Buffer[0] = checksum(TX_RegData, 3);
-			TX_Buffer[1] = 0x05; //combined length of register address and data
-			res          = bq_write_block(
-                dev_addr, 0x60, TX_Buffer, 2
-            ); // Write the checksum and length
-			vTaskDelay(2);
-			break;
-		case 2: //2 byte datalength
-			TX_RegData[3] = (reg_data >> 8) & 0xff;
-			bq_write_block(dev_addr, 0x3E, TX_RegData, 4);
-			vTaskDelay(2);
-			TX_Buffer[0] = checksum(TX_RegData, 4);
-			TX_Buffer[1] = 0x06; //combined length of register address and data
-			res          = bq_write_block(
-                dev_addr, 0x60, TX_Buffer, 2
-            ); // Write the checksum and length
-			vTaskDelay(2);
-			break;
-		case 4: //4 byte datalength, Only used for CCGain and Capacity Gain
-			TX_RegData[3] = (reg_data >> 8) & 0xff;
-			TX_RegData[4] = (reg_data >> 16) & 0xff;
-			TX_RegData[5] = (reg_data >> 24) & 0xff;
-			bq_write_block(dev_addr, 0x3E, TX_RegData, 6);
-			vTaskDelay(2);
-			TX_Buffer[0] = checksum(TX_RegData, 6);
-			TX_Buffer[1] = 0x08; //combined length of register address and data
-			res          = bq_write_block(
-                dev_addr, 0x60, TX_Buffer, 2
-            ); // Write the checksum and length
-			vTaskDelay(2);
-			break;
+	if (datalen != 1 && datalen != 2 && datalen != 4) return false;
+	uint8_t payload[6] = {reg_addr & 0xff, reg_addr >> 8};
+	for (unsigned i = 0; i < datalen; i++) {
+		payload[i + 2] = reg_data >> (8 * i);
 	}
-
-	return res;
+	// Never commit a checksum after a failed payload write.
+	if (!bq_write_block(dev_addr, 0x3E, payload, datalen + 2)) return false;
+	vTaskDelay(2);
+	uint8_t commit[2] = {checksum(payload, datalen + 2), datalen + 4};
+	bool ok = bq_write_block(dev_addr, 0x60, commit, sizeof(commit));
+	vTaskDelay(2);
+	return ok;
 }
 
 static bool bq_read_reg(
 	uint8_t dev_addr, uint16_t reg_addr, uint32_t *reg_data, uint8_t datalen
 ) {
-	uint8_t TX_RegData[2] = {0x00, 0x00};
-	uint8_t RX_RegData[4] = {0x00, 0x00, 0x00, 0x00};
-
-	if (datalen > 4) {
-		datalen = 4;
-	}
-
-	bool res = false;
-
-	// TX_RegData in little endian format
-	TX_RegData[0] = reg_addr & 0xff;
-	TX_RegData[1] = (reg_addr >> 8) & 0xff;
-
-	bq_write_block(dev_addr, 0x3E, TX_RegData, 2);
+	if (!reg_data) return false;
+	*reg_data = 0;
+	if (datalen == 0 || datalen > 4) return false;
+	uint8_t address[2] = {reg_addr & 0xff, reg_addr >> 8};
+	uint8_t data[4] = {0};
+	// A failed select must not return data from the previous register.
+	if (!bq_write_block(dev_addr, 0x3E, address, sizeof(address))) return false;
 	vTaskDelay(2);
-	res = bq_read_block(dev_addr, 0x40, RX_RegData, datalen);
-
-	if (res) {
-		*reg_data = (((uint32_t)RX_RegData[3]) << 24)
-			| (((uint32_t)RX_RegData[2]) << 16)
-			| (((uint32_t)RX_RegData[1]) << 8)
-			| (((uint32_t)RX_RegData[0]) << 0);
-	} else {
-		*reg_data = 0;
+	if (!bq_read_block(dev_addr, 0x40, data, datalen)) return false;
+	for (unsigned i = 0; i < datalen; i++) {
+		*reg_data |= (uint32_t)data[i] << (8 * i);
 	}
+	return true;
+}
 
-	return res;
+// Called under bq_mutex; retry the entire write/readback transaction.
+static bool bq_set_verified(
+	uint8_t dev_addr, uint16_t reg_addr, uint32_t reg_data, uint8_t datalen
+) {
+	if (datalen != 1 && datalen != 2 && datalen != 4) return false;
+	uint32_t mask = UINT32_MAX >> (8 * (4 - datalen));
+	for (unsigned attempt = 0; attempt < 3; attempt++) {
+		uint32_t actual = 0;
+		if (bq_set_reg(dev_addr, reg_addr, reg_data, datalen) &&
+				bq_read_reg(dev_addr, reg_addr, &actual, datalen) &&
+				actual == (reg_data & mask)) return true;
+	}
+	commands_printf_lisp("BQ configuration readback failed: 0x%04x", reg_addr);
+	return false;
 }
 
 static int16_t command_read(uint8_t dev_addr, uint8_t command, bool *ok) {
@@ -360,35 +335,6 @@ static bool command_subcommands(uint8_t dev_addr, uint16_t command) {
 	bool res = bq_write_block(dev_addr, 0x3E, TX_Reg, 2);
 	vTaskDelay(2);
 	return res;
-}
-
-static bool subcommands_read16(
-	uint8_t dev_addr, uint16_t command, uint16_t *result
-) {
-	uint8_t TX_Reg[2] = {0x00, 0x00};
-
-	// TX_Reg in little endian format
-	TX_Reg[0] = command & 0xff;
-	TX_Reg[1] = (command >> 8) & 0xff;
-
-	bool res = bq_write_block(dev_addr, 0x3E, TX_Reg, 2);
-
-	if (!res) {
-		return false;
-	}
-
-	vTaskDelay(2);
-
-	uint8_t RX_data[2] = {0, 0};
-	res                = bq_read_block(dev_addr, 0x40, RX_data, 2);
-
-	if (!res) {
-		return false;
-	}
-
-	*result = (int16_t)(((uint16_t)RX_data[1] << 8) | (uint16_t)RX_data[0]);
-
-	return true;
 }
 
 static bool subcommands_write16(
@@ -450,6 +396,54 @@ static bool bms_fail_close_outputs_hw(bool include_ic2) {
 	return bms_disable_balancing_hw(include_ic2);
 }
 
+// Called with bq_mutex held. ALL_FETS_OFF is supported with DDSG; do not
+// use DSG_PDSG_OFF or FET_CONTROL, which TI excludes in DDSG mode.
+static bool bms_protection_hold_hw(void) {
+	bms_set_chg_hw(false); // Immediate MCU cutoff, before any I2C operation.
+	if (!m_protection_ready) return true;
+	if (!m_protection_locked) {
+		m_protection_locked = command_subcommands(BQ_ADDR_1, ALL_FETS_OFF);
+	}
+	return m_protection_locked;
+}
+
+static uint16_t bms_protection_fault_mask(void) {
+	portENTER_CRITICAL(&m_control_lock);
+	uint16_t faults = m_protection_faults;
+	portEXIT_CRITICAL(&m_control_lock);
+	return faults;
+}
+
+static void bms_protection_latch(uint16_t faults) {
+	portENTER_CRITICAL(&m_control_lock);
+	m_protection_faults |= faults & BMS_CURRENT_FAULT_MASK;
+	portEXIT_CRITICAL(&m_control_lock);
+	if (bms_protection_fault_mask()) (void)bms_protection_hold_hw();
+}
+
+static bool bms_protection_read_hw(uint16_t *faults) {
+	bool ok_c = false, ok_a = false;
+	// Read watchdog status first: any valid communication starts its recovery.
+	uint8_t c = command_read(BQ_ADDR_1, SafetyStatusC, &ok_c);
+	uint8_t a = command_read(BQ_ADDR_1, SafetyStatusA, &ok_a);
+	portENTER_CRITICAL(&m_control_lock);
+	m_protection_io_ok = ok_a && ok_c;
+	portEXIT_CRITICAL(&m_control_lock);
+	if (!ok_a || !ok_c) {
+		bms_set_chg_hw(false);
+		return false;
+	}
+	*faults = ((uint16_t)c << 8 | a) & BMS_CURRENT_FAULT_MASK;
+	return true;
+}
+
+static bool bms_protection_poll_hw(void) {
+	uint16_t faults = 0;
+	bool ok = bms_protection_read_hw(&faults);
+	if (ok) bms_protection_latch(faults);
+	return ok;
+}
+
 // Opt-in supervision for the normal control script. Raw hardware extensions
 // neither arm nor renew this timer and remain usable without a control script.
 static uint32_t control_time_ms(void) {
@@ -478,7 +472,18 @@ static void control_watchdog_task(void *arg) {
 	bool balance_off_verified = false;
 	bool reported = false;
 	while (true) {
-		vTaskDelay(pdMS_TO_TICKS(100));
+		vTaskDelay(pdMS_TO_TICKS(BMS_PROTECTION_POLL_MS));
+		// Reuse this task for current protection, independently of the Lisp
+		// scan. Contention can delay a software cutoff; OCD/SCD stay autonomous.
+		if (xSemaphoreTake(bq_mutex, 0) == pdTRUE) {
+			if (m_control_monitoring && m_protection_ready) {
+				int com_prev = gpio_get_level(PIN_COM_EN);
+				gpio_set_level(PIN_COM_EN, 0);
+				(void)bms_protection_poll_hw();
+				gpio_set_level(PIN_COM_EN, com_prev);
+			}
+			xSemaphoreGive(bq_mutex);
+		}
 		if (!control_watchdog_tripped()) {
 			balance_off_verified = false;
 			reported = false;
@@ -552,6 +557,87 @@ static lbm_value ext_control_stop(lbm_value *args, lbm_uint argn) {
 	return ENC_SYM_TRUE;
 }
 
+static lbm_value ext_protection_status(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	if (argn != 0) return ENC_SYM_EERROR;
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+		bms_set_chg_hw(false);
+		return ENC_SYM_EERROR;
+	}
+	int com_prev = gpio_get_level(PIN_COM_EN);
+	gpio_set_level(PIN_COM_EN, 0);
+	bool ok = m_protection_ready && bms_protection_poll_hw();
+	uint16_t faults = bms_protection_fault_mask();
+	gpio_set_level(PIN_COM_EN, com_prev);
+	xSemaphoreGive(bq_mutex);
+	return ok ? lbm_enc_i(faults) : ENC_SYM_EERROR;
+}
+
+static lbm_value ext_protection_lock(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(1);
+	uint32_t faults = lbm_dec_as_u32(args[0]);
+	if (faults & ~BMS_CURRENT_FAULT_MASK) return ENC_SYM_EERROR;
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+		bms_set_chg_hw(false);
+		return ENC_SYM_EERROR;
+	}
+	int com_prev = gpio_get_level(PIN_COM_EN);
+	gpio_set_level(PIN_COM_EN, 0);
+	bms_protection_latch(faults);
+	bool ok = !bms_protection_fault_mask() || bms_protection_hold_hw();
+	gpio_set_level(PIN_COM_EN, com_prev);
+	xSemaphoreGive(bq_mutex);
+	return ok ? ENC_SYM_TRUE : ENC_SYM_EERROR;
+}
+
+// Only the script's explicit Chg En recovery calls this. The MCU gate stays
+// off throughout. A failed release reinstates ALL_FETS_OFF and needs a new press.
+static lbm_value ext_protection_reset(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	if (argn != 0) return ENC_SYM_EERROR;
+	bms_set_chg_hw(false);
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) return ENC_SYM_EERROR;
+	int com_prev = gpio_get_level(PIN_COM_EN);
+	gpio_set_level(PIN_COM_EN, 0);
+	uint16_t live = 0;
+	bool ok = m_protection_ready && bms_protection_read_hw(&live) && !live;
+	for (unsigned reg = PFStatusA; ok && reg <= PFStatusD; reg += 2) {
+		bool read_ok = false;
+		uint8_t pf = command_read(BQ_ADDR_1, reg, &read_ok);
+		ok = read_ok && !pf;
+	}
+	if (ok) {
+		bool read_ok = false;
+		int16_t current = command_read(BQ_ADDR_1, CC2Current, &read_ok);
+		ok = read_ok && current >= -20 && current <= 20; // 10 mA/count
+	}
+	if (ok) ok = command_subcommands(BQ_ADDR_1, ALL_FETS_ON);
+	bool released = false;
+	// TI evaluates turn-on every 250 ms in NORMAL mode. Keep the GPIO off
+	// while checking the actual DDSG signal, rather than trusting an ACK.
+	for (unsigned attempt = 0; ok && attempt < 31; attempt++) {
+		bool read_ok = false;
+		uint8_t status = command_read(BQ_ADDR_1, FETStatus, &read_ok);
+		ok = read_ok;
+		if (ok && !(status & 0x20)) { released = true; break; }
+		if (ok) vTaskDelay(pdMS_TO_TICKS(10));
+	}
+	ok = ok && released && bms_protection_read_hw(&live) && !live;
+	if (ok) {
+		portENTER_CRITICAL(&m_control_lock);
+		m_protection_faults = 0;
+		portEXIT_CRITICAL(&m_control_lock);
+		m_protection_locked = false;
+	} else {
+		bms_protection_latch(live);
+		m_protection_locked = false;
+		(void)bms_protection_hold_hw();
+	}
+	gpio_set_level(PIN_COM_EN, com_prev);
+	xSemaphoreGive(bq_mutex);
+	return lbm_enc_i(ok ? 1 : 0);
+}
+
 static uint32_t float_to_u(float number) {
 	// Set subnormal numbers to 0 as they are not handled properly
 	// using this method.
@@ -577,55 +663,46 @@ static uint32_t float_to_u(float number) {
 	return res;
 }
 
-static uint8_t clamp_u8_i(int value, int min, int max) {
-	if (value < min) {
-		value = min;
-	} else if (value > max) {
-		value = max;
-	}
-
-	return (uint8_t)value;
-}
-
 static bool cell_counts_valid(unsigned int cells_ic1, unsigned int cells_ic2) {
 	return cells_ic1 >= 3 && cells_ic1 <= 16 &&
 			(cells_ic2 == 0 || (cells_ic2 >= 3 && cells_ic2 <= 16));
 }
 
-static uint8_t overcurrent_threshold_from_a(float current) {
+static uint8_t overcurrent_threshold_from_a(float current, uint8_t maximum) {
 	// BQ76952 OCC/OCD thresholds are shunt voltage in 2 mV steps.
 	float shunt_mv = current * HW_R_SHUNT * 1000.0f;
-	return clamp_u8_i((int)((shunt_mv / 2.0f) + 0.5f), 2, 62);
+	// Clamp before converting: even a huge finite setting must not overflow int.
+	return (uint8_t)fminf(fmaxf(shunt_mv / 2.0f + 0.5f, 2.0f), maximum);
 }
 
-static uint8_t scd_threshold_from_a(float current) {
-	static const float thresholds_mv[] = {
-		10.0f, 20.0f, 40.0f, 60.0f, 80.0f, 100.0f, 125.0f, 150.0f,
-		175.0f, 200.0f, 250.0f, 300.0f, 350.0f, 400.0f, 450.0f, 500.0f
+static bool current_protection_config_valid(const main_config_t *cfg) {
+	return isfinite(cfg->hw_occ_current) && cfg->hw_occ_current >= 4.0f &&
+			cfg->hw_occ_current <= 124.0f && isfinite(cfg->hw_ocd_current) &&
+			cfg->hw_ocd_current >= 4.0f && cfg->hw_ocd_current <= 200.0f &&
+			cfg->psw_scd_tres >= 0 && cfg->psw_scd_tres <= 15;
+}
+
+static float ntc_nominal_resistance(NTC_RES selection) {
+	static const float resistance[] = {
+		4700, 5000, 10000, 20000, 22000, 47000, 50000, 100000, 200000
 	};
-
-	float target_current = fmaxf(current * 2.5f, 40.0f);
-	float target_mv = target_current * HW_R_SHUNT * 1000.0f;
-
-	for (size_t i = 0; i < (sizeof(thresholds_mv) / sizeof(thresholds_mv[0])); i++) {
-		if (target_mv <= thresholds_mv[i]) {
-			return (uint8_t)i;
-		}
-	}
-
-	return 15;
+	return (unsigned)selection < sizeof(resistance) / sizeof(resistance[0])
+			? resistance[selection] : 0.0f;
 }
 
-static void bq_init(uint8_t dev_addr, bool current_protection_en) {
-	command_subcommands(dev_addr, EXIT_DEEPSLEEP);
-	command_subcommands(dev_addr, EXIT_DEEPSLEEP);
+static float ntc_pullup_resistance(NTC_RES selection) {
+	return selection == NTC_RES_100K || selection == NTC_RES_200K ? 180000 : 18000;
+}
+
+static bool bq_init(uint8_t dev_addr, bool current_protection_en) {
+	if (!command_subcommands(dev_addr, EXIT_DEEPSLEEP)) return false;
+	if (!command_subcommands(dev_addr, EXIT_DEEPSLEEP)) return false;
 	vTaskDelay(10);
 
-	//command_subcommands(dev_addr, BQ769x2_RESET);
-	//vTaskDelay(60);
+	if (!command_subcommands(dev_addr, SET_CFGUPDATE)) return false;
+	if (!command_subcommands(dev_addr, SET_CFGUPDATE)) return false;
 
-	command_subcommands(dev_addr, SET_CFGUPDATE);
-	command_subcommands(dev_addr, SET_CFGUPDATE);
+	bool ok = true;
 
 	// DPSLP_OT: 1
 	// SHUT_TS2: 0
@@ -638,132 +715,118 @@ static void bq_init(uint8_t dev_addr, bool current_protection_en) {
 	// CB_LOOP_SLOW: 0
 	// LOOP_SLOW: 0
 	// WK_SPD: 0
-	bq_set_reg(dev_addr, PowerConfig, 0b0010011010000000, 2);
+	ok &= bq_set_verified(dev_addr, PowerConfig, 0b0010011010000000, 2);
 	// Sometimes the first write has no effect. Do a few extra writes just in case...
-	bq_set_reg(dev_addr, PowerConfig, 0b0010011010000000, 2);
+	ok &= bq_set_verified(dev_addr, PowerConfig, 0b0010011010000000, 2);
 
 	// REG0_EN: 1
-	bq_set_reg(dev_addr, REG0Config, 0x01, 1);
+	ok &= bq_set_verified(dev_addr, REG0Config, 0x01, 1);
 
 	// REG1V: 6 (3.3v)
 	// REG1_EN: 1
-	bq_set_reg(dev_addr, REG12Config, 0b00001101, 1);
+	ok &= bq_set_verified(dev_addr, REG12Config, 0b00001101, 1);
 
 	// Disabled
-	bq_set_reg(dev_addr, CFETOFFPinConfig, 0x00, 1);
-	bq_set_reg(dev_addr, DFETOFFPinConfig, 0x00, 1);
+	ok &= bq_set_verified(dev_addr, CFETOFFPinConfig, 0x00, 1);
+	ok &= bq_set_verified(dev_addr, DFETOFFPinConfig, 0x00, 1);
 
 	// ADC inputs with 18k pull-up
 	main_config_t *cfg = (main_config_t *)&backup.config;
-	uint32_t ntcPinConfig = 0;
-	/* 0b00111011
-	   00: 18k pull-up
-	   11: no polynomial is used, raw ADC counts are reported
-	   10: thermistor temperature measurement, reported but not used for protections
-	   11: 3 = ADC Input or Thermistor
-	   0b01111011
-	   01: 180k pull-up
-	   11: no polynomial is used, raw ADC counts are reported
-	   10: thermistor temperature measurement, reported but not used for protections
-	   11: 3 = ADC Input or Thermistor
-	*/
-
-	switch (cfg->temp_res) {
-		case NTC_RES_4_7K:
-			ntcPinConfig = 0b00111011;
-			break;
-		case NTC_RES_5K:
-			ntcPinConfig = 0b00111011;
-			break;
-		case NTC_RES_10K:
-			ntcPinConfig = 0b00111011;
-			break;
-		case NTC_RES_20K:
-			ntcPinConfig = 0b00111011;
-			break;
-		case NTC_RES_22K:
-			ntcPinConfig = 0b00111011;
-			break;
-		case NTC_RES_47K:
-			ntcPinConfig = 0b00111011;
-			break;
-		case NTC_RES_50K:
-			ntcPinConfig = 0b00111011;
-			break;
-		case NTC_RES_100K:
-			ntcPinConfig = 0b01111011;
-			break;
-		case NTC_RES_200K:
-			ntcPinConfig = 0b01111011;
-			break;
+	if (ntc_nominal_resistance(cfg->temp_res) == 0.0f ||
+			(cfg->temp_num > 0 && cfg->temp_beta == 0) ||
+			!isfinite(cfg->max_charge_current) || cfg->max_charge_current < 0.0f ||
+			!current_protection_config_valid(cfg)) {
+		(void)command_subcommands(dev_addr, EXIT_CFGUPDATE);
+		return false;
 	}
+	// Raw thermistor ADC: 18k pull-up, or 180k for 100k/200k sensors.
+	uint32_t ntcPinConfig = ntc_pullup_resistance(cfg->temp_res) == 180000 ? 0x7b : 0x3b;
 
-	bq_set_reg(dev_addr, TS1Config, ntcPinConfig, 1);
-	bq_set_reg(dev_addr, TS3Config, ntcPinConfig, 1);
-	bq_set_reg(dev_addr, ALERTPinConfig, ntcPinConfig, 1);
-	bq_set_reg(dev_addr, DCHGPinConfig, ntcPinConfig, 1);
-	bq_set_reg(dev_addr, HDQPinConfig, 0b00111011, 1);
+	ok &= bq_set_verified(dev_addr, TS1Config, ntcPinConfig, 1);
+	ok &= bq_set_verified(dev_addr, TS3Config, ntcPinConfig, 1);
+	ok &= bq_set_verified(dev_addr, ALERTPinConfig, ntcPinConfig, 1);
+	ok &= bq_set_verified(dev_addr, DCHGPinConfig, ntcPinConfig, 1);
+	ok &= bq_set_verified(dev_addr, HDQPinConfig, 0b00111011, 1);
 
 	if (current_protection_en) {
-		// DDSG is routed to the charge gate disable circuit. Configure it as an
+		// The gate named "charge" controls the shared charge/discharge FET pair.
+		// DDSG is routed to its disable circuit. Configure it as an
 		// active-low hardware fault output. BQ voltage protections are intentionally
 		// left disabled here because only the lower BQ DDSG is wired; software
 		// charge control uses both BQ ICs for cell-voltage cutoff.
-		bq_set_reg(dev_addr, DDSGPinConfig, 0x82, 1);
+		ok &= bq_set_verified(dev_addr, DDSGPinConfig, 0x82, 1);
 	} else {
-		bq_set_reg(dev_addr, DDSGPinConfig, 0x00, 1);
+		ok &= bq_set_verified(dev_addr, DDSGPinConfig, 0x00, 1);
 	}
 
 	// Use all cells
-	bq_set_reg(dev_addr, VCellMode, 0x0000, 2);
+	ok &= bq_set_verified(dev_addr, VCellMode, 0x0000, 2);
 
 	// The main charge/discharge MOSFETs are driven by external hardware, not
 	// the BQ high-side FET drivers. Keep the BQ charge pump off.
-	bq_set_reg(dev_addr, ChgPumpControl, 0x00, 1);
+	ok &= bq_set_verified(dev_addr, ChgPumpControl, 0x00, 1);
 
-	bq_set_reg(dev_addr, MfgStatusInit, 0x10, 1); // FET_EN
+	ok &= bq_set_verified(dev_addr, MfgStatusInit, 0x10, 1); // FET_EN
 	if (current_protection_en) {
 		// Configure BQ1 current protections. Software still owns normal charge
-		// control and all voltage limits. This board routes BQ1 DDSG into the
-		// charge gate disable path, so include charge-current OCC in the
-		// DSG-side action mask as well.
-		bq_set_reg(dev_addr, OCCThreshold, overcurrent_threshold_from_a(cfg->max_charge_current), 1);
-		bq_set_reg(dev_addr, OCCDelay, 1, 1);
-		bq_set_reg(dev_addr, OCD1Threshold, overcurrent_threshold_from_a(cfg->max_charge_current), 1);
-		bq_set_reg(dev_addr, OCD1Delay, 1, 1);
-		bq_set_reg(dev_addr, SCDThreshold, scd_threshold_from_a(cfg->max_charge_current), 1);
-		bq_set_reg(dev_addr, SCDDelay, 1, 1); // no extra delay
-		bq_set_reg(dev_addr, SCDLLatchLimit, 1, 1);
+		// control and all voltage limits. BQ1 DDSG inhibits the shared FET gate,
+		// stopping both charge and discharge. BQ internal CHG/DSG fault routing
+		// is separate from that external wiring: OCC cannot be added to the DSG
+		// mask (bit 4 is reserved). The script disables the shared gate on OCC.
+		ok &= bq_set_verified(dev_addr, OCCThreshold, overcurrent_threshold_from_a(cfg->hw_occ_current, 62), 1);
+		ok &= bq_set_verified(dev_addr, OCCDelay, 1, 1);
+		ok &= bq_set_verified(dev_addr, OCD1Threshold, overcurrent_threshold_from_a(cfg->hw_ocd_current, 100), 1);
+		ok &= bq_set_verified(dev_addr, OCD1Delay, 1, 1);
+		ok &= bq_set_verified(dev_addr, SCDThreshold, cfg->psw_scd_tres, 1);
+		ok &= bq_set_verified(dev_addr, SCDDelay, 1, 1); // no extra delay
+		ok &= bq_set_verified(dev_addr, SCDRecoveryTime, 5, 1);
+		ok &= bq_set_verified(dev_addr, SCDLLatchLimit, 1, 1);
+		ok &= bq_set_verified(dev_addr, SCDLCounterDecDelay, 1, 1);
+		// Allow native OCC/OCD recovery at idle; software keeps the fault
+		// latched until a fresh Chg En request. BQ current is positive charging.
+		ok &= bq_set_verified(dev_addr, OCCRecoveryThreshold, 200, 2);
+		ok &= bq_set_verified(dev_addr, OCDRecoveryThreshold, (uint16_t)-200, 2);
+		ok &= bq_set_verified(dev_addr, ProtectionsRecoveryTime, 3, 1);
+		ok &= bq_set_verified(dev_addr, ProtectionConfiguration, 0x0002, 2);
 		// Keep TI's fast-turnoff CHG mask value. Voltage faults are disabled
 		// globally below, so only the enabled current protections can act.
-		bq_set_reg(dev_addr, CHGFETProtectionsA, 0x98, 1); // TI fast CHG mask
-		bq_set_reg(dev_addr, DSGFETProtectionsA, 0xF4, 1); // SCD + OCD2 + OCD1 + OCC + CUV
-		bq_set_reg(dev_addr, EnabledProtectionsA, 0xB0, 1); // SCD + OCD1 + OCC
+		ok &= bq_set_verified(dev_addr, CHGFETProtectionsA, 0x98, 1); // TI fast CHG mask
+		ok &= bq_set_verified(dev_addr, DSGFETProtectionsA, 0xE4, 1); // TI fast DSG mask; OCC is not a DSG bit
+		ok &= bq_set_verified(dev_addr, EnabledProtectionsA, 0xB0, 1); // SCD + OCD1 + OCC
+		ok &= bq_set_verified(dev_addr, HWDDelay, BMS_BQ_HWD_SECONDS, 2);
+		ok &= bq_set_verified(dev_addr, HWDRegulatorOptions, 0x00, 1); // Keep MCU power on
+		ok &= bq_set_verified(dev_addr, EnabledProtectionsC, 0x42, 1); // SCDL + HWDF
+		ok &= bq_set_verified(dev_addr, CHGFETProtectionsC, 0x42, 1);
+		ok &= bq_set_verified(dev_addr, DSGFETProtectionsC, 0x42, 1);
 	} else {
 		// BQ2 has no current shunt and no DDSG charge-gate path on this board.
-		bq_set_reg(dev_addr, CHGFETProtectionsA, 0x00, 1);
-		bq_set_reg(dev_addr, DSGFETProtectionsA, 0x00, 1);
-		bq_set_reg(dev_addr, EnabledProtectionsA, 0x00, 1);
+		ok &= bq_set_verified(dev_addr, CHGFETProtectionsA, 0x00, 1);
+		ok &= bq_set_verified(dev_addr, DSGFETProtectionsA, 0x00, 1);
+		ok &= bq_set_verified(dev_addr, EnabledProtectionsA, 0x00, 1);
+		ok &= bq_set_verified(dev_addr, EnabledProtectionsC, 0x00, 1);
+		ok &= bq_set_verified(dev_addr, CHGFETProtectionsC, 0x00, 1);
+		ok &= bq_set_verified(dev_addr, DSGFETProtectionsC, 0x00, 1);
 	}
-	bq_set_reg(dev_addr, EnabledProtectionsB, 0x00, 1);
+	ok &= bq_set_verified(dev_addr, EnabledProtectionsB, 0x00, 1);
 
 	// Host-controlled balancing
-	bq_set_reg(dev_addr, BalancingConfiguration, 0x00, 1);
+	ok &= bq_set_verified(dev_addr, BalancingConfiguration, 0x00, 1);
 
 	// Current gain
 	float cc_gain = 7.4768 / (HW_R_SHUNT * 1000.0);
-	bq_set_reg(dev_addr, CCGain, float_to_u(cc_gain), 4);
-	bq_set_reg(dev_addr, CapacityGain, float_to_u(cc_gain * 298261.6178), 4);
+	ok &= bq_set_verified(dev_addr, CCGain, float_to_u(cc_gain), 4);
+	ok &= bq_set_verified(dev_addr, CapacityGain, float_to_u(cc_gain * 298261.6178), 4);
 
 	// Voltage and current reporting, 1 mV and 10 mA (range +- 320A)
-	bq_set_reg(dev_addr, DAConfiguration, 0b00011110, 1);
+	ok &= bq_set_verified(dev_addr, DAConfiguration, 0b00011110, 1);
 
-	command_subcommands(dev_addr, EXIT_CFGUPDATE);
+	ok &= command_subcommands(dev_addr, EXIT_CFGUPDATE);
 
 	vTaskDelay(10);
 
-	command_subcommands(dev_addr, ALL_FETS_ON);
-	command_subcommands(dev_addr, SLEEP_DISABLE);
+	return ok && command_subcommands(dev_addr,
+			current_protection_en && bms_protection_fault_mask() ? ALL_FETS_OFF : ALL_FETS_ON) &&
+			command_subcommands(dev_addr, SLEEP_DISABLE);
 }
 
 // Extensions
@@ -819,6 +882,11 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 		lbm_set_error_reason("bq_mutex timeout in bms-init");
 		return ENC_SYM_NIL;
 	}
+	portENTER_CRITICAL(&m_control_lock);
+	m_protection_ready = false;
+	m_protection_io_ok = false;
+	portEXIT_CRITICAL(&m_control_lock);
+	m_protection_locked = false;
 
 	gpio_set_level(PIN_COM_EN, 0);
 	(void)bms_disable_balancing_hw(m_cells_ic2 != 0 || cells_ic2 != 0);
@@ -894,8 +962,8 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 			command_subcommands(BQ_ADDR_1, BQ769x2_RESET);
 			vTaskDelay(pdMS_TO_TICKS(300));
 
-			bq_init(BQ_ADDR_2, true);
-			command_subcommands(BQ_ADDR_2, SET_CFGUPDATE);
+			if (!bq_init(BQ_ADDR_2, true) ||
+					!command_subcommands(BQ_ADDR_2, SET_CFGUPDATE)) continue;
 			if (!bq_set_reg(BQ_ADDR_2, I2CAddress, 0x20, 1)) {
 				continue;
 			}
@@ -923,16 +991,20 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 	gpio_set_level(PIN_COM_EN, 0);
 	vTaskDelay(50);
 
-	if (cells_ic2 != 0) {
-		bq_init(BQ_ADDR_2, false);
-	}
+	bool configured = cells_ic2 == 0 || bq_init(BQ_ADDR_2, false);
 
 	// Always init BQ1 at its final address so its config is fresh on
 	// every bms-init, regardless of which path we took above.
-	bq_init(BQ_ADDR_1, true);
+	configured &= bq_init(BQ_ADDR_1, true);
 
 	m_cells_ic1 = cells_ic1;
 	m_cells_ic2 = cells_ic2;
+
+	if (!configured || !bms_disable_balancing_hw(cells_ic2 != 0)) {
+		lbm_set_error_reason("BQ configuration or balance shutdown failed");
+		xSemaphoreGive(bq_mutex);
+		return ENC_SYM_NIL;
+	}
 
 	bool res = false;
 	command_read(BQ_ADDR_1, Cell2Voltage, &res);
@@ -942,6 +1014,10 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 		res = res && res2;
 	}
 
+	portENTER_CRITICAL(&m_control_lock);
+	m_protection_ready = res;
+	portEXIT_CRITICAL(&m_control_lock);
+	if (res) res = bms_protection_poll_hw();
 	xSemaphoreGive(bq_mutex);
 
 	return res ? ENC_SYM_TRUE : ENC_SYM_NIL;
@@ -1062,6 +1138,7 @@ static bool bms_shutdown_bq(uint8_t addr) {
 			command_subcommands(addr, SHUTDOWN);
 }
 
+#ifndef SHUTDOWN_SUPPORT
 static void bms_config_shutdown_wakeup(void) {
 	gpio_set_direction(PIN_ENABLE, GPIO_MODE_INPUT);
 
@@ -1075,6 +1152,8 @@ static void bms_config_shutdown_wakeup(void) {
 #error "Unsupported target"
 #endif
 }
+
+#endif
 
 static lbm_value ext_bms_hw_shutdown(lbm_value *args, lbm_uint argn) {
 	(void)args;
@@ -1136,7 +1215,7 @@ static lbm_value ext_bms_hw_shutdown(lbm_value *args, lbm_uint argn) {
 #endif
 }
 
-static lbm_value ext_get_vcells(lbm_value *args, lbm_uint argn) {
+static lbm_value ext_get_vcells_unlocked(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 
@@ -1189,135 +1268,51 @@ static float ntc_temperature(float volts, float pullup, float nominal, float bet
 	return bms_temperature_valid(temperature) ? temperature : -273.0f;
 }
 
-static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
+static lbm_value ext_get_temps_unlocked(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
+	// BQ1 IC, four external sensors, BQ1 MOS, BQ2 IC, BQ2 MOS.
+	static const uint8_t sensors[] = {
+		TS1Temperature, TS3Temperature, ALERTTemperature, DCHGTemperature, HDQTemperature
+	};
+	const main_config_t *cfg = (const main_config_t *)&backup.config;
+	const float nominal = ntc_nominal_resistance(cfg->temp_res);
+	const float pullup = ntc_pullup_resistance(cfg->temp_res);
+	const float counts_to_volts = 0.358e-6 * 256.0; // 16 of 24 ADC bits are used
+	lbm_value temperatures = ENC_SYM_NIL;
 
-	lbm_value ts_list = ENC_SYM_NIL;
-	bool ok           = false;
-	ts_list = lbm_cons(
-		lbm_enc_float(
-			(float)command_read(BQ_ADDR_1, IntTemperature, &ok) * 0.1 - 273.15
-		),
-		ts_list
-	);
-	if (!ok) {
-		goto exit_error1;
-	}
-
-	// Multiply by 256 as only 16 of the 24 bits are used
-	const float counts_to_volts = 0.358e-6 * 256.0;
-
-	float v1 = (float)command_read(BQ_ADDR_1, TS1Temperature, &ok)
-		* counts_to_volts;
-	if (!ok) {
-		goto exit_error1;
-	}
-	float v2 = (float)command_read(BQ_ADDR_1, TS3Temperature, &ok)
-		* counts_to_volts;
-	if (!ok) {
-		goto exit_error1;
-	}
-	float v3 = (float)command_read(BQ_ADDR_1, ALERTTemperature, &ok)
-		* counts_to_volts;
-	if (!ok) {
-		goto exit_error1;
-	}
-	float v4 = (float)command_read(BQ_ADDR_1, DCHGTemperature, &ok)
-		* counts_to_volts;
-	if (!ok) {
-		goto exit_error1;
-	}
-	float v5 = (float)command_read(BQ_ADDR_1, HDQTemperature, &ok)
-		* counts_to_volts;
-	if (!ok) {
-		goto exit_error1;
-	}
-
-	float ntc_smd_beta = 3434; // B25/85 LCSC=C13564 muRata NCP18XH103F03RB
-	float ntc_smd_res = 10000.0;
-	float ntc_pullup_res = 18000.0;
-
-	main_config_t *cfg = (main_config_t *)&backup.config;
-	float ntc_res = 0.0;
-
-	switch (cfg->temp_res) {
-		case NTC_RES_4_7K:
-			ntc_res = 4700.0;
+	for (unsigned ic = 0; ic < 2; ic++) {
+		if (ic == 1 && m_cells_ic2 == 0) {
+			temperatures = lbm_cons(lbm_enc_float(-273.0), temperatures);
+			temperatures = lbm_cons(lbm_enc_float(-273.0), temperatures);
 			break;
-		case NTC_RES_5K:
-			ntc_res = 5000.0;
-			break;
-		case NTC_RES_10K:
-			ntc_res = 10000.0;
-			break;
-		case NTC_RES_20K:
-			ntc_res = 20000.0;
-			break;
-		case NTC_RES_22K:
-			ntc_res = 22000.0;
-			break;
-		case NTC_RES_47K:
-			ntc_res = 47000.0;
-			break;
-		case NTC_RES_50K:
-			ntc_res = 50000.0;
-			break;
-		case NTC_RES_100K:
-			ntc_res = 100000.0;
-			ntc_pullup_res = 180000.0;
-			break;
-		case NTC_RES_200K:
-			ntc_res = 200000.0;
-			ntc_pullup_res = 180000.0;
-			break;
-	}
-
-	float beta = (float)(cfg->temp_beta);
-	ts_list = lbm_cons(lbm_enc_float(ntc_temperature(v1, ntc_pullup_res, ntc_res, beta)), ts_list);
-	ts_list = lbm_cons(lbm_enc_float(ntc_temperature(v2, ntc_pullup_res, ntc_res, beta)), ts_list);
-	ts_list = lbm_cons(lbm_enc_float(ntc_temperature(v3, ntc_pullup_res, ntc_res, beta)), ts_list);
-	ts_list = lbm_cons(lbm_enc_float(ntc_temperature(v4, ntc_pullup_res, ntc_res, beta)), ts_list);
-	ts_list = lbm_cons(lbm_enc_float(ntc_temperature(v5, 18000.0, ntc_smd_res, ntc_smd_beta)), ts_list);
-
-	if (m_cells_ic2 != 0) {
-		ts_list = lbm_cons(
-			lbm_enc_float(
-				(float)command_read(BQ_ADDR_2, IntTemperature, &ok) * 0.1
-				- 273.15
-			),
-			ts_list
-		);
-		if (!ok) {
-			goto exit_error2;
 		}
-
-		// JFBMS32 uses the HDQ pin thermistors for MOSFET temperature:
-		// BQ1 HDQ = first MOSFET NTC, BQ2 HDQ = second MOSFET NTC.
-		float v6 = (float)command_read(BQ_ADDR_2, HDQTemperature, &ok)
-			* counts_to_volts;
+		uint8_t addr = ic == 0 ? BQ_ADDR_1 : BQ_ADDR_2;
+		bool ok = false;
+		float internal = (float)command_read(addr, IntTemperature, &ok) * 0.1 - 273.15;
 		if (!ok) {
-			goto exit_error2;
+			lbm_set_error_reason(ic == 0 ? error_comm_bq1 : error_comm_bq2);
+			return ENC_SYM_EERROR;
 		}
-
-		ts_list = lbm_cons(lbm_enc_float(ntc_temperature(v6, 18000.0, ntc_smd_res, ntc_smd_beta)), ts_list);
-	} else {
-		ts_list = lbm_cons(lbm_enc_float(-273.0), ts_list);
-		ts_list = lbm_cons(lbm_enc_float(-273.0), ts_list);
+		temperatures = lbm_cons(lbm_enc_float(internal), temperatures);
+		for (unsigned sensor = ic == 0 ? 0 : 4; sensor < 5; sensor++) {
+			float volts = (float)command_read(addr, sensors[sensor], &ok) * counts_to_volts;
+			if (!ok) {
+				lbm_set_error_reason(ic == 0 ? error_comm_bq1 : error_comm_bq2);
+				return ENC_SYM_EERROR;
+			}
+			// HDQ thermistors on both ICs measure MOS temperature, using fixed
+			// 10k/3434 sensors and an 18k pull-up independently of external NTCs.
+			float temperature = sensor == 4
+					? ntc_temperature(volts, 18000, 10000, 3434)
+					: ntc_temperature(volts, pullup, nominal, cfg->temp_beta);
+			temperatures = lbm_cons(lbm_enc_float(temperature), temperatures);
+		}
 	}
-
-	return lbm_list_destructive_reverse(ts_list);
-
-exit_error1:
-	lbm_set_error_reason(error_comm_bq1);
-	return ENC_SYM_EERROR;
-
-exit_error2:
-	lbm_set_error_reason(error_comm_bq2);
-	return ENC_SYM_EERROR;
+	return lbm_list_destructive_reverse(temperatures);
 }
 
-static lbm_value ext_get_current(lbm_value *args, lbm_uint argn) {
+static lbm_value ext_get_current_unlocked(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 
@@ -1525,21 +1520,6 @@ static lbm_value ext_get_bal(lbm_value *args, lbm_uint argn) {
 	unsigned int ch = lbm_dec_as_u32(args[0]);
 	int res         = -1;
 
-	// Read from IC
-	//	if (ch < m_cells_ic1) {
-	//		uint16_t state;
-	//		if (subcommands_read16(BQ_ADDR_1, CB_ACTIVE_CELLS, &state)) {
-	//			res = (state >> ch) & 0x01;
-	//		}
-	//	} else if ((ch - m_cells_ic1) < m_cells_ic2) {
-	//		uint16_t state;
-	//		if (subcommands_read16(BQ_ADDR_2, CB_ACTIVE_CELLS, &state)) {
-	//			res = (state >> (ch - m_cells_ic1)) & 0x01;
-	//		}
-	//	}
-
-	(void)subcommands_read16;
-
 	if (ch < m_cells_ic1) {
 		res = (m_bal_state_ic1 >> ch) & 0x01;
 	} else if ((ch - m_cells_ic1) < m_cells_ic2) {
@@ -1549,7 +1529,7 @@ static lbm_value ext_get_bal(lbm_value *args, lbm_uint argn) {
 	return lbm_enc_i(res);
 }
 
-static lbm_value ext_direct_cmd(lbm_value *args, lbm_uint argn) {
+static lbm_value ext_direct_cmd_unlocked(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(2);
 
 	uint8_t addr = BQ_ADDR_1;
@@ -1569,7 +1549,7 @@ static lbm_value ext_direct_cmd(lbm_value *args, lbm_uint argn) {
 	}
 }
 
-static lbm_value ext_subcmd_cmdonly(lbm_value *args, lbm_uint argn) {
+static lbm_value ext_subcmd_cmdonly_unlocked(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(2);
 
 	uint8_t addr = BQ_ADDR_1;
@@ -1580,7 +1560,7 @@ static lbm_value ext_subcmd_cmdonly(lbm_value *args, lbm_uint argn) {
 	return lbm_enc_i(command_subcommands(addr, lbm_dec_as_u32(args[1])));
 }
 
-static lbm_value ext_read_reg(lbm_value *args, lbm_uint argn) {
+static lbm_value ext_read_reg_unlocked(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(3);
 
 	uint8_t addr = BQ_ADDR_1;
@@ -1590,6 +1570,7 @@ static lbm_value ext_read_reg(lbm_value *args, lbm_uint argn) {
 
 	int reg = lbm_dec_as_i32(args[1]);
 	int len = lbm_dec_as_i32(args[2]);
+	if (reg < 0 || reg > UINT16_MAX || len < 1 || len > 4) return ENC_SYM_EERROR;
 
 	uint32_t reg_data = 0;
 	bool ok           = bq_read_reg(addr, reg, &reg_data, len);
@@ -1604,7 +1585,7 @@ static lbm_value ext_read_reg(lbm_value *args, lbm_uint argn) {
 	}
 }
 
-static lbm_value ext_write_reg(lbm_value *args, lbm_uint argn) {
+static lbm_value ext_write_reg_unlocked(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(4);
 
 	uint8_t addr = BQ_ADDR_1;
@@ -1615,6 +1596,7 @@ static lbm_value ext_write_reg(lbm_value *args, lbm_uint argn) {
 	int reg       = lbm_dec_as_i32(args[1]);
 	uint32_t data = lbm_dec_as_u32(args[2]);
 	int len       = lbm_dec_as_i32(args[3]);
+	if (reg < 0 || reg > UINT16_MAX || (len != 1 && len != 2 && len != 4)) return ENC_SYM_EERROR;
 
 	bool ok = bq_set_reg(addr, reg, data, len);
 
@@ -1626,6 +1608,48 @@ static lbm_value ext_write_reg(lbm_value *args, lbm_uint argn) {
 		);
 		return ENC_SYM_EERROR;
 	}
+}
+
+// Serialize complete BQ operations, not just individual I2C transfers.
+// Register selection/readback must not interleave with init or the watchdog.
+static lbm_value bq_extension_call(
+	lbm_value (*function)(lbm_value *, lbm_uint), lbm_value *args, lbm_uint argn
+) {
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+		lbm_set_error_reason("BQ transaction mutex timeout");
+		return ENC_SYM_EERROR;
+	}
+	lbm_value result = function(args, argn);
+	xSemaphoreGive(bq_mutex);
+	return result;
+}
+
+static lbm_value ext_get_vcells(lbm_value *args, lbm_uint argn) {
+	return bq_extension_call(ext_get_vcells_unlocked, args, argn);
+}
+
+static lbm_value ext_get_temps(lbm_value *args, lbm_uint argn) {
+	return bq_extension_call(ext_get_temps_unlocked, args, argn);
+}
+
+static lbm_value ext_get_current(lbm_value *args, lbm_uint argn) {
+	return bq_extension_call(ext_get_current_unlocked, args, argn);
+}
+
+static lbm_value ext_direct_cmd(lbm_value *args, lbm_uint argn) {
+	return bq_extension_call(ext_direct_cmd_unlocked, args, argn);
+}
+
+static lbm_value ext_subcmd_cmdonly(lbm_value *args, lbm_uint argn) {
+	return bq_extension_call(ext_subcmd_cmdonly_unlocked, args, argn);
+}
+
+static lbm_value ext_read_reg(lbm_value *args, lbm_uint argn) {
+	return bq_extension_call(ext_read_reg_unlocked, args, argn);
+}
+
+static lbm_value ext_write_reg(lbm_value *args, lbm_uint argn) {
+	return bq_extension_call(ext_write_reg_unlocked, args, argn);
 }
 
 typedef struct {
@@ -1647,12 +1671,14 @@ typedef struct {
 	lbm_uint balance_max_current;
 	lbm_uint min_current_ah_wh_cnt;
 	lbm_uint min_current_sleep;
-	lbm_uint v_charge_detect;
 	lbm_uint t_charge_max;
 	lbm_uint t_charge_max_mos;
 	lbm_uint sleep;
 	lbm_uint min_charge_current;
 	lbm_uint max_charge_current;
+	lbm_uint hw_occ_current;
+	lbm_uint hw_ocd_current;
+	lbm_uint psw_scd_tres;
 	lbm_uint soc_filter_const;
 	lbm_uint t_bal_max_cell;
 	lbm_uint t_bal_max_ic;
@@ -1665,76 +1691,9 @@ typedef struct {
 
 static vesc_syms syms_vesc = {0};
 
-static bool compare_symbol(lbm_uint sym, lbm_uint *comp) {
-	if (*comp == 0) {
-		if (comp == &syms_vesc.cells_ic1) {
-			lbm_add_symbol_const("cells_ic1", comp);
-		} else if (comp == &syms_vesc.cells_ic2) {
-			lbm_add_symbol_const("cells_ic2", comp);
-		} else if (comp == &syms_vesc.temp_num) {
-			lbm_add_symbol_const("temp_num", comp);
-		} else if (comp == &syms_vesc.batt_ah) {
-			lbm_add_symbol_const("batt_ah", comp);
-		} else if (comp == &syms_vesc.max_bal_ch) {
-			lbm_add_symbol_const("max_bal_ch", comp);
-		} else if (comp == &syms_vesc.soc_use_ah) {
-			lbm_add_symbol_const("soc_use_ah", comp);
-		} else if (comp == &syms_vesc.block_sleep) {
-			lbm_add_symbol_const("block_sleep", comp);
-		} else if (comp == &syms_vesc.vc_empty) {
-			lbm_add_symbol_const("vc_empty", comp);
-		} else if (comp == &syms_vesc.vc_full) {
-			lbm_add_symbol_const("vc_full", comp);
-		} else if (comp == &syms_vesc.vc_balance_start) {
-			lbm_add_symbol_const("vc_balance_start", comp);
-		} else if (comp == &syms_vesc.vc_balance_end) {
-			lbm_add_symbol_const("vc_balance_end", comp);
-		} else if (comp == &syms_vesc.vc_charge_start) {
-			lbm_add_symbol_const("vc_charge_start", comp);
-		} else if (comp == &syms_vesc.vc_charge_end) {
-			lbm_add_symbol_const("vc_charge_end", comp);
-		} else if (comp == &syms_vesc.vc_charge_min) {
-			lbm_add_symbol_const("vc_charge_min", comp);
-		} else if (comp == &syms_vesc.vc_balance_min) {
-			lbm_add_symbol_const("vc_balance_min", comp);
-		} else if (comp == &syms_vesc.balance_max_current) {
-			lbm_add_symbol_const("balance_max_current", comp);
-		} else if (comp == &syms_vesc.min_current_ah_wh_cnt) {
-			lbm_add_symbol_const("min_current_ah_wh_cnt", comp);
-		} else if (comp == &syms_vesc.min_current_sleep) {
-			lbm_add_symbol_const("min_current_sleep", comp);
-		} else if (comp == &syms_vesc.v_charge_detect) {
-			lbm_add_symbol_const("v_charge_detect", comp);
-		} else if (comp == &syms_vesc.t_charge_max) {
-			lbm_add_symbol_const("t_charge_max", comp);
-		} else if (comp == &syms_vesc.t_charge_max_mos) {
-			lbm_add_symbol_const("t_charge_max_mos", comp);
-		} else if (comp == &syms_vesc.sleep) {
-			lbm_add_symbol_const("sleep", comp);
-		} else if (comp == &syms_vesc.shutdown) {
-			lbm_add_symbol_const("shutdown", comp);
-		} else if (comp == &syms_vesc.min_charge_current) {
-			lbm_add_symbol_const("min_charge_current", comp);
-		} else if (comp == &syms_vesc.max_charge_current) {
-			lbm_add_symbol_const("max_charge_current", comp);
-		} else if (comp == &syms_vesc.soc_filter_const) {
-			lbm_add_symbol_const("soc_filter_const", comp);
-		} else if (comp == &syms_vesc.t_bal_max_cell) {
-			lbm_add_symbol_const("t_bal_max_cell", comp);
-		} else if (comp == &syms_vesc.t_bal_max_ic) {
-			lbm_add_symbol_const("t_bal_max_ic", comp);
-		} else if (comp == &syms_vesc.t_charge_min) {
-			lbm_add_symbol_const("t_charge_min", comp);
-		} else if (comp == &syms_vesc.t_charge_mon_en) {
-			lbm_add_symbol_const("t_charge_mon_en", comp);
-		} else if (comp == &syms_vesc.temp_beta) {
-			lbm_add_symbol_const("temp_beta", comp);
-		} else if (comp == &syms_vesc.temp_res) {
-			lbm_add_symbol_const("temp_res", comp);
-		}
-	}
-
-	return *comp == sym;
+static bool compare_symbol(lbm_uint sym, lbm_uint *cached, const char *name) {
+	if (*cached == 0 && !lbm_add_symbol_const(name, cached)) return false;
+	return *cached == sym;
 }
 
 static lbm_value get_or_set_float(bool set, float *val, lbm_value *lbm_val) {
@@ -1781,8 +1740,8 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 		set_arg = args[argn - 1];
 		argn--;
 
-		if (!lbm_is_number(set_arg)) {
-			lbm_set_error_reason((char *)lbm_error_str_no_number);
+		if (!lbm_is_number(set_arg) || !isfinite(lbm_dec_as_float(set_arg))) {
+			lbm_set_error_reason("Expected a finite numeric configuration value");
 			return ENC_SYM_EERROR;
 		}
 	}
@@ -1798,77 +1757,85 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 	lbm_uint name      = lbm_dec_sym(args[0]);
 	main_config_t *cfg = (main_config_t *)&backup.config;
 
-	if (compare_symbol(name, &syms_vesc.cells_ic1)) {
+	if (compare_symbol(name, &syms_vesc.cells_ic1, "cells_ic1")) {
 		if (set && !cell_counts_valid(lbm_dec_as_u32(set_arg), cfg->cells_ic2)) {
 			lbm_set_error_reason("Invalid cell combination");
 			return ENC_SYM_EERROR;
 		}
 		res = get_or_set_i(set, &cfg->cells_ic1, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.cells_ic2)) {
+	} else if (compare_symbol(name, &syms_vesc.cells_ic2, "cells_ic2")) {
 		if (set && !cell_counts_valid(cfg->cells_ic1, lbm_dec_as_u32(set_arg))) {
 			lbm_set_error_reason("Invalid cell combination");
 			return ENC_SYM_EERROR;
 		}
 		res = get_or_set_i(set, &cfg->cells_ic2, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.temp_num)) {
+	} else if (compare_symbol(name, &syms_vesc.temp_num, "temp_num")) {
 		res = get_or_set_i(set, &cfg->temp_num, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.batt_ah)) {
+	} else if (compare_symbol(name, &syms_vesc.batt_ah, "batt_ah")) {
 		res = get_or_set_float(set, &cfg->batt_ah, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.max_bal_ch)) {
+	} else if (compare_symbol(name, &syms_vesc.max_bal_ch, "max_bal_ch")) {
 		res = get_or_set_i(set, &cfg->max_bal_ch, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.soc_use_ah)) {
+	} else if (compare_symbol(name, &syms_vesc.soc_use_ah, "soc_use_ah")) {
 		res = get_or_set_bool(set, &cfg->soc_use_ah, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.block_sleep)) {
+	} else if (compare_symbol(name, &syms_vesc.block_sleep, "block_sleep")) {
 		res = get_or_set_bool(set, &cfg->block_sleep, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.vc_empty)) {
+	} else if (compare_symbol(name, &syms_vesc.vc_empty, "vc_empty")) {
 		res = get_or_set_float(set, &cfg->vc_empty, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.vc_full)) {
+	} else if (compare_symbol(name, &syms_vesc.vc_full, "vc_full")) {
 		res = get_or_set_float(set, &cfg->vc_full, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.vc_balance_start)) {
+	} else if (compare_symbol(name, &syms_vesc.vc_balance_start, "vc_balance_start")) {
 		res = get_or_set_float(set, &cfg->vc_balance_start, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.vc_balance_end)) {
+	} else if (compare_symbol(name, &syms_vesc.vc_balance_end, "vc_balance_end")) {
 		res = get_or_set_float(set, &cfg->vc_balance_end, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.vc_charge_start)) {
+	} else if (compare_symbol(name, &syms_vesc.vc_charge_start, "vc_charge_start")) {
 		res = get_or_set_float(set, &cfg->vc_charge_start, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.vc_charge_end)) {
+	} else if (compare_symbol(name, &syms_vesc.vc_charge_end, "vc_charge_end")) {
 		res = get_or_set_float(set, &cfg->vc_charge_end, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.vc_charge_min)) {
+	} else if (compare_symbol(name, &syms_vesc.vc_charge_min, "vc_charge_min")) {
 		res = get_or_set_float(set, &cfg->vc_charge_min, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.vc_balance_min)) {
+	} else if (compare_symbol(name, &syms_vesc.vc_balance_min, "vc_balance_min")) {
 		res = get_or_set_float(set, &cfg->vc_balance_min, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.balance_max_current)) {
+	} else if (compare_symbol(name, &syms_vesc.balance_max_current, "balance_max_current")) {
 		res = get_or_set_float(set, &cfg->balance_max_current, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.min_current_ah_wh_cnt)) {
+	} else if (compare_symbol(name, &syms_vesc.min_current_ah_wh_cnt, "min_current_ah_wh_cnt")) {
 		res = get_or_set_float(set, &cfg->min_current_ah_wh_cnt, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.min_current_sleep)) {
+	} else if (compare_symbol(name, &syms_vesc.min_current_sleep, "min_current_sleep")) {
 		res = get_or_set_float(set, &cfg->min_current_sleep, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.v_charge_detect)) {
-		res = get_or_set_float(set, &cfg->v_charge_detect, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.t_charge_max)) {
+	} else if (compare_symbol(name, &syms_vesc.t_charge_max, "t_charge_max")) {
 		res = get_or_set_float(set, &cfg->t_charge_max, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.t_charge_max_mos)) {
+	} else if (compare_symbol(name, &syms_vesc.t_charge_max_mos, "t_charge_max_mos")) {
 		res = get_or_set_float(set, &cfg->t_charge_max_mos, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.sleep)) {
+	} else if (compare_symbol(name, &syms_vesc.sleep, "sleep")) {
 		res = get_or_set_float(set, &cfg->sleep, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.shutdown)) {
+	} else if (compare_symbol(name, &syms_vesc.shutdown, "shutdown")) {
 		res = get_or_set_u16(set, &cfg->shutdown, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.min_charge_current)) {
+	} else if (compare_symbol(name, &syms_vesc.min_charge_current, "min_charge_current")) {
 		res = get_or_set_float(set, &cfg->min_charge_current, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.max_charge_current)) {
+	} else if (compare_symbol(name, &syms_vesc.max_charge_current, "max_charge_current")) {
 		res = get_or_set_float(set, &cfg->max_charge_current, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.soc_filter_const)) {
+	} else if (compare_symbol(name, &syms_vesc.hw_occ_current, "hw_occ_current")) {
+		if (set && (lbm_dec_as_float(set_arg) < 4.0f || lbm_dec_as_float(set_arg) > 124.0f)) return ENC_SYM_EERROR;
+		res = get_or_set_float(set, &cfg->hw_occ_current, &set_arg);
+	} else if (compare_symbol(name, &syms_vesc.hw_ocd_current, "hw_ocd_current")) {
+		if (set && (lbm_dec_as_float(set_arg) < 4.0f || lbm_dec_as_float(set_arg) > 200.0f)) return ENC_SYM_EERROR;
+		res = get_or_set_float(set, &cfg->hw_ocd_current, &set_arg);
+	} else if (compare_symbol(name, &syms_vesc.psw_scd_tres, "psw_scd_tres")) {
+		if (set && (lbm_dec_as_float(set_arg) < 0.0f || lbm_dec_as_float(set_arg) > 15.0f ||
+				lbm_dec_as_float(set_arg) != lbm_dec_as_i32(set_arg))) return ENC_SYM_EERROR;
+		res = get_or_set_i(set, &cfg->psw_scd_tres, &set_arg);
+	} else if (compare_symbol(name, &syms_vesc.soc_filter_const, "soc_filter_const")) {
 		res = get_or_set_float(set, &cfg->soc_filter_const, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.t_bal_max_cell)) {
+	} else if (compare_symbol(name, &syms_vesc.t_bal_max_cell, "t_bal_max_cell")) {
 		res = get_or_set_float(set, &cfg->t_bal_max_cell, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.t_bal_max_ic)) {
+	} else if (compare_symbol(name, &syms_vesc.t_bal_max_ic, "t_bal_max_ic")) {
 		res = get_or_set_float(set, &cfg->t_bal_max_ic, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.t_charge_min)) {
+	} else if (compare_symbol(name, &syms_vesc.t_charge_min, "t_charge_min")) {
 		res = get_or_set_float(set, &cfg->t_charge_min, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.t_charge_mon_en)) {
+	} else if (compare_symbol(name, &syms_vesc.t_charge_mon_en, "t_charge_mon_en")) {
 		res = get_or_set_bool(set, &cfg->t_charge_mon_en, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.temp_res)) {
+	} else if (compare_symbol(name, &syms_vesc.temp_res, "temp_res")) {
 		res = get_or_set_i(set, (int *)(&cfg->temp_res), &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.temp_beta)) {
+	} else if (compare_symbol(name, &syms_vesc.temp_beta, "temp_beta")) {
 		res = get_or_set_u16(set, &cfg->temp_beta, &set_arg);
 	}
 
@@ -1898,7 +1865,7 @@ static lbm_value ext_i2c_start(lbm_value *args, lbm_uint argn) {
 	return ENC_SYM_TRUE;
 }
 
-static lbm_value ext_i2c_tx_rx(lbm_value *args, lbm_uint argn) {
+static lbm_value ext_i2c_tx_rx_unlocked(lbm_value *args, lbm_uint argn) {
 	if (argn != 2 && argn != 3) {
 		return ENC_SYM_EERROR;
 	}
@@ -1953,6 +1920,10 @@ static lbm_value ext_i2c_tx_rx(lbm_value *args, lbm_uint argn) {
 	return lbm_enc_i(i2c_tx_rx(addr, txbuf, txlen, rxbuf, rxlen));
 }
 
+static lbm_value ext_i2c_tx_rx(lbm_value *args, lbm_uint argn) {
+	return bq_extension_call(ext_i2c_tx_rx_unlocked, args, argn);
+}
+
 static lbm_value ext_i2c_detect_addr(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 
@@ -1974,7 +1945,7 @@ static lbm_value ext_i2c_detect_addr(lbm_value *args, lbm_uint argn) {
 static lbm_value ext_bms_fw_version(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
-	return lbm_enc_i(6);
+	return lbm_enc_i(9);
 }
 
 static void load_extensions(bool main_found) {
@@ -2025,6 +1996,9 @@ static void load_extensions(bool main_found) {
 
 	lbm_add_extension("bms-disable-balancing", ext_bms_disable_balancing);
 	lbm_add_extension("bms-fail-close-outputs", ext_bms_fail_close_outputs);
+	lbm_add_extension("bms-protection-status", ext_protection_status);
+	lbm_add_extension("bms-protection-lock", ext_protection_lock);
+	lbm_add_extension("bms-protection-reset", ext_protection_reset);
 	lbm_add_extension("bms-control-start", ext_control_start);
 	lbm_add_extension("bms-control-feed", ext_control_feed);
 	lbm_add_extension("bms-control-ok", ext_control_ok);

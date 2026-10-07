@@ -434,7 +434,9 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 
 	case COMM_GET_CUSTOM_CONFIG:
 	case COMM_GET_CUSTOM_CONFIG_DEFAULT: {
+		if (len < 1) break;
 		main_config_t *conf = calloc(1, sizeof(main_config_t));
+		if (!conf) break;
 
 		int conf_ind = data[0];
 
@@ -458,19 +460,25 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 		int32_t ind = 0;
 		send_buffer_global[ind++] = packet_id;
 		send_buffer_global[ind++] = conf_ind;
-#ifdef OVR_CONF_SERIALIZE
+#ifdef OVR_CONF_SERIALIZE_BOUNDED
+		int32_t len = OVR_CONF_SERIALIZE_BOUNDED(send_buffer_global + ind,
+				PACKET_MAX_PL_LEN - ind, conf);
+#elif defined(OVR_CONF_SERIALIZE)
 		int32_t len = OVR_CONF_SERIALIZE(send_buffer_global + ind, conf);
 #else
 		int32_t len = confparser_serialize_main_config_t(send_buffer_global + ind, conf);
 #endif
-		commands_send_packet(send_buffer_global, len + ind);
+		if (len >= 0) commands_send_packet(send_buffer_global, len + ind);
+		else commands_printf("Warning: Could not serialize configuration");
 		mempools_free_packet_buffer(send_buffer_global);
 
 		free(conf);
 	} break;
 
 	case COMM_SET_CUSTOM_CONFIG: {
+		if (len < 1) break;
 		main_config_t *conf = calloc(1, sizeof(main_config_t));
+		if (!conf) break;
 		*conf = backup.config;
 
 		int conf_ind = data[0];
@@ -482,7 +490,9 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 		}
 
 		bool decoded = false;
-#ifdef OVR_CONF_DESERIALIZE
+#ifdef OVR_CONF_DESERIALIZE_BOUNDED
+		decoded = conf_ind == 0 && OVR_CONF_DESERIALIZE_BOUNDED(data + 1, len - 1, conf);
+#elif defined(OVR_CONF_DESERIALIZE)
 		decoded = conf_ind == 0 && OVR_CONF_DESERIALIZE(data + 1, conf);
 #else
 		decoded = conf_ind == 0 && confparser_deserialize_main_config_t(data + 1, conf);
@@ -528,6 +538,7 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 	} break;
 
 	case COMM_GET_CUSTOM_CONFIG_XML: {
+		if (len < 1) break;
 		int32_t ind = 0;
 
 		int conf_ind = data[ind++];
@@ -537,10 +548,12 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 			break;
 		}
 
+		if (len < 9) break;
 		int32_t len_conf = buffer_get_int32(data, &ind);
 		int32_t ofs_conf = buffer_get_int32(data, &ind);
 
-		if ((len_conf + ofs_conf) > DATA_MAIN_CONFIG_T__SIZE || len_conf > (PACKET_MAX_PL_LEN - 10)) {
+		if (len_conf < 0 || ofs_conf < 0 || ofs_conf > DATA_MAIN_CONFIG_T__SIZE ||
+				len_conf > DATA_MAIN_CONFIG_T__SIZE - ofs_conf || len_conf > (PACKET_MAX_PL_LEN - 10)) {
 			break;
 		}
 

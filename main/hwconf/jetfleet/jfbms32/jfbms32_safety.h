@@ -8,6 +8,9 @@
 // Only a completed control scan may renew this lease, never an I2C access
 // or a balancing worker. Time is unsigned milliseconds (wrap is intentional).
 #define BMS_CONTROL_TIMEOUT_MS 5000U
+#define BMS_PROTECTION_POLL_MS 20U
+#define BMS_CURRENT_FAULT_MASK 0x62f0U // Current faults, SCDL/OCDL and HWDF
+#define BMS_BQ_HWD_SECONDS 5U
 
 typedef struct {
     bool inhibited;
@@ -55,7 +58,9 @@ static inline bool bms_temperature_valid(float temperature) {
 }
 
 static inline float bms_ntc_temperature(float volts, float pullup, float nominal, float beta) {
-    if (!isfinite(volts) || volts <= 0.0f || volts >= 1.79f || nominal <= 0 || beta <= 0) {
+    if (!isfinite(volts) || volts <= 0.0f || volts >= 1.79f ||
+            !isfinite(pullup) || pullup <= 0.0f ||
+            !isfinite(nominal) || nominal <= 0.0f || !isfinite(beta) || beta <= 0.0f) {
         return NAN;
     }
     float resistance = pullup / (1.8f / volts - 1.0f) - 500.0f;

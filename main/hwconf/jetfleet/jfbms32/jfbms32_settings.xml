@@ -817,28 +817,6 @@ p, li { white-space: pre-wrap; }
             <suffix> A</suffix>
             <vTx>9</vTx>
         </min_current_sleep>
-        <v_charge_detect>
-            <longName>Charger Detection Voltage</longName>
-            <type>1</type>
-            <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Charger detection threshold at charge port.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
-            <cDefine>CONF_V_CHARGE_DETECT</cDefine>
-            <editorDecimalsDouble>1</editorDecimalsDouble>
-            <editorScale>1</editorScale>
-            <editAsPercentage>0</editAsPercentage>
-            <maxDouble>900</maxDouble>
-            <minDouble>0</minDouble>
-            <showDisplay>0</showDisplay>
-            <stepDouble>1</stepDouble>
-            <valDouble>5</valDouble>
-            <vTxDoubleScale>10</vTxDoubleScale>
-            <suffix> V</suffix>
-            <vTx>7</vTx>
-        </v_charge_detect>
         <t_charge_max>
             <longName>Charge Temp Max</longName>
             <type>1</type>
@@ -913,7 +891,7 @@ p, li { white-space: pre-wrap; }
 &lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
 p, li { white-space: pre-wrap; }
 &lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Maximum allowed charge current.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Slow software charge-current cutoff. Independent of the BQ hardware protection thresholds.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_MAX_CHARGE_CURRENT</cDefine>
             <editorDecimalsDouble>2</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -1017,6 +995,66 @@ p, li { white-space: pre-wrap; }
             <suffix> °C</suffix>
             <vTx>7</vTx>
         </t_charge_min>
+        <hw_occ_current>
+            <longName>Charge Overcurrent (OCC)</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>Independent BQ charge-overcurrent detection threshold. Fault remains latched until you remove the cause and press Chg En. Values are rounded to the nearest 2 A with the fitted 1 mOhm shunt. Trip timing is fixed by firmware. OCC cutoff uses native firmware polling on this board (20 ms schedule; communication and scheduling can add delay). DDSG directly handles discharge overcurrent and short circuits.</description>
+            <cDefine>CONF_HW_OCC_CURRENT</cDefine>
+            <editorDecimalsDouble>0</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>124</maxDouble>
+            <minDouble>4</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>2</stepDouble>
+            <valDouble>16</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> A</suffix>
+            <vTx>9</vTx>
+        </hw_occ_current>
+        <hw_ocd_current>
+            <longName>Discharge Overcurrent (OCD1)</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>Independent BQ discharge-overcurrent detection threshold. Fault remains latched until you remove the cause and press Chg En. Values are rounded to the nearest 2 A with the fitted 1 mOhm shunt. Trip timing is fixed by firmware.</description>
+            <cDefine>CONF_HW_OCD_CURRENT</cDefine>
+            <editorDecimalsDouble>0</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>200</maxDouble>
+            <minDouble>4</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>2</stepDouble>
+            <valDouble>16</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> A</suffix>
+            <vTx>9</vTx>
+        </hw_ocd_current>
+        <psw_scd_tres>
+            <longName>Short-circuit Threshold (SCD)</longName>
+            <type>4</type>
+            <transmittable>1</transmittable>
+            <description>BQ shunt-voltage threshold for short-circuit detection. With the JFBMS32 1 mOhm shunt, 40 mV corresponds to 40 A. Remove the short before pressing Chg En to reset. Trip timing is fixed by firmware.</description>
+            <cDefine>CONF_PSW_SCD_TRES</cDefine>
+            <valInt>2</valInt>
+            <enumNames>10 mV</enumNames>
+            <enumNames>20 mV</enumNames>
+            <enumNames>40 mV</enumNames>
+            <enumNames>60 mV</enumNames>
+            <enumNames>80 mV</enumNames>
+            <enumNames>100 mV</enumNames>
+            <enumNames>125 mV</enumNames>
+            <enumNames>150 mV</enumNames>
+            <enumNames>175 mV</enumNames>
+            <enumNames>200 mV</enumNames>
+            <enumNames>250 mV</enumNames>
+            <enumNames>300 mV</enumNames>
+            <enumNames>350 mV</enumNames>
+            <enumNames>400 mV</enumNames>
+            <enumNames>450 mV</enumNames>
+            <enumNames>500 mV</enumNames>
+        </psw_scd_tres>
     </Params>
     <SerOrder>
         <ser>controller_id</ser>
@@ -1058,7 +1096,6 @@ p, li { white-space: pre-wrap; }
         <ser>balance_max_current</ser>
         <ser>min_current_ah_wh_cnt</ser>
         <ser>min_current_sleep</ser>
-        <ser>v_charge_detect</ser>
         <ser>t_charge_max</ser>
         <ser>t_charge_max_mos</ser>
         <ser>min_charge_current</ser>
@@ -1069,6 +1106,9 @@ p, li { white-space: pre-wrap; }
         <ser>temp_res</ser>
         <ser>temp_beta</ser>
         <ser>shutdown</ser>
+        <ser>hw_occ_current</ser>
+        <ser>hw_ocd_current</ser>
+        <ser>psw_scd_tres</ser>
     </SerOrder>
     <Grouping>
         <group>
@@ -1133,12 +1173,19 @@ p, li { white-space: pre-wrap; }
                     <param>vc_charge_start</param>
                     <param>vc_charge_end</param>
                     <param>vc_charge_min</param>
-                    <param>v_charge_detect</param>
                     <param>t_charge_min</param>
                     <param>t_charge_max</param>
                     <param>t_charge_max_mos</param>
                     <param>min_charge_current</param>
                     <param>max_charge_current</param>
+                </subgroupParams>
+            </subgroup>
+            <subgroup>
+                <subgroupName>Hardware Current Protection</subgroupName>
+                <subgroupParams>
+                    <param>hw_occ_current</param>
+                    <param>hw_ocd_current</param>
+                    <param>psw_scd_tres</param>
                 </subgroupParams>
             </subgroup>
             <subgroup>

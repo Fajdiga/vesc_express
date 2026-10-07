@@ -198,11 +198,6 @@
 #define CONF_MIN_CURRENT_SLEEP 0.3
 #endif
 
-// Charger Detection Voltage
-#ifndef CONF_V_CHARGE_DETECT
-#define CONF_V_CHARGE_DETECT 5
-#endif
-
 // Charge Temp Max
 #ifndef CONF_T_CHARGE_MAX
 #define CONF_T_CHARGE_MAX 45
@@ -221,6 +216,16 @@
 // Max Charge Current
 #ifndef CONF_MAX_CHARGE_CURRENT
 #define CONF_MAX_CHARGE_CURRENT 16
+#endif
+
+#ifndef CONF_HW_OCC_CURRENT
+#define CONF_HW_OCC_CURRENT 16
+#endif
+#ifndef CONF_HW_OCD_CURRENT
+#define CONF_HW_OCD_CURRENT 16
+#endif
+#ifndef CONF_PSW_SCD_TRES
+#define CONF_PSW_SCD_TRES 2 // 40 mV = 40 A with the JFBMS32 1 mOhm shunt
 #endif
 
 // Sleep Time
