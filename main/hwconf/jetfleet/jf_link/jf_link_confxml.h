@@ -8,10 +8,10 @@
 #include <stdbool.h>
 
 // Constants
-#define DATA_MAIN_CONFIG_T__SIZE		4027
+#define DATA_MAIN_CONFIG_T__SIZE		4619
 
 // Variables
-extern uint8_t data_main_config_t_[];
+extern uint8_t data_main_config_t_[DATA_MAIN_CONFIG_T__SIZE];
 
 // JF_LINK_CONFXML_H_
 #endif

@@ -310,6 +310,23 @@ idf_component_register(
     REQUIRES ${COMPONENT_REQUIRES}
 )
 
+# BMS boards need their controller application on a factory-erased device.
+# JF Link has a native controller and must not run a second Lisp controller.
+if(HW_NAME STREQUAL "JFBMS32v1" OR HW_NAME STREQUAL "JFBMS32v2")
+    set(HW_DEFAULT_LISP "hwconf/jetfleet/jfbms32/jfbms32_main.lisp")
+elseif(HW_NAME STREQUAL "JFBMS_MASTER")
+    set(HW_DEFAULT_LISP "hwconf/jetfleet/jfbms_master/jfbms_master_main.lisp")
+elseif(HW_NAME STREQUAL "JFBMS_SLAVE")
+    set(HW_DEFAULT_LISP "hwconf/jetfleet/jfbms_slave/jfbms_slave_main.lisp")
+endif()
+
+if(DEFINED HW_DEFAULT_LISP)
+    target_add_binary_data(${COMPONENT_LIB} "${HW_DEFAULT_LISP}" TEXT
+        RENAME_TO hw_default_lisp)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        HW_HAS_DEFAULT_LISP=1 HW_LBM_START_AFTER_INIT=1)
+endif()
+
 target_compile_definitions(${COMPONENT_LIB} PUBLIC
     VESC_ENABLE_WIFI=${VESC_ENABLE_WIFI}
     VESC_ENABLE_BLE=${VESC_ENABLE_BLE}

@@ -48,6 +48,11 @@ python build_all.py
 
 That will create all required firmware files under the build_output directory, with hardware names as child directories. All target switching is handled automatically with the build_all command.
 
+JetFleet BMS targets bundle their default Lisp applications for automatic
+installation and startup on erased devices. Existing uploaded applications are
+preserved. JF Link starts its native controller automatically. Pack settings
+and slave IDs must match the installed hardware.
+
 ### Custom Hardware Targets
 
 If you wish to build the project with custom hardware config files you should add the hardware config files to the "**main/hwconf**" directory and use the HW_NAME build flag

@@ -341,8 +341,12 @@ void app_main(void) {
 
 #ifdef HW_EARLY_LBM_INIT
 	HW_INIT_HOOK();
+#ifdef HW_LBM_START_AFTER_INIT
+	lispif_prepare();
+#else
 	lispif_init();
 	HW_POST_LISPIF_HOOK();
+#endif
 	(void)main_task_wdt_reset();
 #endif
 
@@ -420,6 +424,12 @@ void app_main(void) {
 			"Re-initialize ublox gnss receiver",
 			0,
 			terminal_ublox_reinit);
+
+#ifdef HW_LBM_START_AFTER_INIT
+	(void)lispif_start();
+	HW_POST_LISPIF_HOOK();
+	(void)main_task_wdt_reset();
+#endif
 
 	init_done = true;
 

@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
 
 #define JFBMS_MAX_SLAVES			8
 #define JFBMS_CELLS_PER_SLAVE		32
@@ -43,6 +44,8 @@
 #define JFBMS_BAL_SETTLE_MIN_MS		2000
 #define JFBMS_BAL_SETTLE_TIMEOUT_MS	5000
 #define JFBMS_BAL_HOLD_MS			30000
+#define JFBMS_SNAPSHOT_FRESH_MS	1000U
+#define JFBMS_ASSEMBLY_TIMEOUT_MS	75U
 
 #define CAN_ID_TEMPS(slave_id)		(0x400 | (slave_id))
 #define CAN_ID_STATUS(slave_id)		(0x480 | (slave_id))
@@ -65,12 +68,21 @@ typedef struct {
 	uint8_t status_flags_raw;
 	uint8_t cells_ic1;
 	uint8_t cells_ic2;
+	uint8_t temp_sensor_flags;
 	bool active;
 	bool settled;
 } jfbms_slave_t;
 
 typedef struct {
+	jfbms_slave_t data;
+	uint16_t received_mask;
+	uint32_t start_ticks;
+	bool in_progress;
+} slave_stage_t;
+
+typedef struct {
 	uint32_t id;
+	uint32_t rx_ticks;
 	uint8_t data[8];
 	uint8_t len;
 } can_msg_t;
@@ -99,7 +111,14 @@ typedef struct {
 } balance_candidate_t;
 
 static jfbms_slave_t m_slaves[JFBMS_MAX_SLAVES];
+static slave_stage_t m_slave_stage[JFBMS_MAX_SLAVES];
 static SemaphoreHandle_t m_data_mutex;
+static StaticSemaphore_t m_data_mutex_storage;
+static SemaphoreHandle_t m_control_mutex;
+static StaticSemaphore_t m_control_mutex_storage;
+static SemaphoreHandle_t m_rx_mutex;
+static StaticSemaphore_t m_rx_mutex_storage;
+static main_config_t m_applied_config;
 
 static can_msg_t m_can_rx_buf[JFBMS_CAN_BUF_SIZE];
 static volatile int m_can_rx_head = 0;
@@ -127,6 +146,32 @@ static TaskHandle_t m_jf_link_task_handle = NULL;
 static int process_can_rx_all(void);
 static void check_slave_timeouts(float timeout_s);
 static void update_vesc_bms_values(void);
+static void stop_all_balancing(void);
+
+bool jf_link_validate_config(const main_config_t *conf) {
+	return conf && conf->controller_id >= 0 && conf->controller_id <= 254 &&
+			conf->can_baud_rate >= CAN_BAUD_125K && conf->can_baud_rate <= CAN_BAUD_100K &&
+			conf->can_status_rate_hz >= 0 && conf->can_status_rate_hz <= 500 &&
+			conf->num_slaves >= 1 && conf->num_slaves <= JFBMS_MAX_SLAVES &&
+			isfinite(conf->slave_timeout_s) && conf->slave_timeout_s >= 1.0f &&
+			conf->slave_timeout_s <= 255.0f &&
+			conf->max_bal_ch >= 0 && conf->max_bal_ch <= 8 &&
+			isfinite(conf->vc_balance_start) && conf->vc_balance_start >= 0.0f &&
+			conf->vc_balance_start <= 0.5f &&
+			isfinite(conf->vc_balance_end) && conf->vc_balance_end >= 0.0f &&
+			conf->vc_balance_end <= conf->vc_balance_start &&
+			isfinite(conf->vc_balance_min) && conf->vc_balance_min >= 1.0f &&
+			conf->vc_balance_min <= 5.0f;
+}
+
+static bool control_config_changed(void) {
+	const main_config_t *cfg = (const main_config_t *)&backup.config;
+#define CHANGED(field) (cfg->field != m_applied_config.field)
+	return CHANGED(num_slaves) || CHANGED(slave_timeout_s) || CHANGED(max_bal_ch) ||
+			CHANGED(vc_balance_start) || CHANGED(vc_balance_end) ||
+			CHANGED(vc_balance_min) || CHANGED(can_baud_rate);
+#undef CHANGED
+}
 
 static int cfg_num_slaves(void) {
 	int num = backup.config.num_slaves;
@@ -157,7 +202,53 @@ static int slave_cell_count(const jfbms_slave_t *s) {
 }
 
 static bool cell_valid(uint16_t mv) {
-	return mv > 0 && mv < 0xFFFF;
+	return mv >= 1000 && mv <= 5000;
+}
+
+static bool slave_snapshot_ready(const jfbms_slave_t *s, uint32_t now) {
+	uint8_t required_faults = s->cells_ic2 > 0 ? 0x0B : 0x09;
+	return s->active && s->status_rx_count != 0 &&
+			(now - s->last_seen_ticks) <= pdMS_TO_TICKS(JFBMS_SNAPSHOT_FRESH_MS) &&
+			(s->faults & required_faults) == 0;
+}
+
+static bool pack_snapshots_ready(uint32_t now) {
+	bool ready = m_jf_link_task_handle != NULL &&
+			jf_link_validate_config((const main_config_t *)&backup.config) &&
+			!control_config_changed();
+	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
+	for (int i = 0; ready && i < cfg_num_slaves(); i++) {
+		ready = slave_snapshot_ready(&m_slaves[i], now);
+	}
+	xSemaphoreGive(m_data_mutex);
+	return ready;
+}
+
+static bool slave_balancing_ready(const jfbms_slave_t *s, uint32_t now) {
+	if (!slave_snapshot_ready(s, now) || s->temps[0] > 1000 ||
+			((s->temp_sensor_flags & 1U) && s->temps[1] > 600) ||
+			(s->cells_ic2 > 0 && (s->temps[2] > 1000 ||
+			((s->temp_sensor_flags & 2U) && s->temps[3] > 600)))) return false;
+	// Match the slave application's local balance limits. These are separate
+	// from telemetry validity and do not define a pack charging policy.
+	for (int c = 0; c < s->cells_ic1; c++) {
+		if (s->cells_mv[c] < 2500) return false;
+	}
+	for (int c = 0; c < s->cells_ic2; c++) {
+		if (s->cells_mv[16 + c] < 2500) return false;
+	}
+	return true;
+}
+
+static bool pack_balancing_ready(uint32_t now) {
+	if (!pack_snapshots_ready(now)) return false;
+	bool ready = true;
+	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
+	for (int i = 0; ready && i < cfg_num_slaves(); i++) {
+		ready = slave_balancing_ready(&m_slaves[i], now);
+	}
+	xSemaphoreGive(m_data_mutex);
+	return ready;
 }
 
 static bool decode_slave_can_id(uint32_t id, uint8_t *slave_id, uint8_t *msg_type) {
@@ -221,6 +312,7 @@ static uint32_t cell_to_bal_bit(const jfbms_slave_t *s, int cell) {
 
 static void init_slave_data(void) {
 	memset(m_slaves, 0, sizeof(m_slaves));
+	memset(m_slave_stage, 0, sizeof(m_slave_stage));
 
 	for (int s = 0;s < JFBMS_MAX_SLAVES;s++) {
 		for (int t = 0;t < JFBMS_TEMPS_PER_SLAVE;t++) {
@@ -229,7 +321,7 @@ static void init_slave_data(void) {
 	}
 }
 
-static void parse_slave_message(uint32_t id, const uint8_t *data, int len) {
+static void parse_slave_message(uint32_t id, const uint8_t *data, int len, uint32_t rx_ticks) {
 	uint8_t slave_id = 0;
 	uint8_t msg_type = 0xFF;
 
@@ -244,14 +336,32 @@ static void parse_slave_message(uint32_t id, const uint8_t *data, int len) {
 	if (!valid_slave_msg_len(msg_type, len)) {
 		return;
 	}
-
-	jfbms_slave_t *s = &m_slaves[slave_id - 1];
+	// Buffer processing time cannot make an old broadcast fresh again.
+	if ((xTaskGetTickCount() - rx_ticks) > pdMS_TO_TICKS(JFBMS_SNAPSHOT_FRESH_MS)) return;
 
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
-
-	uint32_t now = xTaskGetTickCount();
-	s->active = true;
-	s->last_seen_ticks = now;
+	uint32_t now = rx_ticks;
+	jfbms_slave_t *live = &m_slaves[slave_id - 1];
+	slave_stage_t *stage = &m_slave_stage[slave_id - 1];
+	if (msg_type == 0) {
+		memset(stage, 0, sizeof(*stage));
+		stage->in_progress = true;
+		stage->start_ticks = now;
+	}
+	if (!stage->in_progress ||
+			(now - stage->start_ticks) > pdMS_TO_TICKS(JFBMS_ASSEMBLY_TIMEOUT_MS)) {
+		stage->in_progress = false;
+		xSemaphoreGive(m_data_mutex);
+		return;
+	}
+	jfbms_slave_t *s = &stage->data;
+	uint16_t frame_bit = (uint16_t)(1U << msg_type);
+	if (stage->received_mask & frame_bit) {
+		stage->in_progress = false;
+		xSemaphoreGive(m_data_mutex);
+		return;
+	}
+	stage->received_mask |= frame_bit;
 
 	if (msg_type <= 0x07) {
 		int base_cell = msg_type * 4;
@@ -274,8 +384,8 @@ static void parse_slave_message(uint32_t id, const uint8_t *data, int len) {
 				((uint32_t)data[3] << 24);
 
 		if (len >= 7) {
-			s->cells_ic1 = data[5] > 16 ? 16 : data[5];
-			s->cells_ic2 = data[6] > 16 ? 16 : data[6];
+			s->cells_ic1 = data[5];
+			s->cells_ic2 = data[6];
 		} else if (len >= 6) {
 			uint8_t total = data[5];
 			s->cells_ic1 = total > 16 ? 16 : total;
@@ -286,11 +396,40 @@ static void parse_slave_message(uint32_t id, const uint8_t *data, int len) {
 		}
 
 		s->status_flags_raw = data[4];
-		s->faults = data[4] & 0x07;
+		s->faults = data[4] & 0x0B;
 		s->settled = (data[4] & 0x04) != 0;
-
+		s->temp_sensor_flags = len >= 8 ? data[7] : 0x03;
+		bool valid = s->cells_ic1 >= 3 && s->cells_ic1 <= 16 &&
+				(s->cells_ic2 == 0 || (s->cells_ic2 >= 3 && s->cells_ic2 <= 16));
+		uint16_t required = 0x0100U;
+		if (valid) {
+			required |= (uint16_t)((1U << ((s->cells_ic1 + 3) / 4)) - 1U);
+			if (s->cells_ic2) {
+				required |= (uint16_t)(((1U << ((s->cells_ic2 + 3) / 4)) - 1U) << 4);
+			}
+			valid = (stage->received_mask & required) == required;
+		}
+		for (int c = 0; valid && c < slave_cell_count(s); c++) {
+			valid = cell_valid(s->cells_mv[logical_cell_to_wire_index(s, c)]);
+		}
+		bool required_temp[JFBMS_TEMPS_PER_SLAVE] = {
+			true, (s->temp_sensor_flags & 1U) != 0,
+			s->cells_ic2 > 0, s->cells_ic2 > 0 && (s->temp_sensor_flags & 2U) != 0,
+		};
+		for (int t = 0; valid && t < JFBMS_TEMPS_PER_SLAVE; t++) {
+			if (required_temp[t]) valid = s->temps[t] >= -400 && s->temps[t] <= 1200;
+		}
+		stage->in_progress = false;
+		if (!valid) {
+			live->active = false;
+			xSemaphoreGive(m_data_mutex);
+			return;
+		}
+		s->active = true;
+		s->last_seen_ticks = now;
 		s->last_status_ticks = now;
-		s->status_rx_count++;
+		s->status_rx_count = live->status_rx_count + 1;
+		*live = *s;
 	}
 
 	xSemaphoreGive(m_data_mutex);
@@ -355,7 +494,9 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 	}
 
 	lbm_uint name = lbm_dec_sym(args[0]);
-	main_config_t *cfg = (main_config_t*)&backup.config;
+	xSemaphoreTake(m_control_mutex, portMAX_DELAY);
+	main_config_t candidate = backup.config;
+	main_config_t *cfg = set ? &candidate : (main_config_t*)&backup.config;
 
 	if (compare_symbol(name, &m_syms_cfg.num_slaves)) {
 		res = get_or_set_i(set, &cfg->num_slaves, &set_arg);
@@ -373,6 +514,15 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 		res = get_or_set_i(set, &cfg->can_status_rate_hz, &set_arg);
 	}
 
+	if (set && res == ENC_SYM_TRUE) {
+		if (jf_link_validate_config(&candidate)) {
+			backup.config = candidate;
+		} else {
+			res = ENC_SYM_NIL;
+		}
+	}
+	xSemaphoreGive(m_control_mutex);
+	if (set && res == ENC_SYM_TRUE && !jf_link_apply_config()) return ENC_SYM_NIL;
 	return res;
 }
 
@@ -393,14 +543,16 @@ static lbm_value ext_bms_store_cfg(lbm_value *args, lbm_uint argn) {
 
 static int process_can_rx_all(void) {
 	int count = 0;
+	xSemaphoreTake(m_rx_mutex, portMAX_DELAY);
 
 	while (m_can_rx_tail != m_can_rx_head) {
 		can_msg_t *msg = &m_can_rx_buf[m_can_rx_tail];
-		parse_slave_message(msg->id, msg->data, msg->len);
+		parse_slave_message(msg->id, msg->data, msg->len, msg->rx_ticks);
 		m_can_rx_tail = (m_can_rx_tail + 1) % JFBMS_CAN_BUF_SIZE;
 		count++;
 	}
 
+	xSemaphoreGive(m_rx_mutex);
 	return count;
 }
 
@@ -538,9 +690,7 @@ static lbm_value ext_master_get_slave_settled(lbm_value *args, lbm_uint argn) {
 
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 	uint32_t now = xTaskGetTickCount();
-	bool status_fresh = s->last_status_ticks != 0 &&
-			((now - s->last_status_ticks) * portTICK_PERIOD_MS) <= 1000;
-	bool settled = s->active && status_fresh && s->settled && (s->faults & 0x03) == 0;
+	bool settled = slave_snapshot_ready(s, now) && s->settled;
 	xSemaphoreGive(m_data_mutex);
 
 	return settled ? ENC_SYM_TRUE : ENC_SYM_NIL;
@@ -616,7 +766,32 @@ static lbm_value ext_master_get_cells_ic2(lbm_value *args, lbm_uint argn) {
 	return lbm_enc_i(count);
 }
 
-static void send_balance_cmd(uint8_t slave_id, uint32_t mask, uint8_t beep_code) {
+static bool send_balance_cmd(uint8_t slave_id, uint32_t mask, uint8_t beep_code) {
+	if (mask && (!pack_balancing_ready(xTaskGetTickCount()) ||
+			backup.config.max_bal_ch == 0)) return false;
+	if (mask) {
+		bool valid = slave_id >= 1 && slave_id <= cfg_num_slaves();
+		xSemaphoreTake(m_data_mutex, portMAX_DELAY);
+		if (valid) {
+			const jfbms_slave_t *s = &m_slaves[slave_id - 1];
+			uint32_t ic1 = mask & 0xFFFFU, ic2 = mask >> 16;
+			uint32_t allowed = ((1U << s->cells_ic1) - 1U) |
+					(((1U << s->cells_ic2) - 1U) << 16);
+			valid = (mask & ~allowed) == 0 && (ic1 & (ic1 << 1)) == 0 &&
+					(ic2 & (ic2 << 1)) == 0 &&
+					__builtin_popcount(ic1) <= backup.config.max_bal_ch &&
+					__builtin_popcount(ic2) <= backup.config.max_bal_ch;
+		}
+		for (int i = 0; valid && i < cfg_num_slaves(); i++) {
+			const jfbms_slave_t *s = &m_slaves[i];
+			for (int c = 0; valid && c < slave_cell_count(s); c++) {
+				valid = (float)s->cells_mv[logical_cell_to_wire_index(s, c)] / 1000.0f >
+						backup.config.vc_balance_min;
+			}
+		}
+		xSemaphoreGive(m_data_mutex);
+		if (!valid) return false;
+	}
 	uint8_t buf[5];
 	buf[0] = (mask >> 0) & 0xFF;
 	buf[1] = (mask >> 8) & 0xFF;
@@ -625,6 +800,7 @@ static void send_balance_cmd(uint8_t slave_id, uint32_t mask, uint8_t beep_code)
 	buf[4] = beep_code;
 
 	comm_can_transmit_sid(CAN_ID_BAL_CMD(slave_id), buf, sizeof(buf));
+	return true;
 }
 
 static bool ticks_elapsed(uint32_t now, uint32_t start, uint32_t ms) {
@@ -665,7 +841,7 @@ static void send_cached_balance_masks(uint8_t beep_code) {
 	xSemaphoreGive(m_data_mutex);
 
 	for (int i = 0;i < cfg_num_slaves();i++) {
-		if (active[i]) {
+		if (active[i] || m_cached_bal_masks[i] == 0) {
 			send_balance_cmd(i + 1, m_cached_bal_masks[i], beep_code);
 		}
 	}
@@ -680,6 +856,26 @@ static void stop_all_balancing(void) {
 	m_manual_balancing = false;
 	m_bal_keepalive_kick = false;
 	m_bal_auto_state = BAL_AUTO_IDLE;
+}
+
+bool jf_link_apply_config(void) {
+	if (!jf_link_validate_config((const main_config_t *)&backup.config) ||
+			!m_control_mutex) return false;
+	xSemaphoreTake(m_control_mutex, portMAX_DELAY);
+	if (control_config_changed()) {
+		// Stop every address, including slaves removed by a topology edit.
+		clear_cached_balance_masks();
+		for (int i = 0; i < JFBMS_MAX_SLAVES; i++) send_balance_cmd(i + 1, 0, 0);
+		stop_all_balancing();
+		m_force_bal_pending = -1;
+		m_manual_bal_pending = false;
+		xSemaphoreTake(m_data_mutex, portMAX_DELAY);
+		init_slave_data();
+		xSemaphoreGive(m_data_mutex);
+	}
+	m_applied_config = backup.config;
+	xSemaphoreGive(m_control_mutex);
+	return true;
 }
 
 static void sort_candidates(balance_candidate_t *candidates, int count) {
@@ -807,7 +1003,7 @@ static bool collect_slave_snapshots(
 
 	xSemaphoreGive(m_data_mutex);
 
-	return *snapshot_count > 0;
+	return *snapshot_count == cfg_num_slaves();
 }
 
 static bool active_slaves_ready_for_balance(uint32_t now) {
@@ -817,20 +1013,19 @@ static bool active_slaves_ready_for_balance(uint32_t now) {
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 
 	for (int i = 0;i < cfg_num_slaves();i++) {
-		if (m_slaves[i].active) {
+		if (slave_balancing_ready(&m_slaves[i], now)) {
 			active_count++;
-			bool status_fresh = m_slaves[i].last_status_ticks != 0 &&
-					((now - m_slaves[i].last_status_ticks) * portTICK_PERIOD_MS) <= 1000;
-			if (!status_fresh || !m_slaves[i].settled ||
-					(m_slaves[i].faults & 0x03) != 0) {
+			if (!m_slaves[i].settled) {
 				all_settled = false;
 			}
+		} else {
+			all_settled = false;
 		}
 	}
 
 	xSemaphoreGive(m_data_mutex);
 
-	return active_count > 0 && all_settled;
+	return active_count == cfg_num_slaves() && all_settled;
 }
 
 static void start_auto_settle(uint32_t now) {
@@ -920,6 +1115,7 @@ static void compute_auto_balance(uint32_t now) {
 
 static void process_manual_balance(int cell, int enable) {
 	process_can_rx_all();
+	if (enable > 0 && !pack_balancing_ready(xTaskGetTickCount())) return;
 
 	int target_slave = -1;
 	int target_ic1 = 0;
@@ -1009,6 +1205,10 @@ static void process_pending_balance_commands(uint32_t now) {
 }
 
 static void run_balance_state(uint32_t now) {
+	if ((m_manual_balancing || m_auto_balancing) && !pack_balancing_ready(now)) {
+		stop_all_balancing();
+		return;
+	}
 	if (m_bal_request) {
 		if (m_bal_auto_state == BAL_AUTO_IDLE) {
 			start_auto_settle(now);
@@ -1096,14 +1296,16 @@ static void jf_link_task(void *arg) {
 	uint32_t last_status_ticks = 0;
 
 	for (;;) {
+		(void)jf_link_apply_config();
 		process_can_rx_all();
 
 		uint32_t now = xTaskGetTickCount();
+		xSemaphoreTake(m_control_mutex, portMAX_DELAY);
+		check_slave_timeouts(backup.config.slave_timeout_s);
 		process_pending_balance_commands(now);
 		run_balance_state(now);
 
 		if (ticks_elapsed(now, last_status_ticks, JFBMS_STATUS_PERIOD_MS)) {
-			check_slave_timeouts(backup.config.slave_timeout_s);
 			update_vesc_bms_values();
 			if (backup.config.can_status_rate_hz != 0 &&
 					!comm_can_send_buffer_recent(JFBMS_CAN_STATUS_QUIET_AFTER_FWD_MS)) {
@@ -1112,6 +1314,7 @@ static void jf_link_task(void *arg) {
 			check_connection_changes();
 			last_status_ticks = now;
 		}
+		xSemaphoreGive(m_control_mutex);
 
 		vTaskDelay(pdMS_TO_TICKS(JFBMS_TASK_PERIOD_MS));
 	}
@@ -1129,15 +1332,11 @@ static lbm_value ext_master_send_balance(lbm_value *args, lbm_uint argn) {
 		return ENC_SYM_NIL;
 	}
 
-	send_balance_cmd(slave_id, ic1_mask | (ic2_mask << 16), beep_code);
-	return ENC_SYM_TRUE;
+	return send_balance_cmd(slave_id, ic1_mask | (ic2_mask << 16), beep_code) ?
+			ENC_SYM_TRUE : ENC_SYM_NIL;
 }
 
 static void check_slave_timeouts(float timeout_s) {
-	if (timeout_s > 100.0f) {
-		timeout_s /= 1000.0f;
-	}
-
 	uint32_t now = xTaskGetTickCount();
 
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
@@ -1159,7 +1358,11 @@ static void check_slave_timeouts(float timeout_s) {
 static lbm_value ext_master_check_timeouts(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 
-	check_slave_timeouts(lbm_dec_as_float(args[0]));
+	// Preserve legacy Lisp calls expressed in milliseconds. The configured
+	// slave_timeout_s passed by the native task is always in seconds.
+	float timeout_s = lbm_dec_as_float(args[0]);
+	if (timeout_s > 100.0f) timeout_s /= 1000.0f;
+	check_slave_timeouts(timeout_s);
 	return ENC_SYM_TRUE;
 }
 
@@ -1167,13 +1370,18 @@ static lbm_value ext_master_reset_slaves(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 
+	xSemaphoreTake(m_control_mutex, portMAX_DELAY);
+	stop_all_balancing();
+	xSemaphoreTake(m_rx_mutex, portMAX_DELAY);
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 	init_slave_data();
 	xSemaphoreGive(m_data_mutex);
 
-	m_can_rx_head = 0;
-	m_can_rx_tail = 0;
+	// Discard queued data without changing the producer-owned head.
+	m_can_rx_tail = m_can_rx_head;
 	m_can_rx_overflow = 0;
+	xSemaphoreGive(m_rx_mutex);
+	xSemaphoreGive(m_control_mutex);
 
 	return ENC_SYM_TRUE;
 }
@@ -1184,7 +1392,7 @@ static void update_vesc_bms_values(void) {
 	memset((void*)bms, 0, sizeof(*bms));
 
 	bms->can_id = backup.config.controller_id;
-	bms->is_charge_allowed = 1;
+	bms->is_charge_allowed = pack_snapshots_ready(now) ? 1 : 0;
 	bms->soh = 1.0f;
 	bms->data_version = 1;
 
@@ -1216,7 +1424,7 @@ static void update_vesc_bms_values(void) {
 		}
 
 		if (status_fresh) {
-			faults |= s->faults & 0x03;
+			faults |= s->faults & 0x0B;
 			waiting_settle = waiting_settle || !s->settled;
 			any_balancing = any_balancing || s->balance_mask != 0;
 		} else {
@@ -1501,8 +1709,12 @@ static void load_extensions(bool main_found) {
 }
 
 void hw_init(void) {
-	m_data_mutex = xSemaphoreCreateMutex();
+	bms_get_values()->is_charge_allowed = 0;
+	m_data_mutex = xSemaphoreCreateMutexStatic(&m_data_mutex_storage);
+	m_control_mutex = xSemaphoreCreateMutexStatic(&m_control_mutex_storage);
+	m_rx_mutex = xSemaphoreCreateMutexStatic(&m_rx_mutex_storage);
 	init_slave_data();
+	m_applied_config = backup.config;
 
 	if (backup.config.controller_id != backup.controller_id) {
 		backup.config.controller_id = backup.controller_id;
@@ -1524,8 +1736,13 @@ void hw_init(void) {
 	lispif_add_ext_load_callback(load_extensions);
 
 	if (!m_jf_link_task_handle) {
-		xTaskCreatePinnedToCore(jf_link_task, "jf_link", 4096, NULL, 7,
-				&m_jf_link_task_handle, tskNO_AFFINITY);
+		if (xTaskCreatePinnedToCore(jf_link_task, "jf_link", 4096, NULL, 7,
+				&m_jf_link_task_handle, tskNO_AFFINITY) != pdPASS) {
+			m_jf_link_task_handle = NULL;
+			bms_get_values()->is_charge_allowed = 0;
+			LED_RED_ON();
+			commands_printf("JF Link: native controller task could not start");
+		}
 	}
 }
 
@@ -1549,6 +1766,7 @@ void hw_can_rx_hook(uint32_t id, uint8_t *data, int len, bool is_ext) {
 	}
 
 	m_can_rx_buf[m_can_rx_head].id = id;
+	m_can_rx_buf[m_can_rx_head].rx_ticks = xTaskGetTickCount();
 	m_can_rx_buf[m_can_rx_head].len = len > 8 ? 8 : len;
 	memcpy(m_can_rx_buf[m_can_rx_head].data, data, m_can_rx_buf[m_can_rx_head].len);
 	m_can_rx_head = next_head;

@@ -140,6 +140,49 @@ bool flash_helper_erase_code(int ind, int size) {
 	return true;
 }
 
+// Provision only a completely erased partition. Existing applications, stopped
+// applications and damaged/partial uploads must never be replaced at boot.
+bool flash_helper_install_default_lisp(const uint8_t *code, uint32_t len) {
+	if (flash_helper_code_size(CODE_IND_LISP) > 0) {
+		return true;
+	}
+
+	const esp_partition_t *part = get_partition(CODE_IND_LISP);
+	if (!part || !code || len == 0 || part->size <= 8 ||
+			len > part->size - 8 || code[len - 1] != 0 ||
+			!perform_mmap(CODE_IND_LISP)) {
+		return false;
+	}
+
+	const uint8_t *raw = m_code_checks[CODE_IND_LISP].addr;
+	for (uint32_t i = 0; i < part->size; i++) {
+		if (raw[i] != 0xff) {
+			return false;
+		}
+	}
+
+	uint8_t header[8];
+	int32_t index = 0;
+	buffer_append_uint32(header, len, &index);
+	uint8_t flags[2] = {0, 0};
+	uint16_t crc = crc16_with_init((uint8_t *)code, len, crc16(flags, sizeof(flags)));
+	buffer_append_uint16(header, crc, &index);
+	buffer_append_uint16(header, 0, &index);
+
+	// Commit the length/CRC last: interrupted installation cannot be executed.
+	bool ok = esp_partition_write(part, 8, code, len) == ESP_OK;
+	if (ok) {
+		ok = esp_partition_write(part, 6, header + 6, 2) == ESP_OK;
+	}
+	if (ok) {
+		ok = esp_partition_write(part, 0, header, 6) == ESP_OK;
+	}
+	m_code_checks[CODE_IND_LISP].size = 0;
+	m_code_checks[CODE_IND_LISP].check_done = false;
+	m_code_checks[CODE_IND_LISP].ok = false;
+	return ok && flash_helper_code_size(CODE_IND_LISP) == len;
+}
+
 bool flash_helper_write_code(int ind, uint32_t offset, uint8_t *data, uint32_t len, uint32_t save_after) {
 	if (offset < (m_code_checks[ind].size + 8)) {
 		m_code_checks[ind].size = 0;

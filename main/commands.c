@@ -990,6 +990,13 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 
 	case COMM_QMLUI_ERASE:
 	case COMM_LISP_ERASE_CODE: {
+#ifdef HW_LBM_START_AFTER_INIT
+		if (packet_id == COMM_LISP_ERASE_CODE && !main_init_done()) {
+			uint8_t response[2] = {packet_id, 0};
+			reply_func(response, sizeof(response));
+			break;
+		}
+#endif
 		int32_t ind = 0;
 		int erase_size = -1;
 		if (len >= 4) {
@@ -1017,6 +1024,15 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 		int32_t ind = 0;
 		uint32_t qmlui_offset = buffer_get_uint32(data, &ind);
 
+#ifdef HW_LBM_START_AFTER_INIT
+		if (packet_id == COMM_LISP_WRITE_CODE && !main_init_done()) {
+			uint8_t response[6] = {packet_id, 0};
+			int32_t response_ind = 2;
+			buffer_append_uint32(response, qmlui_offset, &response_ind);
+			reply_func(response, sizeof(response));
+			break;
+		}
+#endif
 		bool flash_res = flash_helper_write_code(packet_id == COMM_QMLUI_WRITE ? CODE_IND_QML : CODE_IND_LISP,
 				qmlui_offset, data + ind, len - ind, 0);
 

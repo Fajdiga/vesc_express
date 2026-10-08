@@ -92,6 +92,7 @@ void(*ext_load_callbacks[EXT_LOAD_CALLBACK_LEN])(bool) = {0};
 static void sleep_callback(uint32_t us);
 static bool image_write(uint32_t w, int32_t ix, bool const_heap);
 static void eval_thread(void *arg);
+static bool lispif_restart_internal(bool print, bool load_code);
 
 // Global
 extern lbm_const_heap_t *lbm_const_heap_state;
@@ -189,7 +190,24 @@ static bool lispif_alloc_internal_storage(size_t preferred_heap_size, int prefer
 
 
 void lispif_init(void) {
+	lispif_prepare();
+	(void)lispif_start();
+}
+
+// Reserve Lisp memory before wireless startup without allowing application
+// evaluation to access CAN, packet pools or BMS state before they are ready.
+void lispif_prepare(void) {
 	lbm_mutex = xSemaphoreCreateMutex();
+	if (!lbm_mutex) {
+		return;
+	}
+
+#ifdef HW_HAS_DEFAULT_LISP
+	extern const uint8_t default_lisp_start[] asm("_binary_hw_default_lisp_start");
+	extern const uint8_t default_lisp_end[] asm("_binary_hw_default_lisp_end");
+	(void)flash_helper_install_default_lisp(default_lisp_start,
+			(uint32_t)(default_lisp_end - default_lisp_start));
+#endif
 
 #ifndef CONFIG_SPIRAM
 #ifdef CONFIG_IDF_TARGET_ESP32S3
@@ -254,12 +272,22 @@ void lispif_init(void) {
 	}
 #endif
 
-	lispif_restart(false, true);
+}
+
+bool lispif_start(void) {
+	bool ok = lispif_restart_internal(false, true);
+	if (!ok) {
+#ifdef HW_HAS_DEFAULT_LISP
+		commands_printf_lisp("BMS application did not start; check Lisp flash and available memory");
+#endif
+		return false;
+	}
 #ifdef LBM_USE_TIME_QUOTA
 	lbm_set_eval_time_quota(2000);
 #else
 	lbm_set_eval_step_quota(50);
 #endif
+	return true;
 }
 
 int lispif_get_restart_cnt(void) {
@@ -331,6 +359,11 @@ static bool pause_eval(uint32_t num_free, uint32_t timeout_ms) {
 
 void lispif_process_cmd(unsigned char *data, unsigned int len,
 		void(*reply_func)(unsigned char *data, unsigned int len)) {
+#ifdef HW_LBM_START_AFTER_INIT
+	if (!main_init_done()) {
+		return;
+	}
+#endif
 	COMM_PACKET_ID packet_id;
 
 	packet_id = data[0];
@@ -904,7 +937,19 @@ void lispif_stop(void) {
 }
 
 bool lispif_restart(bool print, bool load_code) {
+#ifdef HW_LBM_START_AFTER_INIT
+	if (!main_init_done()) {
+		return false;
+	}
+#endif
+	return lispif_restart_internal(print, load_code);
+}
+
+static bool lispif_restart_internal(bool print, bool load_code) {
 	bool res = false;
+	if (!lbm_mutex) {
+		return false;
+	}
 
 	restart_cnt++;
 	string_tok_valid = false;
@@ -992,7 +1037,11 @@ bool lispif_restart(bool print, bool load_code) {
 			lbm_add_eval_symbols();
 			lbm_eval_init_events(30);
 
-			xTaskCreatePinnedToCore(eval_thread, "lbm_eval", 3072, NULL, 6, NULL, tskNO_AFFINITY);
+			if (xTaskCreatePinnedToCore(eval_thread, "lbm_eval", 3072, NULL, 6,
+					NULL, tskNO_AFFINITY) != pdPASS) {
+				commands_printf_lisp("LispBM evaluator task allocation failed");
+				return false;
+			}
 			lisp_thd_running = true;
 
 			lbm_pause_eval();

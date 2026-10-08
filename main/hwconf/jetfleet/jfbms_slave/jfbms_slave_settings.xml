@@ -5,11 +5,7 @@
             <longName>none</longName>
             <type>3</type>
             <transmittable>0</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Internal configuration type used by VESC Tool. This is not a user setting.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine></cDefine>
             <valString>main_config_t</valString>
             <maxLen>0</maxLen>
@@ -18,22 +14,14 @@ p, li { white-space: pre-wrap; }
             <longName>JFBMS Slave</longName>
             <type>0</type>
             <transmittable>0</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;JetFleet BMS Slave Board - Dual BQ76952 cell monitoring module.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Identifies the JFBMS Slave firmware hardware target. This is not a user setting.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine></cDefine>
         </hw_name>
         <slave_id>
             <longName>Slave ID</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Slave ID on the BMS CAN bus (1-8). Each slave must have a unique ID. Master topology is contiguous, so configure slaves as IDs 1 through N without gaps.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Address of this JFBMS Slave on the battery-monitor CAN bus, from 1 to 8. Give each slave a unique ID and use consecutive IDs from 1 through the Number of Slaves configured on the Master or JF Link.&lt;/p&gt;&lt;p&gt;This is not a VESC controller CAN ID. A duplicate or missing ID prevents reliable pack data.&lt;/p&gt;&lt;p&gt;A new ID applies when written without restarting the device; update the parent configuration to match.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_SLAVE_ID</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
@@ -49,11 +37,7 @@ p, li { white-space: pre-wrap; }
             <longName>CAN Baud Rate</longName>
             <type>4</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;CAN-bus baud rate. Must match master BMS. Protocol specifies 500 kbps.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;CAN bus speed used to communicate with the Master or JF Link. Every device on this physical bus must use the same speed.&lt;/p&gt;&lt;p&gt;For a standard JFBMS Master dedicated slave bus, select 500 kbit/s. With JF Link, match its configured CAN Baud Rate.&lt;/p&gt;&lt;p&gt;Write the configuration and reconnect at the new speed.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_CAN_BAUD_RATE</cDefine>
             <valInt>2</valInt>
             <enumNames>CAN_BAUD_125K</enumNames>
@@ -67,14 +51,10 @@ p, li { white-space: pre-wrap; }
             <enumNames>CAN_BAUD_100K</enumNames>
         </can_baud_rate>
         <cells_ic1>
-            <longName>Cells IC1</longName>
+            <longName>Cells on Lower BQ (IC1)</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;Cells on BQ76952 IC1 (lower stack). Must be at least 3 and at most 16.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Number of series-connected cells measured by the first/lower BQ monitor, from 3 to 16. This must match the physically wired cells, not the number of cells in parallel.&lt;/p&gt;&lt;p&gt;Total series cell count is Cells IC1 + Cells IC2. Follow the board wiring diagram for unused cell inputs.&lt;/p&gt;&lt;p&gt;Writing a change automatically reinitializes the monitors and stops balancing during reinitialization.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_CELLS_IC1</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
@@ -87,14 +67,10 @@ p, li { white-space: pre-wrap; }
             <vTx>1</vTx>
         </cells_ic1>
         <cells_ic2>
-            <longName>Cells IC2</longName>
+            <longName>Cells on Upper BQ (IC2)</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;Cells on BQ76952 IC2 (upper stack). Set to 0 for single-chip mode. When IC2 is used it must have at least 3 and at most 16 cells.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Number of series-connected cells measured by the second/upper BQ monitor. Set 0 if it is unused; otherwise use 3 to 16 to match the wiring.&lt;/p&gt;&lt;p&gt;Values 1 and 2 are invalid. Total series cell count is Cells IC1 + Cells IC2.&lt;/p&gt;&lt;p&gt;Follow the board wiring diagram for unused inputs. Writing a change automatically reinitializes the monitors and stops balancing during reinitialization.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_CELLS_IC2</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
@@ -110,8 +86,7 @@ p, li { white-space: pre-wrap; }
             <longName>BQ1 External Temperature Sensor</longName>
             <type>5</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot;&gt;
-&lt;html&gt;&lt;body&gt;&lt;p&gt;Enable the external NTC connected to BQ1 TS1. When enabled, an invalid or disconnected sensor is reported to the master and blocks temperature-dependent operation. Disable only when the sensor is intentionally not fitted.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Enables the external NTC sensor connected to the lower BQ monitor temperature input. Enable only if that sensor is physically fitted, then set NTC Resistance and Beta to match it.&lt;/p&gt;&lt;p&gt;An enabled sensor with an invalid reading is reported as a temperature fault and blocks parent control that requires valid temperatures. Disabled means this sensor cannot protect cell temperature; internal BQ temperature is still monitored.&lt;/p&gt;&lt;p&gt;Changes apply automatically after writing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_TEMP_BQ1_EN</cDefine>
             <valInt>1</valInt>
         </temp_bq1_en>
@@ -119,8 +94,7 @@ p, li { white-space: pre-wrap; }
             <longName>BQ2 External Temperature Sensor</longName>
             <type>5</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot;&gt;
-&lt;html&gt;&lt;body&gt;&lt;p&gt;Enable the external NTC connected to BQ2 TS1. When enabled, an invalid or disconnected sensor is reported to the master and blocks temperature-dependent operation. This setting is ignored when IC2 has no cells. Disable only when the sensor is intentionally not fitted.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Enables the external NTC sensor connected to the upper BQ monitor temperature input. Used only when Cells on Upper BQ is greater than 0.&lt;/p&gt;&lt;p&gt;Enable only for a fitted sensor and configure NTC Resistance and Beta. An enabled sensor with an invalid reading is reported as a temperature fault and blocks parent control that requires valid temperatures.&lt;/p&gt;&lt;p&gt;Disabled means this sensor cannot protect cell temperature; internal BQ temperature is still monitored. Changes apply automatically after writing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_TEMP_BQ2_EN</cDefine>
             <valInt>1</valInt>
         </temp_bq2_en>
@@ -128,11 +102,7 @@ p, li { white-space: pre-wrap; }
             <longName>NTC Resistance</longName>
             <type>4</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Resistance value for the external temperature sensors. This is the NTC resistance value at 25C. Please select from the list of supported values.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Nominal resistance of each external NTC temperature sensor at 25 degrees C, in ohms. Select the value from the sensor datasheet; for example, select 10k for a 10000-ohm NTC.&lt;/p&gt;&lt;p&gt;This setting applies to all enabled external NTC sensors. An incorrect value gives incorrect temperatures and therefore incorrect temperature limits.&lt;/p&gt;&lt;p&gt;Sensor settings apply automatically after writing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_TEMP_RES</cDefine>
             <valInt>2</valInt>
             <enumNames>4.7k</enumNames>
@@ -149,11 +119,7 @@ p, li { white-space: pre-wrap; }
             <longName>NTC Beta</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;B-Constant value for the NTC used for the external temperature sensors. It is recommended to use the B25-85 value.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Beta coefficient of the external NTC sensors, in kelvin (K), from the sensor datasheet; for example, 3435. It must match the fitted sensors and be greater than 0 when any external sensor is enabled.&lt;/p&gt;&lt;p&gt;This setting works together with NTC Resistance to convert resistance into temperature. Sensor settings apply automatically after writing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_TEMP_BETA</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>

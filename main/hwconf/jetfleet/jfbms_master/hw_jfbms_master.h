@@ -73,8 +73,8 @@
 #define OVR_CONF_XML_C				"jfbms_master_confxml.c"
 #define OVR_CONF_XML_H				"jfbms_master_confxml.h"
 #define OVR_CONF_DEFAULT			"jfbms_master_conf_default.h"
-#define OVR_CONF_SERIALIZE			jfbms_master_confparser_serialize_main_config_t
-#define OVR_CONF_DESERIALIZE		jfbms_master_confparser_deserialize_main_config_t
+#define OVR_CONF_SERIALIZE_BOUNDED	jfbms_master_confparser_serialize_main_config_t
+#define OVR_CONF_DESERIALIZE_BOUNDED	jfbms_master_confparser_deserialize_main_config_t
 #define OVR_CONF_SET_DEFAULTS		jfbms_master_confparser_set_defaults_main_config_t
 #define OVR_CONF_MIGRATE_LEGACY(signature, config) \
 	jfbms_master_migrate_legacy_config((signature), (config))

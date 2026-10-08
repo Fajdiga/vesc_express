@@ -20,6 +20,7 @@
 #include HW_HEADER
 #include "bq769x2_defs.h"
 #include "jfbms32_safety.h"
+#include "jfbms32_confparser.h"
 
 #include "main.h"
 #include "i2c_compat.h"
@@ -877,6 +878,10 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 
 	bms_set_chg_hw(false);
 	bms_clear_balance_state();
+	if (!jfbms32_config_valid((const main_config_t *)&backup.config)) {
+		lbm_set_error_reason("Invalid BMS safety configuration");
+		return ENC_SYM_NIL;
+	}
 
 	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
 		lbm_set_error_reason("bq_mutex timeout in bms-init");
@@ -1707,6 +1712,9 @@ static lbm_value get_or_set_float(bool set, float *val, lbm_value *lbm_val) {
 
 static lbm_value get_or_set_i(bool set, int *val, lbm_value *lbm_val) {
 	if (set) {
+		double number = lbm_dec_as_double(*lbm_val);
+		if (number < -2147483648.0 || number >= 2147483648.0 ||
+				number != trunc(number)) return ENC_SYM_EERROR;
 		*val = lbm_dec_as_i32(*lbm_val);
 		return ENC_SYM_TRUE;
 	} else {
@@ -1716,6 +1724,9 @@ static lbm_value get_or_set_i(bool set, int *val, lbm_value *lbm_val) {
 
 static lbm_value get_or_set_u16(bool set, uint16_t *val, lbm_value *lbm_val) {
 	if (set) {
+		double number = lbm_dec_as_double(*lbm_val);
+		if (number < 0.0 || number > 65535.0 ||
+				number != trunc(number)) return ENC_SYM_EERROR;
 		*val = lbm_dec_as_i32(*lbm_val);
 		return ENC_SYM_TRUE;
 	} else {
@@ -1725,6 +1736,8 @@ static lbm_value get_or_set_u16(bool set, uint16_t *val, lbm_value *lbm_val) {
 
 static lbm_value get_or_set_bool(bool set, bool *val, lbm_value *lbm_val) {
 	if (set) {
+		double number = lbm_dec_as_double(*lbm_val);
+		if (number != 0.0 && number != 1.0) return ENC_SYM_EERROR;
 		*val = lbm_dec_as_i32(*lbm_val);
 		return ENC_SYM_TRUE;
 	} else {
@@ -1756,18 +1769,15 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 
 	lbm_uint name      = lbm_dec_sym(args[0]);
 	main_config_t *cfg = (main_config_t *)&backup.config;
+	main_config_t candidate;
+	if (set) {
+		candidate = *cfg;
+		cfg = &candidate;
+	}
 
 	if (compare_symbol(name, &syms_vesc.cells_ic1, "cells_ic1")) {
-		if (set && !cell_counts_valid(lbm_dec_as_u32(set_arg), cfg->cells_ic2)) {
-			lbm_set_error_reason("Invalid cell combination");
-			return ENC_SYM_EERROR;
-		}
 		res = get_or_set_i(set, &cfg->cells_ic1, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.cells_ic2, "cells_ic2")) {
-		if (set && !cell_counts_valid(cfg->cells_ic1, lbm_dec_as_u32(set_arg))) {
-			lbm_set_error_reason("Invalid cell combination");
-			return ENC_SYM_EERROR;
-		}
 		res = get_or_set_i(set, &cfg->cells_ic2, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.temp_num, "temp_num")) {
 		res = get_or_set_i(set, &cfg->temp_num, &set_arg);
@@ -1839,6 +1849,13 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 		res = get_or_set_u16(set, &cfg->temp_beta, &set_arg);
 	}
 
+	if (set && res == ENC_SYM_TRUE) {
+		if (!jfbms32_config_valid(cfg)) {
+			lbm_set_error_reason("Invalid BMS safety configuration");
+			return ENC_SYM_EERROR;
+		}
+		backup.config = candidate;
+	}
 	return res;
 }
 

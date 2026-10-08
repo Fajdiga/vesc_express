@@ -53,8 +53,10 @@
 #define OVR_CONF_XML_C				"jfbms_slave_confxml.c"
 #define OVR_CONF_XML_H				"jfbms_slave_confxml.h"
 #define OVR_CONF_DEFAULT			"jfbms_slave_conf_default.h"
-#define OVR_CONF_SERIALIZE			jfbms_slave_confparser_serialize_main_config_t
-#define OVR_CONF_DESERIALIZE		jfbms_slave_confparser_deserialize_main_config_t
+#define OVR_CONF_SERIALIZE_BOUNDED	jfbms_slave_confparser_serialize_main_config_t
+#define OVR_CONF_DESERIALIZE_BOUNDED	jfbms_slave_confparser_deserialize_main_config_t
+#define OVR_CONF_VALIDATE(config) jfbms_slave_validate_config(config)
+#define OVR_CONF_APPLY() jfbms_slave_apply_config()
 #define OVR_CONF_SET_DEFAULTS		jfbms_slave_confparser_set_defaults_main_config_t
 #define OVR_CONF_MAIN_CONFIG
 #define VAR_INIT_CODE				259763459
@@ -101,6 +103,9 @@ typedef struct {
 	uint32_t ble_service_capacity;    // Not used by slave
 	uint32_t ble_chr_descr_capacity;  // Not used by slave
 } main_config_t;
+
+bool jfbms_slave_validate_config(const main_config_t *conf);
+bool jfbms_slave_apply_config(void);
 
 // Default setting Overrides
 #define HW_DEFAULT_ID				3

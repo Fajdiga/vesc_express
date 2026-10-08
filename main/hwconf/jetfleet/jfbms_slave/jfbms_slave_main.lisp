@@ -38,6 +38,79 @@
 (def last-cells '())
 (def last-temps '())
 (def last-data-ts (systime))
+(def active-hw-config nil)
+(def debug-balancing false) ; Enable periodic mask diagnostics only when needed.
+
+; As with JFBMS32, save definitions once and run main again on image boot.
+@const-start
+
+str-merge
+str-from-n
+defun
+loopwhile
+looprange
+loopforeach
+map
+
+(defun bms-hw-config () (map (fn (param) (bms-get-param param))
+    '(cells_ic1 cells_ic2 temp_bq1_en temp_bq2_en temp_res temp_beta slave_id)))
+
+(defun load-hw-config (cfg) {
+    (setq cells-ic1 (ix cfg 0))
+    (setq cells-ic2 (ix cfg 1))
+    (setq temp-bq1-en (ix cfg 2))
+    (setq temp-bq2-en (ix cfg 3))
+    (setq slave-id (ix cfg 6))
+    (setq total-cells (+ cells-ic1 cells-ic2))
+})
+
+(defun config-current () (and (bms-hw-ready)
+    (eq active-hw-config (bms-hw-config))))
+
+(defun clear-local-state () {
+    (setq last-cells nil)
+    (setq last-temps nil)
+    (setq last-data-ts (systime))
+    (setix bal-state 0 0)
+    (setix prev-ic1-mask 0 0)
+    (setix prev-ic2-mask 0 0)
+    (setix prev-status-flags 0 -1)
+    (setix settle-counter 0 0)
+    (bms-set-settled-flag 0)
+    ; Old queued balance commands must not be replayed after reinitialization.
+    (loopwhile (> (slave-can-available) 0) (slave-can-read))
+})
+
+(defun init-hw () {
+    (trap-value '(bms-stop-balancing) false)
+    (clear-local-state)
+    (var attempts 0)
+    (var ready false)
+    (loopwhile (not ready) {
+        (var cfg (bms-hw-config))
+        (load-hw-config cfg)
+        (bms-set-fault-flags (if (> cells-ic2 0) 0x03 0x01))
+        (setq ready (and
+            (trap-value `(bms-init ,cells-ic1 ,cells-ic2) false)
+            (eq cfg (bms-hw-config))
+            (bms-hw-ready)))
+        (if ready {
+            (setq active-hw-config cfg)
+            (clear-local-state)
+            (bms-set-fault-flags 0)
+            (print "BMS initialized; settings applied automatically")
+        } {
+            (setq attempts (+ attempts 1))
+            ; Keep reporting faults during recovery, and keep trying even if
+            ; startup failed. Read live settings again on every attempt.
+            (trap-value `(bms-broadcast-all ,slave-id () () 0 ,(if (> cells-ic2 0) 0 1)) false)
+            (if (or (= attempts 1) (= (mod attempts 5) 0))
+                (print "BQ initialization pending, retry" attempts))
+            (sleep (if (< attempts 5) 1.0 3.0))
+        })
+    })
+})
+
 (defun trap-value (expr fallback) {
     (match (trap (eval expr))
         ((exit-ok (? value)) value)
@@ -58,31 +131,32 @@
 
 (defun local-balance-safe () {
     (var safe (and
+        (config-current)
         (= (length last-cells) total-cells)
         (>= (length last-temps) (if (> cells-ic2 0) 4 2))
         (< (secs-since last-data-ts) 0.5)
     ))
     (if safe {
         (loopforeach v last-cells {
-            (if (or (< v 2.5) (> v 5.0)) (setq safe false))
+            (if (not (and (number? v) (>= v 2.5) (<= v 5.0))) (setq safe false))
         })
         ; IC die temperatures (indices 0 and 2) are mandatory. External
         ; NTCs (indices 1 and 3) are checked only when configured; disabled
         ; sensors intentionally carry the invalid -273 C marker.
         (var die1 (ix last-temps 0))
-        (if (or (< die1 -40.0) (> die1 100.0)) (setq safe false))
+        (if (not (and (number? die1) (>= die1 -40.0) (<= die1 100.0))) (setq safe false))
         ; bms-get-param returns numeric 0/1. In LispBM, numeric 0 is still
         ; truthy, so compare explicitly before validating an external NTC.
         (if (= temp-bq1-en 1) {
             (var ext1 (ix last-temps 1))
-            (if (or (< ext1 -40.0) (> ext1 60.0)) (setq safe false))
+            (if (not (and (number? ext1) (>= ext1 -40.0) (<= ext1 60.0))) (setq safe false))
         })
         (if (> cells-ic2 0) {
             (var die2 (ix last-temps 2))
-            (if (or (< die2 -40.0) (> die2 100.0)) (setq safe false))
+            (if (not (and (number? die2) (>= die2 -40.0) (<= die2 100.0))) (setq safe false))
             (if (= temp-bq2-en 1) {
                 (var ext2 (ix last-temps 3))
-                (if (or (< ext2 -40.0) (> ext2 60.0)) (setq safe false))
+                (if (not (and (number? ext2) (>= ext2 -40.0) (<= ext2 60.0))) (setq safe false))
             })
         })
     })
@@ -268,6 +342,10 @@
 
     (loopwhile t {
         (var loop-start (systime))
+        (if (not (config-current)) {
+            (print "BMS settings changed, reinitializing")
+            (exit-error 2)
+        })
         (setix bal-rx-flag 0 0)
 
         ; Process incoming CAN messages (balance commands from master)
@@ -319,7 +397,7 @@
             (setq bq-fail-count 0)
             (setq bq-fail-count (+ bq-fail-count 1))
         )
-        (if (>= bq-fail-count 20) {
+        (if (or (>= bq-fail-count 20) (not (config-current))) {
             (trap-value '(bms-stop-balancing) false)
             (print "Persistent BQ communication fault - reinitializing")
             (exit-error 1)
@@ -349,7 +427,7 @@
 
         ; Debug: print every 10 loops (1 second)
         (setq loop-count (+ loop-count 1))
-        (if (= (mod loop-count 10) 0) {
+        (if (and debug-balancing (= (mod loop-count 10) 0)) {
             ; Get balance bitmap and split into IC1/IC2 masks
             (var bal-bmp (bms-get-bal-bitmap))
             (var ic1-mask (bitwise-and bal-bmp 0xFFFF))
@@ -382,91 +460,36 @@
 
 (defun main-supervisor () {
     (loopwhile t {
-        (match (trap (main-thd))
-            ((exit-ok _) (print "main-thd exited - restarting"))
-            (_ (print "main-thd crashed - restarting"))
+        (match (trap {
+            (init-hw)
+            (main-thd)
+        })
+            ((exit-ok _) (print "Slave controller exited, restarting"))
+            (_ (print "Slave controller recovering; balancing off"))
         )
         (trap-value '(bms-stop-balancing) false)
-        (bms-set-fault-flags (if (> cells-ic2 0) 0x03 0x01))
-        (var recovered false)
-        (loopwhile (not recovered) {
-            (if (trap-value `(bms-init ,cells-ic1 ,cells-ic2) false) {
-                (setq recovered true)
-                (bms-set-fault-flags 0)
-                (print "BMS hardware recovered")
-            } {
-                (bms-broadcast-all slave-id '() '() 0 (if (> cells-ic2 0) 0 1))
-                (sleep 2.0)
-            })
-        })
+        (setq active-hw-config nil)
+        (sleep 0.2)
     })
 })
 
-; ============================================================================
-; Startup
-; ============================================================================
-
-(print "JFBMS Slave starting...")
-(print (str-merge "Slave ID: " (str-from-n slave-id "%d")))
-(print (str-merge "Cells IC1: " (str-from-n cells-ic1 "%d") ", IC2: " (str-from-n cells-ic2 "%d")))
-
-; Check if I2C device is present at 0x08
-(print (str-merge "I2C detect 0x08: " (if (i2c-detect-addr 0x08) "OK" "FAIL")))
-
-; Initialize BMS hardware
-(def init-ok false)
-(def bq1-init-ok false)
-(def bq2-init-ok false)
-
-(looprange i 0 10 {
-    (if (bms-init cells-ic1 cells-ic2) {
-        (setq init-ok true)
-        (setq bq1-init-ok true)
-        (setq bq2-init-ok (if (> cells-ic2 0) true false))
-        (break)
-    } {
-        (print (str-merge "BMS init failed, attempt " (str-from-n (+ i 1) "%d") ", retrying..."))
-        (sleep 1.0)
+(defun main () {
+    (print "JFBMS Slave starting...")
+    (loopwhile (!= (bms-fw-version) 7) {
+        (trap-value '(bms-stop-balancing) false)
+        (print (if (< (bms-fw-version) 7)
+            "Firmware too old; update slave firmware"
+            "Package too old; update slave Lisp application"))
+        (sleep 5.0)
     })
+    ; Config values in a saved image belong to image creation, not this boot.
+    (load-hw-config (bms-hw-config))
+    (setq active-hw-config nil)
+    (clear-local-state)
+    (main-supervisor)
 })
 
-; Set fault flags based on init status
-(def fault-flags 0)
-(if (not bq1-init-ok) (setq fault-flags (+ fault-flags 0x01)))
-(if (and (> cells-ic2 0) (not bq2-init-ok)) (setq fault-flags (+ fault-flags 0x02)))
-(bms-set-fault-flags fault-flags)
+@const-end
 
-(if init-ok
-    (print "BMS initialized successfully")
-    (print "BMS init failed after 10 attempts - check I2C wiring and BQ76952 power"))
-
-; Only continue if init was successful
-(if init-ok {
-    ; Start main broadcast loop (CAN RX is polled in main loop)
-    (print "Starting CAN broadcast loop...")
-    (spawn 200 main-supervisor)
-} {
-    ; Init failed - enter diagnostic loop, but still broadcast status
-    (print "Entering diagnostic mode due to init failure")
-    (var diag-count 0)
-    (loopwhile t {
-        (var loop-start (systime))
-        (if (= (mod diag-count 100) 0) {
-            (if (trap-value `(bms-init ,cells-ic1 ,cells-ic2) false) {
-                (setq init-ok true)
-                (setq bq1-init-ok true)
-                (setq bq2-init-ok (if (> cells-ic2 0) true false))
-                (bms-set-fault-flags 0)
-                (print "BMS recovered from diagnostic mode")
-                (spawn 200 main-supervisor)
-                (break)
-            })
-        })
-        (if (= (mod diag-count 10) 0)
-            (print (str-merge "I2C detect 0x08: " (if (i2c-detect-addr 0x08) "OK" "FAIL"))))
-        ; Broadcast empty data with fault flags
-        (bms-broadcast-all slave-id '() '() 0 (if (> cells-ic2 0) 0 1))
-        (setq diag-count (+ diag-count 1))
-        (sleep-to-broadcast-deadline loop-start)
-    })
-})
+(image-save)
+(main)

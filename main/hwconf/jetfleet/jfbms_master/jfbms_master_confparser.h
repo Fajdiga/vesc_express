@@ -5,6 +5,7 @@
 
 #include "datatypes.h"
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
 
 // Constants
@@ -12,8 +13,8 @@
 #define SERIALIZED_CONFIG_LENGTH	335
 
 // Functions
-int32_t jfbms_master_confparser_serialize_main_config_t(uint8_t *buffer, const main_config_t *conf);
-bool jfbms_master_confparser_deserialize_main_config_t(const uint8_t *buffer, main_config_t *conf);
+int32_t jfbms_master_confparser_serialize_main_config_t(uint8_t *buffer, size_t capacity, const main_config_t *conf);
+bool jfbms_master_confparser_deserialize_main_config_t(const uint8_t *buffer, size_t length, main_config_t *conf);
 void jfbms_master_confparser_set_defaults_main_config_t(main_config_t *conf);
 
 // JFBMS_MASTER_CONFPARSER_H_

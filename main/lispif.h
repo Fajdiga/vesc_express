@@ -31,6 +31,8 @@
 
 // Functions
 void lispif_init(void);
+void lispif_prepare(void);
+bool lispif_start(void);
 int lispif_get_restart_cnt(void);
 void lispif_lock_lbm(void);
 void lispif_unlock_lbm(void);

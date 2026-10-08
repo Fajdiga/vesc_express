@@ -642,12 +642,41 @@ loopwhile-thd
     (setq charge-ok (= (str-len (charge-block-reason)) 0))
     (var ichg 0.0)
     (if (and charge-ok charge-wakeup (test-chg 400)) {
-        (set-chg true)
+        ; Startup may wait for the charger before main-ctrl exists. Arm
+        ; the native scan watchdog and current supervisor before opening
+        ; the gate, and refresh every safety input during that wait.
+        (bms-control-start)
+        (var startup-cells (sort < (with-com '(bms-get-vcells))))
+        (setq c-min (first startup-cells))
+        (setq c-max (ix startup-cells -1))
+        (update-temps)
+        (setq bq-status (update-bq-status))
+        (setq ichg (- (bms-current)))
+        (if (> ichg (bms-get-param 'max_charge_current)) {
+            (setassoc rtc-val 'charge-fault true)
+        })
+        (set-chg (= (str-len (charge-block-reason)) 0))
         (looprange i 0 (* charger-max-delay 10.0) {
             (sleep 0.1)
             (setq bq-status (update-bq-status))
-            (if (!= bq-hard-fault-mask 0) (break))
+            (var startup-cells (sort < (with-com '(bms-get-vcells))))
+            (setq c-min (first startup-cells))
+            (setq c-max (ix startup-cells -1))
+            (update-temps)
             (setq ichg (- (bms-current)))
+            (if (> ichg (bms-get-param 'max_charge_current)) {
+                (setassoc rtc-val 'charge-fault true)
+            })
+            (if (or (not (bms-control-ok))
+                    (> (str-len (charge-block-reason)) 0)) {
+                (set-chg false)
+                (break)
+            })
+            ; A late or incomplete startup scan cannot renew the lease.
+            (if (not (bms-control-feed)) {
+                (fail-close-outputs true)
+                (exit-error 0)
+            })
             (if (> ichg (bms-get-param 'min_charge_current)) {
                 (setq do-sleep false)
                 (setq charge-session-valid true)
@@ -1274,7 +1303,9 @@ loopwhile-thd
         (number-or (read-setting 'ah-cnt-soc) -1.0)
         (* (rtc-number 'soc 0.5) (bms-get-param 'batt_ah))))
     (loopwhile t {
-        (match (trap (start-fun)) ((exit-ok (? a)) (break)) (_ nil))
+        (match (trap (start-fun))
+            ((exit-ok (? a)) (break))
+            (_ (fail-close-outputs true)))
         (sleep 1.0)
     })
 

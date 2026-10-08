@@ -29,6 +29,7 @@
 #define HW_INIT_HOOK()				hw_init()
 #define HW_CAN_NO_ACK_MODE			0
 #define HW_CAN_PING_SCAN_ENABLED	1
+#define HW_BMS_CAN_VALUES_LOCAL_OWNER
 #define USER_EXTENSION_STORAGE_SIZE	50
 
 // Configuration overrides
@@ -37,8 +38,10 @@
 #define OVR_CONF_XML_C				"jf_link_confxml.c"
 #define OVR_CONF_XML_H				"jf_link_confxml.h"
 #define OVR_CONF_DEFAULT			"jf_link_conf_default.h"
-#define OVR_CONF_SERIALIZE			jf_link_confparser_serialize_main_config_t
-#define OVR_CONF_DESERIALIZE		jf_link_confparser_deserialize_main_config_t
+#define OVR_CONF_SERIALIZE_BOUNDED	jf_link_confparser_serialize_main_config_t
+#define OVR_CONF_DESERIALIZE_BOUNDED	jf_link_confparser_deserialize_main_config_t
+#define OVR_CONF_VALIDATE(config)	jf_link_validate_config((config))
+#define OVR_CONF_APPLY()				jf_link_apply_config()
 #define OVR_CONF_SET_DEFAULTS		jf_link_confparser_set_defaults_main_config_t
 #define OVR_CONF_MAIN_CONFIG
 #define VAR_INIT_CODE				259763460
@@ -103,5 +106,7 @@ typedef struct {
 
 // Functions
 void hw_init(void);
+bool jf_link_validate_config(const main_config_t *conf);
+bool jf_link_apply_config(void);
 
 #endif /* MAIN_HWCONF_JETFLEET_HW_JF_LINK_H_ */

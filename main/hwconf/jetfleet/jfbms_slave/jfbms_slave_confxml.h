@@ -8,7 +8,7 @@
 #include <stdbool.h>
 
 // Constants
-#define DATA_MAIN_CONFIG_T__SIZE		1782
+#define DATA_MAIN_CONFIG_T__SIZE		2138
 
 // Variables
 extern uint8_t data_main_config_t_[];

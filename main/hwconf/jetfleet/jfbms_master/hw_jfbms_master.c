@@ -209,6 +209,25 @@ static bool m_fast_oc_config_valid = false;
 static bool m_fast_oc_config_en;
 static float m_fast_oc_config_trip_a;
 static int m_applied_slave_count = -1;
+static SemaphoreHandle_t m_balance_tx_mutex;
+static volatile uint32_t m_config_generation;
+static volatile uint32_t m_config_ack_generation;
+static main_config_t m_applied_control_config;
+
+static bool control_config_changed(const main_config_t *cfg) {
+#define CHANGED(field) (cfg->field != m_applied_control_config.field)
+	return CHANGED(num_slaves) || CHANGED(fast_charge_oc_en) ||
+			CHANGED(fast_charge_oc_a) || CHANGED(max_bal_ch) ||
+			CHANGED(vc_balance_start) || CHANGED(vc_balance_end) ||
+			CHANGED(vc_balance_min) || CHANGED(balance_max_current) ||
+			CHANGED(t_bal_max_cell) || CHANGED(t_bal_max_ic) ||
+			CHANGED(vc_charge_start) || CHANGED(vc_charge_end) ||
+			CHANGED(vc_charge_min) || CHANGED(v_charge_detect) ||
+			CHANGED(t_charge_min) || CHANGED(t_charge_max) ||
+			CHANGED(t_charge_max_mos) || CHANGED(t_charge_mon_en) ||
+			CHANGED(min_charge_current) || CHANGED(max_charge_current);
+#undef CHANGED
+}
 
 static int configured_slave_count(void);
 static bool stop_balancing_for_config_change(int slave_count);
@@ -269,6 +288,8 @@ bool jfbms_master_validate_config(const main_config_t *conf) {
 	}
 
 	return conf->batt_ah > 0.0f && conf->batt_ah <= 10000.0f &&
+			conf->can_baud_rate >= CAN_BAUD_125K && conf->can_baud_rate <= CAN_BAUD_100K &&
+			conf->can_status_rate_hz >= 0 && conf->can_status_rate_hz <= 200 &&
 			conf->max_bal_ch >= 1 && conf->max_bal_ch <= 8 &&
 			conf->vc_empty >= 1.5f && conf->vc_empty < conf->vc_full &&
 			conf->vc_full <= 5.0f &&
@@ -306,11 +327,19 @@ bool jfbms_master_apply_config(void) {
 		return false;
 	}
 	int new_slave_count = configured_slave_count();
-	bool runtime_reconfigure = m_applied_slave_count >= 0;
+	bool runtime_reconfigure = m_applied_slave_count >= 0 &&
+			(control_config_changed(cfg) ||
+			m_config_ack_generation != m_config_generation);
 	int stop_count = m_applied_slave_count > new_slave_count ?
 			m_applied_slave_count : new_slave_count;
 	if (runtime_reconfigure) {
+		// Invalidate Lisp authorization before waiting on CAN or the ADC.
+		// Share the lock with charge/balance enable and acknowledgment so a
+		// concurrent old request cannot cross the configuration handoff.
+		xSemaphoreTake(m_balance_tx_mutex, portMAX_DELAY);
+		m_config_generation++;
 		GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
+		xSemaphoreGive(m_balance_tx_mutex);
 		if (!stop_balancing_for_config_change(stop_count)) return false;
 		reset_pack_state_for_config_change();
 	}
@@ -329,6 +358,7 @@ bool jfbms_master_apply_config(void) {
 		remember_fast_oc_config(cfg);
 	}
 	m_applied_slave_count = new_slave_count;
+	m_applied_control_config = *cfg;
 	return true;
 }
 
@@ -445,7 +475,6 @@ typedef struct {
 static master_bms_data_t m_bms_data;
 static slave_broadcast_stage_t m_slave_stage[MAX_SLAVES];
 static SemaphoreHandle_t m_data_mutex;
-static SemaphoreHandle_t m_balance_tx_mutex;
 static StaticSemaphore_t m_data_mutex_storage;
 static StaticSemaphore_t m_balance_tx_mutex_storage;
 static volatile bool m_balance_inhibit;
@@ -1394,7 +1423,9 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 		set_arg = args[argn - 1];
 		argn--;
 
-		if (!lbm_is_number(set_arg)) {
+		if (!lbm_is_number(set_arg) || !isfinite(lbm_dec_as_float(set_arg)) ||
+				(double)lbm_dec_as_float(set_arg) < -2147483648.0 ||
+				(double)lbm_dec_as_float(set_arg) > 2147483647.0) {
 			lbm_set_error_reason((char *)lbm_error_str_no_number);
 			return ENC_SYM_EERROR;
 		}
@@ -1496,6 +1527,23 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 	return res;
 }
 
+// A configuration transaction also invalidates cached Lisp balance/charge state.
+static lbm_value ext_master_config_generation(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	return lbm_enc_u32(m_config_generation);
+}
+
+static lbm_value ext_master_config_ack(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(1);
+	xSemaphoreTake(m_balance_tx_mutex, portMAX_DELAY);
+	uint32_t generation = lbm_dec_as_u32(args[0]);
+	bool current = generation == m_config_generation;
+	if (current) m_config_ack_generation = generation;
+	xSemaphoreGive(m_balance_tx_mutex);
+	return current ? ENC_SYM_TRUE : ENC_SYM_NIL;
+}
+
 static lbm_value ext_bms_get_param(lbm_value *args, lbm_uint argn) {
 	return bms_get_set_param(false, args, argn);
 }
@@ -1518,7 +1566,7 @@ static lbm_value ext_bms_store_cfg(lbm_value *args, lbm_uint argn) {
 static lbm_value ext_bms_fw_version(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
-	return lbm_enc_i(6);
+	return lbm_enc_i(7);
 }
 
 
@@ -1763,11 +1811,12 @@ static lbm_value ext_master_get_active_slaves(lbm_value *args, lbm_uint argn) {
 	return list;
 }
 
-// (master-send-balance slave-id ic1-mask ic2-mask beep-code)
+// (master-send-balance slave-id ic1-mask ic2-mask beep-code config-generation)
 // Takes IC1 and IC2 masks separately to avoid LispBM 28-bit integer overflow
 // when combining into a 32-bit balance mask (IC1 bits 0-15, IC2 bits 16-31)
 static lbm_value ext_master_send_balance(lbm_value *args, lbm_uint argn) {
-	LBM_CHECK_ARGN_NUMBER(4);
+	LBM_CHECK_NUMBER_ALL();
+	if (argn != 4 && argn != 5) return ENC_SYM_NIL;
 
 	int slave_id = lbm_dec_as_i32(args[0]);
 	uint32_t ic1_mask = lbm_dec_as_u32(args[1]) & 0xFFFF;
@@ -1780,6 +1829,11 @@ static lbm_value ext_master_send_balance(lbm_value *args, lbm_uint argn) {
 
 	uint32_t mask = ic1_mask | (ic2_mask << 16);
 	xSemaphoreTake(m_balance_tx_mutex, portMAX_DELAY);
+	if (mask != 0 && (m_config_ack_generation != m_config_generation ||
+			argn != 5 || lbm_dec_as_u32(args[4]) != m_config_generation)) {
+		xSemaphoreGive(m_balance_tx_mutex);
+		return ENC_SYM_NIL;
+	}
 	bool sent = send_balance_cmd(slave_id, mask, beep_code);
 	xSemaphoreGive(m_balance_tx_mutex);
 	return sent ? ENC_SYM_TRUE : ENC_SYM_NIL;
@@ -1889,7 +1943,8 @@ static lbm_value ext_master_set_chg(lbm_value *args, lbm_uint argn) {
 	}
 
 	xSemaphoreTake(m_balance_tx_mutex, portMAX_DELAY);
-	if (m_balance_inhibit || m_balance_requested ||
+	if (m_config_ack_generation != m_config_generation ||
+			m_balance_inhibit || m_balance_requested ||
 			!jfbms_fast_adc_ready() || jfbms_fast_oc_latched() ||
 			!m_current_offset_calibrated || m_calibration_in_progress ||
 			!m_pack_watchdog_ready) {
@@ -1899,7 +1954,14 @@ static lbm_value ext_master_set_chg(lbm_value *args, lbm_uint argn) {
 	}
 
 	gpio_set_level(PIN_CHG_EN, 1);
-	if (m_balance_inhibit || m_balance_requested) {
+	// A fast-OC interrupt can cut the output after the checks above but before
+	// this write. Recheck its latch so enabling cannot overwrite that cut after
+	// the comparator has disabled itself on its first trip.
+	if (m_config_ack_generation != m_config_generation ||
+			m_balance_inhibit || m_balance_requested ||
+			!jfbms_fast_adc_ready() || jfbms_fast_oc_latched() ||
+			!m_current_offset_calibrated || m_calibration_in_progress ||
+			!m_pack_watchdog_ready) {
 		gpio_set_level(PIN_CHG_EN, 0);
 		xSemaphoreGive(m_balance_tx_mutex);
 		return ENC_SYM_NIL;
@@ -2866,6 +2928,8 @@ static void load_extensions(bool main_found) {
 	lbm_add_extension("master-fast-oc-status", ext_master_fast_oc_status);
 	lbm_add_extension("master-charger-status", ext_master_charger_status);
 	lbm_add_extension("master-set-chg", ext_master_set_chg);
+	lbm_add_extension("master-config-generation", ext_master_config_generation);
+	lbm_add_extension("master-config-ack", ext_master_config_ack);
 	lbm_add_extension("master-get-current", ext_master_get_current);
 	lbm_add_extension("master-get-vchg", ext_master_get_vchg);
 	lbm_add_extension("master-probe-vchg-off", ext_master_probe_vchg_off);
@@ -3026,6 +3090,7 @@ void hw_init(void) {
 			JFBMS_DEDICATED_SLAVE_TWAI_PIN_COLLISION);
 #endif
 	m_applied_slave_count = configured_slave_count();
+	m_applied_control_config = backup.config;
 
 	esp_timer_create_args_t safety_timer_args = {
 		.callback = pack_safety_timer_cb,

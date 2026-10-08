@@ -5,11 +5,7 @@
             <longName>none</longName>
             <type>3</type>
             <transmittable>0</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Internal configuration type used by VESC Tool. This is not a user setting.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine></cDefine>
             <valString>main_config_t</valString>
             <maxLen>0</maxLen>
@@ -18,22 +14,14 @@ p, li { white-space: pre-wrap; }
             <longName>JFBMS32</longName>
             <type>0</type>
             <transmittable>0</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;This is the JetFleet JFBMS32 battery management hardware target.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Identifies the JFBMS32 firmware hardware target. This is not a user setting.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine></cDefine>
         </hw_name>
         <controller_id>
             <longName>CAN ID</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;CAN-Bus ID. Every device on the CAN-bus needs a unique ID.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Address used by VESC Tool and other devices on the VESC CAN network. Give each device on this bus a different ID.&lt;/p&gt;&lt;p&gt;This is separate from the numbered JFBMS Slave IDs. Takes effect when the configuration is written.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_CONTROLLER_ID</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
@@ -49,11 +37,7 @@ p, li { white-space: pre-wrap; }
             <longName>Status Message Rate</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;CAN status message rate in Hertz. Setting this to 0 turns the status messages off.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Frequency of the standard CAN status messages, in messages per second (Hz). Higher rates provide more frequent updates but use more CAN bandwidth.&lt;/p&gt;&lt;p&gt;Set 0 to disable these periodic messages; CAN commands still work. This does not set the JFBMS Slave telemetry rate or the battery-control loop rate.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_CAN_STATUS_RATE_HZ</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
@@ -69,11 +53,7 @@ p, li { white-space: pre-wrap; }
             <longName>CAN Baud Rate</longName>
             <type>4</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;CAN-bus baud rate. Must be the same on all devices in the CAN-bus.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Communication speed of the CAN bus. Every device on the same physical bus must use the same speed, or communication will fail.&lt;/p&gt;&lt;p&gt;Write the configuration and reconnect at the selected speed.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_CAN_BAUD_RATE</cDefine>
             <valInt>2</valInt>
             <enumNames>CAN_BAUD_125K</enumNames>
@@ -90,21 +70,7 @@ p, li { white-space: pre-wrap; }
             <longName>WiFi Mode</longName>
             <type>4</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;WiFi Disabled&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Wifi is disabled.&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Station&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Station mode, meaning that the JFBMS32 connects to an existing WiFi access point.&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Access Point&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;The JFBMS32 becomes an access point itself that others can connect to.&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;NOTE:&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Wifi-settings will be applied after a reboot.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Disabled turns WiFi off. Station mode connects this device to an existing WiFi network using the Station SSID and password.&lt;/p&gt;&lt;p&gt;Access Point mode creates a network that your phone or computer can join using the Access Point SSID and password. Restart the device after changing WiFi settings.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_WIFI_MODE</cDefine>
             <valInt>0</valInt>
             <enumNames>WiFi Disabled</enumNames>
@@ -115,24 +81,16 @@ p, li { white-space: pre-wrap; }
             <longName>Station Mode SSID</longName>
             <type>3</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;Wifi network SSID in station mode. Can usually be found on a sticker on the router.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Name of the existing WiFi network to join in Station mode. It must match the router network name exactly, including capital letters.&lt;/p&gt;&lt;p&gt;Unused in Disabled or Access Point mode. Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_WIFI_STA_SSID</cDefine>
             <valString></valString>
             <maxLen>35</maxLen>
         </wifi_sta_ssid>
         <wifi_sta_key>
-            <longName>Station Mode Key</longName>
+            <longName>Station Mode Password</longName>
             <type>3</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;Wifi network password in station mode. Can usually be found on a sticker on the router.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Password for the existing WiFi network selected by Station Mode SSID. Leave empty only for an open network.&lt;/p&gt;&lt;p&gt;Unused outside Station mode. Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_WIFI_STA_KEY</cDefine>
             <valString></valString>
             <maxLen>25</maxLen>
@@ -141,24 +99,16 @@ p, li { white-space: pre-wrap; }
             <longName>Access Point SSID</longName>
             <type>3</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;Wifi network SSID in access point mode. This name should show up when others are scanning for wifi networks.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Name of the WiFi network this device creates in Access Point mode. Choose a recognizable name so users can find it.&lt;/p&gt;&lt;p&gt;Unused outside Access Point mode. Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_WIFI_AP_SSID</cDefine>
             <valString>VESC WiFi</valString>
             <maxLen>35</maxLen>
         </wifi_ap_ssid>
         <wifi_ap_key>
-            <longName>Access Point Key</longName>
+            <longName>Access Point Password</longName>
             <type>3</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;Wifi access point password.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Password users enter to join this device in Access Point mode. Leave empty to create an open network; a protected network requires at least 8 characters.&lt;/p&gt;&lt;p&gt;Unused outside Access Point mode. Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_WIFI_AP_KEY</cDefine>
             <valString>vesc6wifi</valString>
             <maxLen>25</maxLen>
@@ -167,11 +117,7 @@ p, li { white-space: pre-wrap; }
             <longName>Enable Local TCP</longName>
             <type>5</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;Enable local TCP server. Allows connecting from the same network. Changing this setting takes effect after a reboot.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Allows VESC Tool to connect to this device over the local WiFi network using TCP port 65102. WiFi must be enabled and the computer or phone must be able to reach the device.&lt;/p&gt;&lt;p&gt;Disabling this closes the local TCP connection option. Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_USE_TCP_LOCAL</cDefine>
             <valInt>1</valInt>
         </use_tcp_local>
@@ -179,23 +125,15 @@ p, li { white-space: pre-wrap; }
             <longName>Enable TCP Hub</longName>
             <type>5</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;Connect to TCP hub with the settings below. &lt;/span&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;Changing this setting takes effect after a reboot.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Connects this device to a VESC TCP hub for remote access. WiFi must provide access to the configured hub.&lt;/p&gt;&lt;p&gt;Set the hub hostname, port, ID and password below. Restart after changing network settings.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_USE_TCP_HUB</cDefine>
             <valInt>0</valInt>
         </use_tcp_hub>
         <tcp_hub_url>
-            <longName>TCP Hub URL</longName>
+            <longName>TCP Hub Hostname</longName>
             <type>3</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;URL to the TCP hub.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Hostname or IP address of the VESC TCP hub, for example hub.vesc-project.com. Enter only the hostname or address, without http://, https:// or a path.&lt;/p&gt;&lt;p&gt;Used only when Enable TCP Hub is on. Restart after changing network settings.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_TCP_HUB_URL</cDefine>
             <valString>veschub.vedder.se</valString>
             <maxLen>35</maxLen>
@@ -204,11 +142,7 @@ p, li { white-space: pre-wrap; }
             <longName>TCP Hub Port</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;Port on the TCP hub.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;TCP port used by the hub server. It must match the server configuration; use a value from 1 to 65535.&lt;/p&gt;&lt;p&gt;This is separate from the fixed local TCP port 65102. Used only when Enable TCP Hub is on.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_TCP_HUB_PORT</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
@@ -224,11 +158,7 @@ p, li { white-space: pre-wrap; }
             <longName>TCP Hub ID</longName>
             <type>3</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;ID on the TCP Hub. Can be any string with at least 3 characters. Longer strings decrease the probability of id collisions on the HUB.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Identifier that VESC Tool uses to find this device through the TCP hub. Use a unique ID and enter the same ID when connecting from VESC Tool.&lt;/p&gt;&lt;p&gt;Used only when Enable TCP Hub is on.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_TCP_HUB_ID</cDefine>
             <valString>express1</valString>
             <maxLen>25</maxLen>
@@ -237,11 +167,7 @@ p, li { white-space: pre-wrap; }
             <longName>TCP Hub Password</longName>
             <type>3</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;TCP Hub Password. Choose a password that is required to connecto to you on the TCP hub. Can be blank.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Password for this device connection through the TCP hub. Enter the same password in VESC Tool.&lt;/p&gt;&lt;p&gt;Leave empty only if the hub connection is intended to have no password. Used only when Enable TCP Hub is on.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_TCP_HUB_PASS</cDefine>
             <valString></valString>
             <maxLen>25</maxLen>
@@ -250,24 +176,7 @@ p, li { white-space: pre-wrap; }
             <longName>Bluetooth Mode</longName>
             <type>4</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Disabled&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Bluetooth is disabled. Disabling bluetooth reduces the wifi-latency a bit, which is useful if you are not using bluetooth anyway.&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Enabled&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Bluetooth is enabled and anyone can connect to it with VESC tool.&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Enabled and Encrypted&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Bluetooth is enabled and pin code protected. That means that you have to do pairing and set up the pin code in order to connect with VESC tool.&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Enabled with Scripting&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Bluetooth is enabled and the LBM BLE extensions are enabled, allowing you to control the BLE behaviour of this JFBMS32 via LBM scripts. Note that it is not possible to connect to it with VESC Tool via Bluetooth in this mode.&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;NOTE:&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Bluetooth settings will be applied after a reboot.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Disabled turns Bluetooth off. Enabled allows normal VESC Tool connections without PIN pairing.&lt;/p&gt;&lt;p&gt;Encrypted enables PIN pairing for normal VESC Tool connections. Scripting reserves Bluetooth for custom Lisp services and does not provide the normal VESC Tool Bluetooth interface.&lt;/p&gt;&lt;p&gt;Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_BLE_MODE</cDefine>
             <valInt>1</valInt>
             <enumNames>Disabled</enumNames>
@@ -276,33 +185,19 @@ p, li { white-space: pre-wrap; }
             <enumNames>Enabled with Scripting</enumNames>
         </ble_mode>
         <ble_name>
-            <longName>Name</longName>
+            <longName>Device Name</longName>
             <type>3</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Name of this JFBMS32. Max 8 characters. The name will show up when scanning for Bluetooth devices and in the WiFi broadcast.&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;NOTE:&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Bluetooth and wifi settings will be applied after a reboot.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Device name shown during Bluetooth scanning and WiFi discovery. Use a recognizable name, up to 8 bytes (8 ordinary English characters; accented characters can use more than one byte).&lt;/p&gt;&lt;p&gt;Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_BLE_NAME</cDefine>
             <valString>JFBMS32</valString>
             <maxLen>8</maxLen>
         </ble_name>
         <ble_pin>
-            <longName>Bluetooth Pin Code</longName>
+            <longName>Bluetooth PIN Code</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;Bluetooth Pin Code. Must be 6 digits. Only used when Bluetooth mode is set to Enabled and Encrypted.&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px; font-family:'Sans Serif';&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;NOTE:&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Bluetooth settings will be applied after a reboot.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Six-digit pairing code used in Encrypted Bluetooth mode. For example, a stored value of 1234 is entered as 001234.&lt;/p&gt;&lt;p&gt;Unused in the other Bluetooth modes. Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_BLE_PIN</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
@@ -318,16 +213,7 @@ p, li { white-space: pre-wrap; }
             <longName>BLE Service Capacity</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;How many service you can create via the LBM extensions. Each extra service that you add capacity for will use a few extra bytes at all times in addition to the memory that's consumed dynamically when they're actually added in LBM scripts. (This memory usage does not relate to the LBM memory.)&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;This setting only applies if &lt;span style=&quot; font-weight:600;&quot;&gt;Bluetooth Mode&lt;/span&gt; is set to &lt;span style=&quot; font-weight:600;&quot;&gt;Enabled with Scripting&lt;/span&gt;.&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;NOTE:&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Bluetooth settings will be applied after a reboot.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Number of custom Bluetooth services that Lisp scripts can create in Scripting mode. Set this to at least the number your script needs.&lt;/p&gt;&lt;p&gt;More slots reserve more memory. Leave 0 when custom Bluetooth services are not used.&lt;/p&gt;&lt;p&gt;Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_BLE_SERVICE_CAPACITY</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
@@ -343,16 +229,7 @@ p, li { white-space: pre-wrap; }
             <longName>BLE Characteristic and Descriptor Capacity</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;How many characteristics and descriptors (added together) you can create via the LBM extensions. Each extra that you add capacity for will use a few extra bytes at all times in addition to the memory that's consumed dynamically when they're actually added in LBM scripts. (This memory usage does not relate to the LBM memory.)&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;This setting only applies if &lt;span style=&quot; font-weight:600;&quot;&gt;Bluetooth Mode&lt;/span&gt; is set to &lt;span style=&quot; font-weight:600;&quot;&gt;Enabled with Scripting&lt;/span&gt;.&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;NOTE:&lt;/span&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Bluetooth settings will be applied after a reboot.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Total number of characteristic and descriptor slots reserved for custom Lisp Bluetooth services in Scripting mode. Count both characteristics and their descriptors across all services.&lt;/p&gt;&lt;p&gt;More slots reserve more memory. Leave 0 when custom Bluetooth services are not used.&lt;/p&gt;&lt;p&gt;Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_BLE_CHR_DESCR_CAPACITY</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
@@ -365,14 +242,10 @@ p, li { white-space: pre-wrap; }
             <vTx>5</vTx>
         </ble_chr_descr_capacity>
         <cells_ic1>
-            <longName>Cells IC1</longName>
+            <longName>Cells on Lower BQ (IC1)</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;Cells on first balance IC. Must be at least 3 and at most 16. If it is less than 16 and the second IC is used too, the last used cell on the first IC must be bridged to the last cell on the first IC.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Number of series-connected cells measured by the first/lower BQ monitor, from 3 to 16. This must match the physically wired cells, not the number of cells in parallel.&lt;/p&gt;&lt;p&gt;Total series cell count is Cells IC1 + Cells IC2. Follow the board wiring diagram for unused cell inputs.&lt;/p&gt;&lt;p&gt;Writing a change automatically reinitializes the monitors and stops balancing during reinitialization.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_CELLS_IC1</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
@@ -385,14 +258,10 @@ p, li { white-space: pre-wrap; }
             <vTx>1</vTx>
         </cells_ic1>
         <cells_ic2>
-            <longName>Cells IC2</longName>
+            <longName>Cells on Upper BQ (IC2)</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;Cells on second balance IC. Must be at least 3 and at most 16. If only the first balance IC is used this can be set to 0.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Number of series-connected cells measured by the second/upper BQ monitor. Set 0 if it is unused; otherwise use 3 to 16 to match the wiring.&lt;/p&gt;&lt;p&gt;Values 1 and 2 are invalid. Total series cell count is Cells IC1 + Cells IC2.&lt;/p&gt;&lt;p&gt;Follow the board wiring diagram for unused inputs. Writing a change automatically reinitializes the monitors and stops balancing during reinitialization.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_CELLS_IC2</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
@@ -408,11 +277,7 @@ p, li { white-space: pre-wrap; }
             <longName>Temperature Sensors</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;Number of external temperature sensors, starting from the first temperature port on the hardware. If this number is set higher than the hardware has sensors all sensors will be used.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Number of enabled external cell NTC sensors. The firmware reads the first 0 to 4 sensor inputs; values above 4 still read only four sensors.&lt;/p&gt;&lt;p&gt;Match the number and order of physically connected sensors and configure NTC Resistance and Beta. Setting 0 substitutes a nominal 24 degrees C for cell-temperature checks, so actual cell temperature is not monitored.&lt;/p&gt;&lt;p&gt;Enabled sensors with invalid readings block charging and balancing. Onboard monitor and MOSFET temperature checks remain separate.&lt;/p&gt;&lt;p&gt;Sensor changes apply automatically after writing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_TEMP_NUM</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
@@ -428,11 +293,7 @@ p, li { white-space: pre-wrap; }
             <longName>NTC Resistance</longName>
             <type>4</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Resistance value for the external temperature sensors. This is the NTC resistance value at 25C. Please select from the list of supported values.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Nominal resistance of each external NTC temperature sensor at 25 degrees C, in ohms. Select the value from the sensor datasheet; for example, select 10k for a 10000-ohm NTC.&lt;/p&gt;&lt;p&gt;This setting applies to all enabled external NTC sensors. An incorrect value gives incorrect temperatures and therefore incorrect temperature limits.&lt;/p&gt;&lt;p&gt;Sensor settings apply automatically after writing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_TEMP_RES</cDefine>
             <valInt>2</valInt>
             <enumNames>4.7k</enumNames>
@@ -449,11 +310,7 @@ p, li { white-space: pre-wrap; }
             <longName>NTC Beta</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;B-Constant value for the NTC used for the external temperature sensors. It is recommended to use the B25-85 value.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Beta coefficient of the external NTC sensors, in kelvin (K), from the sensor datasheet; for example, 3435. It must match the fitted sensors and be greater than 0 when any external sensor is enabled.&lt;/p&gt;&lt;p&gt;This setting works together with NTC Resistance to convert resistance into temperature. Sensor settings apply automatically after writing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_TEMP_BETA</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
@@ -466,14 +323,10 @@ p, li { white-space: pre-wrap; }
             <vTx>3</vTx>
         </temp_beta>
         <batt_ah>
-            <longName>Ah Columb Counting</longName>
+            <longName>Battery Capacity</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;Battery ampere hours for columb counting.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Usable capacity of the complete battery pack, in amp-hours (Ah). Series connections increase voltage, not Ah; parallel connections add capacity.&lt;/p&gt;&lt;p&gt;For example, a 10 Ah cell group remains a 10 Ah pack when connected in series. Used to convert accumulated charge into state of charge (SOC) when Coulomb Counting is enabled.&lt;/p&gt;&lt;p&gt;Use a positive value that represents the actual pack.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_BATT_AH</cDefine>
             <editorDecimalsDouble>2</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -488,14 +341,10 @@ p, li { white-space: pre-wrap; }
             <vTx>9</vTx>
         </batt_ah>
         <soc_use_ah>
-            <longName>Use Columb Counting</longName>
+            <longName>Use Coulomb Counting for SOC</longName>
             <type>5</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;Use columb counting for SOC instead of the cell voltage. Columb counting is stable under load, but can drift over time especially when not charging the battery full.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Enabled estimates state of charge (SOC) by integrating measured current using Battery Capacity. This needs an accurate capacity and current measurement and is synchronized by a completed charge.&lt;/p&gt;&lt;p&gt;Disabled estimates SOC from the lowest cell voltage using Cell Voltage Empty and Full, with the SOC filter. Voltage-based SOC can change under load.&lt;/p&gt;&lt;p&gt;The minimum counter current does not filter the current used for Coulomb Counting SOC.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_SOC_USE_AH</cDefine>
             <valInt>0</valInt>
         </soc_use_ah>
@@ -503,11 +352,7 @@ p, li { white-space: pre-wrap; }
             <longName>Block Sleep Mode</longName>
             <type>5</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-family:'Sans Serif';&quot;&gt;Block sleep mode. This is useful for debugging and setting up the BMS for the first time. When the setup is done the sleep mode must be unblocked, otherwise the BMS will drain the battery.&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Enabled keeps the BMS awake instead of entering its normal automatic deep sleep. Disabled allows sleep when the pack is idle and the other sleep conditions are met.&lt;/p&gt;&lt;p&gt;Keeping the BMS awake uses more battery energy. This is not a charging or balancing enable switch.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_BLOCK_SLEEP</cDefine>
             <valInt>1</valInt>
         </block_sleep>
@@ -515,11 +360,7 @@ p, li { white-space: pre-wrap; }
             <longName>Max Balance Channels</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Maximum number of simultaneous balancing channels.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Maximum number of cells selected for balancing at the same time across the complete pack. Set 0 to disable balancing.&lt;/p&gt;&lt;p&gt;Only nonadjacent channels are selected, so the actual count can be lower. Fewer channels reduce heat but can make balancing take longer.&lt;/p&gt;&lt;p&gt;Values above the physical cell count cannot create additional channels. This limit does not start balancing by itself.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_MAX_BAL_CH</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
@@ -535,16 +376,12 @@ p, li { white-space: pre-wrap; }
             <longName>Cell Voltage Empty</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Cell voltage when empty.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Lowest-cell voltage, in volts per cell, used as the empty reference for voltage-based SOC. It must be below Cell Voltage Full.&lt;/p&gt;&lt;p&gt;This is an SOC reference, not a programmable discharge cutoff. Choose it for the cell chemistry and the usable capacity you want to report.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_VC_EMPTY</cDefine>
             <editorDecimalsDouble>2</editorDecimalsDouble>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
-            <maxDouble>99</maxDouble>
+            <maxDouble>4.999</maxDouble>
             <minDouble>0</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>0.01</stepDouble>
@@ -557,16 +394,12 @@ p, li { white-space: pre-wrap; }
             <longName>Cell Voltage Full</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Cell voltage when full.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Lowest-cell voltage, in volts per cell, used as the full reference for voltage-based SOC. It must be above Cell Voltage Empty and at least as high as the configured charge thresholds.&lt;/p&gt;&lt;p&gt;This is an SOC reference; Charge End Voltage controls when charging stops. Match the cell chemistry.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_VC_FULL</cDefine>
             <editorDecimalsDouble>2</editorDecimalsDouble>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
-            <maxDouble>99</maxDouble>
+            <maxDouble>4.999</maxDouble>
             <minDouble>0</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>0.01</stepDouble>
@@ -576,14 +409,10 @@ p, li { white-space: pre-wrap; }
             <vTx>9</vTx>
         </vc_full>
         <vc_balance_start>
-            <longName>Balance Starting Voltage</longName>
+            <longName>Balance Start Difference</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Start balancing if cell voltage is this much above the minimum cell voltage.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Voltage difference, in volts, between a higher cell and the lowest cell in the pack that qualifies it for balancing. For example, 0.015 V means 15 mV above the lowest cell.&lt;/p&gt;&lt;p&gt;This is not an absolute cell voltage. Keep it at least as high as Balance Stop Difference.&lt;/p&gt;&lt;p&gt;Lower values target closer matching but can react more to measurement noise. Other balance safety conditions must also be satisfied.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_BALANCE_START</cDefine>
             <editorDecimalsDouble>3</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -598,14 +427,10 @@ p, li { white-space: pre-wrap; }
             <vTx>9</vTx>
         </vc_balance_start>
         <vc_balance_end>
-            <longName>Balance End Voltage</longName>
+            <longName>Balance Stop Difference</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Stop balancing when cell voltage is this much above the minimum cell voltage.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Smaller voltage difference, in volts, used to finish balancing after it has started. For example, 0.008 V means 8 mV above the lowest cell.&lt;/p&gt;&lt;p&gt;Set it no higher than Balance Start Difference; a lower stop value provides hysteresis and avoids repeatedly starting and stopping near one threshold.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_BALANCE_END</cDefine>
             <editorDecimalsDouble>3</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -623,16 +448,12 @@ p, li { white-space: pre-wrap; }
             <longName>Charge Start Voltage</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Start charging when the maximum cell voltage is below this voltage.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Highest-cell voltage, in volts per cell, below which a new charge is allowed to start. Once charging is running, Charge End Voltage becomes the upper limit.&lt;/p&gt;&lt;p&gt;Set this no higher than Charge End Voltage; a lower start value provides hysteresis. Charging also requires valid measurements, safe temperatures, an available charger and no blocking fault.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_CHARGE_START</cDefine>
             <editorDecimalsDouble>3</editorDecimalsDouble>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
-            <maxDouble>99</maxDouble>
+            <maxDouble>4.999</maxDouble>
             <minDouble>0</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>0.01</stepDouble>
@@ -645,16 +466,12 @@ p, li { white-space: pre-wrap; }
             <longName>Charge End Voltage</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;End charging when the maximum cell voltage is above this voltage.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Highest-cell voltage, in volts per cell, at which the BMS stops charging and marks the session complete. This limits each cell, not the total pack voltage, and does not regulate charger output voltage.&lt;/p&gt;&lt;p&gt;Match the cell chemistry and keep it at least as high as Charge Start Voltage and no higher than Cell Voltage Full.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_CHARGE_END</cDefine>
             <editorDecimalsDouble>3</editorDecimalsDouble>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
-            <maxDouble>99</maxDouble>
+            <maxDouble>4.999</maxDouble>
             <minDouble>0</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>0.01</stepDouble>
@@ -667,16 +484,12 @@ p, li { white-space: pre-wrap; }
             <longName>Charge Minimum Voltage</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Only allow charging if all cells are above this voltage.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Lowest-cell voltage, in volts per cell, required to allow charging. Charging is blocked if any cell is at or below this value.&lt;/p&gt;&lt;p&gt;Set it below Charge Start Voltage and within the cell manufacturer charging limits. This setting does not provide a recovery procedure for deeply discharged cells.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_CHARGE_MIN</cDefine>
             <editorDecimalsDouble>3</editorDecimalsDouble>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
-            <maxDouble>99</maxDouble>
+            <maxDouble>4.999</maxDouble>
             <minDouble>0</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>0.01</stepDouble>
@@ -689,16 +502,12 @@ p, li { white-space: pre-wrap; }
             <longName>Balance Minimum Voltage</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Only allow balancing if all cells are above this voltage.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Minimum voltage of the lowest cell, in volts per cell, needed to allow balancing. If any cell is below this value, balancing is blocked for the pack.&lt;/p&gt;&lt;p&gt;This avoids removing charge from a pack that is already low. This is an absolute cell voltage; Balance Start and Stop Difference are separate voltage differences.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_BALANCE_MIN</cDefine>
             <editorDecimalsDouble>3</editorDecimalsDouble>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
-            <maxDouble>99</maxDouble>
+            <maxDouble>4.999</maxDouble>
             <minDouble>0</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>0.01</stepDouble>
@@ -708,14 +517,10 @@ p, li { white-space: pre-wrap; }
             <vTx>9</vTx>
         </vc_balance_min>
         <t_bal_max_cell>
-            <longName>Max Cell Temp Balancing</longName>
+            <longName>Maximum Cell Temperature for Balancing</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Disable balancing when the cell temperature is above this value.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Maximum external cell-sensor temperature, in degrees C, allowed for balancing. Balancing stops when the hottest enabled cell sensor exceeds this value.&lt;/p&gt;&lt;p&gt;Disabled or absent cell sensors cannot provide cell-temperature protection; configure fitted sensors correctly. BQ monitor temperature is limited separately.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_T_BAL_MAX_CELL</cDefine>
             <editorDecimalsDouble>1</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -726,18 +531,14 @@ p, li { white-space: pre-wrap; }
             <stepDouble>1</stepDouble>
             <valDouble>45</valDouble>
             <vTxDoubleScale>10</vTxDoubleScale>
-            <suffix> °C</suffix>
+            <suffix> Â°C</suffix>
             <vTx>7</vTx>
         </t_bal_max_cell>
         <t_bal_max_ic>
-            <longName>Max BMS Temp Balancing</longName>
+            <longName>Maximum BQ Temperature for Balancing</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Disable balancing when the BMS temperature is above this value.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Maximum internal BQ monitor temperature, in degrees C, allowed for balancing. Balancing stops when the hottest monitor exceeds this value.&lt;/p&gt;&lt;p&gt;Balancing resistors generate heat, so this limit is separate from the external cell-temperature limit.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_T_BAL_MAX_IC</cDefine>
             <editorDecimalsDouble>1</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -748,18 +549,14 @@ p, li { white-space: pre-wrap; }
             <stepDouble>1</stepDouble>
             <valDouble>85</valDouble>
             <vTxDoubleScale>10</vTxDoubleScale>
-            <suffix> °C</suffix>
+            <suffix> Â°C</suffix>
             <vTx>7</vTx>
         </t_bal_max_ic>
         <balance_max_current>
             <longName>Balance Maximum Current</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Only allow balancing when the current magnitude is below this value.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Maximum magnitude of pack current, in amps, at which balancing may start. Both charging and discharging current count.&lt;/p&gt;&lt;p&gt;Balancing waits when current is too high so cell-voltage readings are less affected by load. This does not limit or regulate pack current.&lt;/p&gt;&lt;p&gt;Once balancing is active, it may continue up to 1.25 times this value to avoid rapid start/stop cycling.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_BALANCE_MAX_CURRENT</cDefine>
             <editorDecimalsDouble>3</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -777,11 +574,7 @@ p, li { white-space: pre-wrap; }
             <longName>Minimum Counter Current</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;The current must be above this magnitude for the Ah and Wh couters to run.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Minimum magnitude of measured current, in amps, for accumulating the reported amp-hour (Ah) and watt-hour (Wh) usage counters. Both charge and discharge count.&lt;/p&gt;&lt;p&gt;With 0.3 A, currents at or below 0.3 A do not add to these counters, which reduces accumulation from measurement noise but also excludes real small loads. It does not change the displayed current or the current integrated for Coulomb Counting SOC.&lt;/p&gt;&lt;p&gt;Changes apply when written.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_MIN_CURRENT_AH_WH_CNT</cDefine>
             <editorDecimalsDouble>3</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -796,14 +589,10 @@ p, li { white-space: pre-wrap; }
             <vTx>9</vTx>
         </min_current_ah_wh_cnt>
         <min_current_sleep>
-            <longName>Minimum Sleep Current</longName>
+            <longName>Sleep Current Threshold</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Enter sleep mode when the current magnitude is below this value.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Current threshold, in amps, used to decide whether the pack is idle. Charging or discharging current above this magnitude resets the idle timer; current at or below it can qualify for sleep.&lt;/p&gt;&lt;p&gt;Other conditions, such as enable input, balancing and active communication, must also permit sleep. A higher value can classify a small real load as idle; 0 can keep the device awake because of noise.&lt;/p&gt;&lt;p&gt;This does not switch off current at the selected value.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_MIN_CURRENT_SLEEP</cDefine>
             <editorDecimalsDouble>3</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -818,14 +607,10 @@ p, li { white-space: pre-wrap; }
             <vTx>9</vTx>
         </min_current_sleep>
         <t_charge_max>
-            <longName>Charge Temp Max</longName>
+            <longName>Maximum Cell Temperature for Charging</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Disable charging when the cell temperature is above this value.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Maximum external cell-sensor temperature, in degrees C, allowed for charging. Charging is blocked when the hottest enabled cell sensor is at or above this value.&lt;/p&gt;&lt;p&gt;Set it above Minimum Cell Temperature for Charging and within the cell manufacturer limits. Requires enabled, correctly configured external sensors.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_T_CHARGE_MAX</cDefine>
             <editorDecimalsDouble>1</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -836,18 +621,14 @@ p, li { white-space: pre-wrap; }
             <stepDouble>1</stepDouble>
             <valDouble>45</valDouble>
             <vTxDoubleScale>10</vTxDoubleScale>
-            <suffix> °C</suffix>
+            <suffix> Â°C</suffix>
             <vTx>7</vTx>
         </t_charge_max>
         <t_charge_max_mos>
-            <longName>Charge Temp Max Mos</longName>
+            <longName>Maximum MOSFET Temperature for Charging</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Disable charging when the MOSFET temperature is above this value.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Maximum onboard MOSFET temperature, in degrees C, allowed for charging. Charging is blocked at or above this value.&lt;/p&gt;&lt;p&gt;This protects the charging electronics and is separate from the external cell-sensor limits.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_T_CHARGE_MAX_MOS</cDefine>
             <editorDecimalsDouble>1</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -858,18 +639,14 @@ p, li { white-space: pre-wrap; }
             <stepDouble>1</stepDouble>
             <valDouble>85</valDouble>
             <vTxDoubleScale>10</vTxDoubleScale>
-            <suffix> °C</suffix>
+            <suffix> Â°C</suffix>
             <vTx>7</vTx>
         </t_charge_max_mos>
         <min_charge_current>
             <longName>Min Charge Current</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Stop charging and disable charge port when the charge current goes below this value.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Minimum charging current, in amps, expected from an active charger after the 10-second startup grace period. If current is at or below this value before Charge End Voltage is reached, charging stops with CHG_NO_CURRENT.&lt;/p&gt;&lt;p&gt;This does not mean the battery is full and does not regulate charger current. Unplug for more than 5 seconds or use Chg En to retry after correcting the cause.&lt;/p&gt;&lt;p&gt;Choose a value below the lowest current expected from your charger.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_MIN_CHARGE_CURRENT</cDefine>
             <editorDecimalsDouble>2</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -887,11 +664,7 @@ p, li { white-space: pre-wrap; }
             <longName>Max Charge Current</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Slow software charge-current cutoff. Independent of the BQ hardware protection thresholds.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Software charging-overcurrent threshold, in amps. If measured charging current exceeds this value while charging, the BMS disables charging and latches a fault.&lt;/p&gt;&lt;p&gt;This is a trip threshold, not a charger current regulator. Select a value above normal charger current but within the ratings of the cells and charging hardware.&lt;/p&gt;&lt;p&gt;Correct the cause before clearing the fault or reconnecting.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_MAX_CHARGE_CURRENT</cDefine>
             <editorDecimalsDouble>2</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -906,16 +679,10 @@ p, li { white-space: pre-wrap; }
             <vTx>9</vTx>
         </max_charge_current>
         <sleep>
-            <longName>Sleep Time</longName>
+            <longName>Periodic Wake Interval</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;The BMS will wake up periodically (X sleep time hours) to check that the SoC is not below 5% or the shutdown time has passed, in which case it will enter shutdown mode.&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Max value is 168 hours which represents one week. Note that if this value is set higher than the shutdown days then the BMS shutdown will not happen until the BMS wakes up from sleep.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Interval between periodic timer wakes during deep sleep, in hours. For example, 12 means the sleeping BMS wakes every 12 hours for its checks.&lt;/p&gt;&lt;p&gt;This does not mean the BMS waits 12 hours before entering sleep; idle conditions control sleep entry. Hardware wake inputs can wake it earlier.&lt;/p&gt;&lt;p&gt;Block Sleep prevents normal deep sleep.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_SLEEP</cDefine>
             <editorDecimalsDouble>1</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -930,16 +697,10 @@ p, li { white-space: pre-wrap; }
             <vTx>7</vTx>
         </sleep>
         <shutdown>
-            <longName>Shutdown Time</longName>
+            <longName>Timed Shutdown After Sleep</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Time in days for the BMS to enter shutdown after the last time it was used. Every time the BMS is waken up by plugging in the charger or waking up over CAN the timer will reset. Once the BMS has entered shutdown, it lowers its idle consumption to levels low enough that in most cases the battery should last years before going flat.&lt;/p&gt;
-&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;The BMS will emit a series of rapid beeps when it is about to enter shutdown. Once the BMS is in shutdown, the only way to wake it up is by plugging in the charger, once voltage is detected on the charge port, the BMS DCDC will awake along with the ESP32 and the balancing ICs.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Time accumulated in sleep, in days, before the BMS enters hardware shutdown. Set 0 to disable this timed shutdown.&lt;/p&gt;&lt;p&gt;Hardware shutdown is different from deep sleep: periodic timer waking stops and hardware wake or power-up is required. A low-SOC timer wake may still cause shutdown independently of this setting.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_SHUTDOWN</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
@@ -952,14 +713,10 @@ p, li { white-space: pre-wrap; }
             <vTx>4</vTx>
         </shutdown>
         <soc_filter_const>
-            <longName>SoC Filter Constant</longName>
+            <longName>Voltage SOC Smoothing</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;State of Charge filter constant. Range 0.1 to 1 000 000. Lower values give more filtering. 1 000 000 disables filtering.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Smoothing strength for voltage-based state of charge (SOC). A smaller value gives a slower, steadier response; a larger value follows voltage changes faster.&lt;/p&gt;&lt;p&gt;0 holds the previous estimate during filtering. The displayed value is scaled: 10 means a stored value of 0.00001.&lt;/p&gt;&lt;p&gt;Use displayed values from 0 to 10000; 10000 means no smoothing. Values above 10000 can make JFBMS32 estimates overshoot.&lt;/p&gt;&lt;p&gt;Unused when Coulomb Counting SOC is enabled.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_SOC_FILTER_CONST</cDefine>
             <editorDecimalsDouble>1</editorDecimalsDouble>
             <editorScale>1e+06</editorScale>
@@ -974,14 +731,10 @@ p, li { white-space: pre-wrap; }
             <vTx>9</vTx>
         </soc_filter_const>
         <t_charge_min>
-            <longName>Charge Temp Min</longName>
+            <longName>Minimum Cell Temperature for Charging</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
-&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
-p, li { white-space: pre-wrap; }
-&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
-&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Disable charging when the cell temperature is below this value.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Minimum external cell-sensor temperature, in degrees C, allowed for charging. Charging is blocked when the coldest enabled cell sensor is at or below this value.&lt;/p&gt;&lt;p&gt;Set it below Maximum Cell Temperature for Charging and within the cell manufacturer limits. Requires enabled, correctly configured external sensors.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_T_CHARGE_MIN</cDefine>
             <editorDecimalsDouble>1</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -992,14 +745,14 @@ p, li { white-space: pre-wrap; }
             <stepDouble>1</stepDouble>
             <valDouble>0</valDouble>
             <vTxDoubleScale>10</vTxDoubleScale>
-            <suffix> °C</suffix>
+            <suffix> Â°C</suffix>
             <vTx>7</vTx>
         </t_charge_min>
         <hw_occ_current>
             <longName>Charge Overcurrent (OCC)</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>Independent BQ charge-overcurrent detection threshold. Fault remains latched until you remove the cause and press Chg En. Values are rounded to the nearest 2 A with the fitted 1 mOhm shunt. Trip timing is fixed by firmware. OCC cutoff uses native firmware polling on this board (20 ms schedule; communication and scheduling can add delay). DDSG directly handles discharge overcurrent and short circuits.</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;BQ charge-overcurrent threshold, in amps, for the fitted 1 milliohm current shunt. Range 4 to 124 A, rounded to the nearest 2 A step.&lt;/p&gt;&lt;p&gt;A BQ overcurrent fault is handled by firmware to disable charging; this is separate from the software Max Charge Current setting. It does not regulate charger current.&lt;/p&gt;&lt;p&gt;Match the charger, cells, shunt and board ratings. Changes automatically reinitialize the BQ monitors, temporarily stopping charging and balancing.&lt;/p&gt;&lt;p&gt;Remove the fault cause before attempting recovery.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_HW_OCC_CURRENT</cDefine>
             <editorDecimalsDouble>0</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -1017,7 +770,7 @@ p, li { white-space: pre-wrap; }
             <longName>Discharge Overcurrent (OCD1)</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>Independent BQ discharge-overcurrent detection threshold. Fault remains latched until you remove the cause and press Chg En. Values are rounded to the nearest 2 A with the fitted 1 mOhm shunt. Trip timing is fixed by firmware.</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;BQ discharge-overcurrent threshold, in amps, for the fitted 1 milliohm current shunt. Range 4 to 200 A, rounded to the nearest 2 A step.&lt;/p&gt;&lt;p&gt;A trip activates the discharge protection/interlock; this is separate from charging-current protection. It does not regulate discharge current.&lt;/p&gt;&lt;p&gt;Match the cells and discharge hardware ratings. Changes automatically reinitialize the BQ monitors.&lt;/p&gt;&lt;p&gt;Remove the fault cause before attempting recovery.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_HW_OCD_CURRENT</cDefine>
             <editorDecimalsDouble>0</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -1035,7 +788,7 @@ p, li { white-space: pre-wrap; }
             <longName>Short-circuit Threshold (SCD)</longName>
             <type>4</type>
             <transmittable>1</transmittable>
-            <description>BQ shunt-voltage threshold for short-circuit detection. With the JFBMS32 1 mOhm shunt, 40 mV corresponds to 40 A. Remove the short before pressing Chg En to reset. Trip timing is fixed by firmware.</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;BQ short-circuit trip voltage across the current shunt, in millivolts (mV). With the fitted 1 milliohm shunt, the numerical threshold in mV equals current in amps: 40 mV corresponds to about 40 A.&lt;/p&gt;&lt;p&gt;A higher threshold is less sensitive to current spikes but allows more fault current before tripping. Use a value appropriate for the actual shunt and board ratings.&lt;/p&gt;&lt;p&gt;This is a fault trip, not a current regulator. Changes automatically reinitialize the BQ monitors; remove the short circuit before attempting recovery.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_PSW_SCD_TRES</cDefine>
             <valInt>2</valInt>
             <enumNames>10 mV</enumNames>
@@ -1160,6 +913,7 @@ p, li { white-space: pre-wrap; }
                     <param>cells_ic2</param>
                     <param>batt_ah</param>
                     <param>soc_use_ah</param>
+                    <param>min_current_ah_wh_cnt</param>
                     <param>vc_empty</param>
                     <param>vc_full</param>
                     <param>temp_num</param>
@@ -1207,12 +961,6 @@ p, li { white-space: pre-wrap; }
                     <param>sleep</param>
                     <param>block_sleep</param>
                     <param>shutdown</param>
-                </subgroupParams>
-            </subgroup>
-            <subgroup>
-                <subgroupName>Counters</subgroupName>
-                <subgroupParams>
-                    <param>min_current_ah_wh_cnt</param>
                 </subgroupParams>
             </subgroup>
         </group>

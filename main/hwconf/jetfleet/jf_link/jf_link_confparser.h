@@ -6,14 +6,15 @@
 #include "datatypes.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 // Constants
 #define MAIN_CONFIG_T_SIGNATURE		578767570
 #define SERIALIZED_CONFIG_LENGTH	263
 
 // Functions
-int32_t jf_link_confparser_serialize_main_config_t(uint8_t *buffer, const main_config_t *conf);
-bool jf_link_confparser_deserialize_main_config_t(const uint8_t *buffer, main_config_t *conf);
+int32_t jf_link_confparser_serialize_main_config_t(uint8_t *buffer, size_t capacity, const main_config_t *conf);
+bool jf_link_confparser_deserialize_main_config_t(const uint8_t *buffer, size_t length, main_config_t *conf);
 void jf_link_confparser_set_defaults_main_config_t(main_config_t *conf);
 
 // JF_LINK_CONFPARSER_H_

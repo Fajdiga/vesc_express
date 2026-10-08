@@ -31,6 +31,9 @@
 (def charge-enable-beeped false)
 (def trigger-bal-after-charge false)
 (def charge-complete false)
+(def charge-no-current false)
+(def active-config-generation 0)
+(def balance-cache-generation 0)
 (def charge-ts (systime))
 (def charge-dis-ts (systime))
 (def last-fast-trip-count -1)
@@ -85,12 +88,10 @@
     (short-count . 0)
     (short-service . false)
     (sleep-enter-time-s . 0)
-    (sleep-total-time-s . 0)
-))
+    (sleep-total-time-s . 0)))
 (def rtc-val-magic 127)
 
 (def prev-active (list 0 0 0 0 0 0 0 0))
-(def prev-bal-mask (list 0 0 0 0 0 0 0 0))
 (def prev-can-overflow 0)
 
 ; Balancing state. Only IDLE may permit CHG_EN to rise.
@@ -102,7 +103,6 @@
 (def slave-bal-mask-ic1 (list 0 0 0 0 0 0 0 0))
 (def slave-bal-mask-ic2 (list 0 0 0 0 0 0 0 0))
 
-(def shutdown-reason-unknown 0)
 (def shutdown-reason-timer 1)
 (def shutdown-reason-low-soc-timer 2)
 (def shutdown-reason-app 4)
@@ -115,32 +115,21 @@
 
 ; Pre-load dynamically provided helpers so they are included in the image.
 str-merge
-foldl
-foldr
-zipwith
-filter
-str-cmp-asc
-str-cmp-dsc
 second
-third
 abs
 
 defun
 defunret
-defmacro
-loopfor
 loopwhile
 looprange
 loopforeach
-loopwhile-thd
 
 ;;;;;;;;;; Generic helpers ;;;;;;;;;;
 
 (defun trap-value (expr fallback) {
     (match (trap (eval expr))
         ((exit-ok (? value)) value)
-        (_ fallback)
-    )
+        (_ fallback))
 })
 
 (defun save-rtc-val () {
@@ -162,17 +151,10 @@ loopwhile-thd
 (defun param-or (name fallback) {
     (match (trap (bms-get-param name))
         ((exit-ok (? value)) value)
-        (_ fallback)
-    )
+        (_ fallback))
 })
 
-(defun truncate (n min max)
-    (if (< n min)
-        min
-        (if (> n max)
-            max
-            n
-)))
+(defun truncate (n min max) (if (< n min) min (if (> n max) max n)))
 
 (defun cfg-num-slaves () (truncate (param-or 'num_slaves 1) 1 8))
 
@@ -197,58 +179,37 @@ loopwhile-thd
 (defun fast-oc-status ()
     ; C returns: (latched armed trip-count last-raw current-a trip-time-s direction).
     ; A missing extension must fail closed without inventing a latched trip.
-    (trap-value '(master-fast-oc-status) '(nil nil 0 0 0.0 0.0 0))
-)
+    (trap-value '(master-fast-oc-status) '(nil nil 0 0 0.0 0.0 0)))
 
 (defun fast-oc-latched () {
     (var status (fast-oc-status))
-    (or
-        (eq status nil)
-        (< (length status) 2)
-        (not (eq (ix status 0) nil))
-    )
+    (or (eq status nil) (< (length status) 2) (not (eq (ix status 0) nil)))
 })
 
 (defun fast-oc-armed () {
     (var status (fast-oc-status))
-    (and
-        status
-        (>= (length status) 2)
-        (not (eq (ix status 1) nil))
-    )
+    (and status (>= (length status) 2) (not (eq (ix status 1) nil)))
 })
 
-(defun c-balance-inhibited ()
-    (trap-value '(master-balance-inhibited?) false)
-)
+(defun c-balance-inhibited () (trap-value '(master-balance-inhibited?) false))
 
-(defun charge-pack-fresh ()
-    (trap-value '(master-pack-charge-fresh?) false)
-)
+(defun charge-pack-fresh () (trap-value '(master-pack-charge-fresh?) false))
 
-(defun balance-in-progress () (or
-    (not (balance-state-is bal-state-idle))
-    (c-balance-inhibited)
-))
+(defun balance-in-progress () (or (not (balance-state-is bal-state-idle)) (c-balance-inhibited)))
 
 ; Keep the balance request visible in C before Lisp exposes REQUESTED state.
 (defun set-c-balance-request (requested) {
     (trap-value (list 'master-balance-request (bool-int requested)) false)
 })
 
-(defun lpf (val sample tc)
-    (- val (* tc (- val sample)))
-)
+(defun lpf (val sample tc) (- val (* tc (- val sample))))
 
 (defun calc-soc (v-cell) {
     (var empty (bms-get-param 'vc_empty))
     (var full (bms-get-param 'vc_full))
     (var den (- full empty))
 
-    (if (= den 0.0)
-        0.0
-        (truncate (/ (- v-cell empty) den) 0.0 1.0)
-    )
+    (if (= den 0.0) 0.0 (truncate (/ (- v-cell empty) den) 0.0 1.0))
 })
 
 ; Persistent counters. Keep the layout aligned with jfbms32.
@@ -260,41 +221,24 @@ loopwhile-thd
     (wh-chg-tot  . (4 f))
     (ah-dis-tot  . (5 f))
     (wh-dis-tot  . (6 f))
-    (ah-cnt-soc  . (7 f))
-))
+    (ah-cnt-soc  . (7 f))))
 
 (def settings-version-legacy 243i32)
 (def settings-version 244i32)
 
-(defun read-setting (name)
-    (let (
-            (addr (first (assoc eeprom-addrs name)))
-            (type (second (assoc eeprom-addrs name)))
-        )
-        (cond
-            ((eq type 'i) (eeprom-read-i addr))
-            ((eq type 'f) (eeprom-read-f addr))
-            ((eq type 'b) (!= (eeprom-read-i addr) 0))
-)))
+(defun read-setting (name) {
+    (var entry (assoc eeprom-addrs name))
+    (if (eq (second entry) 'i) (eeprom-read-i (first entry)) (eeprom-read-f (first entry)))
+})
 
-(defun write-setting (name val)
-    (let (
-            (addr (first (assoc eeprom-addrs name)))
-            (type (second (assoc eeprom-addrs name)))
-        )
-        (cond
-            ((eq type 'i) (eeprom-store-i addr val))
-            ((eq type 'f) (eeprom-store-f addr val))
-            ((eq type 'b) (eeprom-store-i addr (if val 1 0)))
-)))
+(defun write-setting (name val) {
+    (var entry (assoc eeprom-addrs name))
+    (if (eq (second entry) 'i) (eeprom-store-i (first entry) val) (eeprom-store-f (first entry) val))
+})
 
-(defun number-or (value fallback)
-    (if (number? value) value fallback)
-)
+(defun number-or (value fallback) (if (number? value) value fallback))
 
-(defun rtc-number (name fallback)
-    (number-or (assoc rtc-val name) fallback)
-)
+(defun rtc-number (name fallback) (number-or (assoc rtc-val name) fallback))
 
 (defun sanitize-rtc-val () {
     (setassoc rtc-val 'charge-fault (if (assoc rtc-val 'charge-fault) true false))
@@ -314,18 +258,9 @@ loopwhile-thd
     (setq wh-chg-tot 0.0)
     (setq ah-dis-tot 0.0)
     (setq wh-dis-tot 0.0)
-    (setq ah-cnt-soc (if (valid-pack-reading)
-        (* (calc-soc c-min) (bms-get-param 'batt_ah))
-        -1.0
-    ))
+    (setq ah-cnt-soc (if (valid-pack-reading) (* (calc-soc c-min) (bms-get-param 'batt_ah)) -1.0))
 
-    (write-setting 'ah-cnt ah-cnt)
-    (write-setting 'wh-cnt wh-cnt)
-    (write-setting 'ah-chg-tot ah-chg-tot)
-    (write-setting 'wh-chg-tot wh-chg-tot)
-    (write-setting 'ah-dis-tot ah-dis-tot)
-    (write-setting 'wh-dis-tot wh-dis-tot)
-    (write-setting 'ah-cnt-soc ah-cnt-soc)
+    (save-settings)
     (write-setting 'ver-code settings-version)
 })
 
@@ -336,11 +271,8 @@ loopwhile-thd
     ; not-eq is used here because a fresh EEPROM can return nil for ver-code;
     ; the numeric = operator raises a type error when comparing nil to i32.
     (if (not-eq stored-version settings-version-legacy)
-        (if (not-eq stored-version settings-version)
-            (restore-settings)
-        )
-        (write-setting 'ver-code settings-version)
-    )
+        (if (not-eq stored-version settings-version) (restore-settings))
+        (write-setting 'ver-code settings-version))
 
     (setq ah-cnt (number-or (read-setting 'ah-cnt) 0.0))
     (setq wh-cnt (number-or (read-setting 'wh-cnt) 0.0))
@@ -370,19 +302,13 @@ loopwhile-thd
     (var age (secs-since soc-checkpoint-ts))
     (var delta (if (and (> batt-ah 0.0) (>= soc-checkpoint-ah 0.0))
         (/ (abs (- ah-cnt-soc soc-checkpoint-ah)) batt-ah)
-        1.0
-    ))
+        1.0))
     (var due (and
         (>= ah-cnt-soc 0.0)
         (or
             force
             (>= age soc-checkpoint-max-time-s)
-            (and
-                (>= age soc-checkpoint-min-time-s)
-                (>= delta soc-checkpoint-delta)
-            )
-        )
-    ))
+            (and (>= age soc-checkpoint-min-time-s) (>= delta soc-checkpoint-delta)))))
 
     (if due {
         (write-setting 'ah-cnt-soc ah-cnt-soc)
@@ -394,26 +320,13 @@ loopwhile-thd
 })
 
 (defun status-append (base part)
-    (if (> (str-len part) 0)
-        (if (> (str-len base) 0)
-            (str-merge base "|" part)
-            part
-        )
-        base
-))
+    (if (> (str-len part) 0) (if (> (str-len base) 0) (str-merge base "|" part) part) base))
 
-(defun temp-valid (temp) (and (>= temp -40.0) (<= temp 120.0)))
+; LispBM's numeric comparisons alone do not reject NaN.
+(defun number-in-range (value low high)
+    (and (number? value) (not (is-nan value)) (not (is-inf value)) (>= value low) (<= value high)))
 
-(defun display-temp (temp) (if (temp-valid temp) temp 0.0))
-
-(defun all-temps-valid () (and
-    (temp-valid t-ic)
-    (temp-valid t-mos)
-    (or
-        (not cell-temp-mon-en)
-        (and (temp-valid t-min) (temp-valid t-max))
-    )
-))
+(defun temp-valid (temp) (number-in-range temp -40.0 120.0))
 
 ; True when a real communication interface is connected.
 (defun is-comm-connected () (or (connected-wifi) (connected-usb) (connected-ble)))
@@ -438,28 +351,21 @@ loopwhile-thd
 
 (defun pcb-temp-data-ok () (!= (bitwise-and (local-sensor-status) 0x04) 0))
 
-(defun can-active () {
+(defunret can-active () {
     (var devs (can-list-devs))
-    (var active false)
-
-    (if (not (eq devs nil)) {
-        (looprange i 1 7 {
-            (var age (can-msg-age (first devs) i))
-            (if (and age (< age 0.1)) (setq active true))
-        })
+    (if (eq devs nil) (return false))
+    (looprange i 1 7 {
+        (var age (can-msg-age (first devs) i))
+        (if (and age (< age 0.1)) (return true))
     })
-
-    active
+    false
 })
 
 (defun sleep-duration-s () {
     (var dur (* (bms-get-param 'sleep) 3600.0))
 
     ; sleep-deep 0 means no timer wakeup, which is not useful for this master.
-    (if (< dur 1.0)
-        1.0
-        dur
-    )
+    (if (< dur 1.0) 1.0 dur)
 })
 
 (defun charger-status () {
@@ -474,8 +380,7 @@ loopwhile-thd
         status
         (>= (length status) 2)
         (not (eq (ix status 0) nil))
-        (not (eq (ix status 1) nil))
-    ))
+        (not (eq (ix status 1) nil))))
 
     ; Keep JFBMS32 disconnect semantics: refresh for the whole detected period.
     (if detected (setq charge-dis-ts (systime)))
@@ -492,8 +397,7 @@ loopwhile-thd
     (< c-max 5.0)
     (>= c-max c-min)
     (> vtot (* cell-num 1.5))
-    (>= soc 0.0)
-))
+    (>= soc 0.0)))
 
 ;;;;;;;;;; Buzzer and output control ;;;;;;;;;;
 
@@ -526,25 +430,13 @@ loopwhile-thd
 
     ; Charging has priority. A charge request first performs the checked
     ; three-pass zero-mask handoff; CHG_EN cannot rise while STOPPING fails.
-    (if (and requested (fast-oc-latched))
-        (setq allowed false)
-    )
+    (if (and requested (fast-oc-latched)) (setq allowed false))
     ; Charging remains locked until the one-second zero capture completes.
     ; Never let a direct caller bypass that pre-charge step.
-    (if (and requested (not current-zero-ready))
-        (setq allowed false)
-    )
-    (if (and requested (balance-in-progress))
-        (setq allowed (stop-all-balancing))
-    )
+    (if (and requested (not current-zero-ready)) (setq allowed false))
+    (if (and requested (balance-in-progress)) (setq allowed (and allowed (stop-all-balancing))))
 
-    (var ok false)
-    (if allowed {
-        (match (trap (master-set-chg (bool-int requested)))
-            ((exit-ok (? result)) (setq ok result))
-            (_ (setq ok false))
-        )
-    })
+    (var ok (and allowed (trap-value (list 'master-set-chg (bool-int requested)) false)))
 
     (if (and requested ok) {
         (setq is-charging true)
@@ -563,176 +455,91 @@ loopwhile-thd
     ok
 })
 
-(defun send-slave-beep (code) {
-    (var sid 1)
-    (var max-sid (cfg-num-slaves))
-
-    (loopwhile (<= sid max-sid) {
-        (if (master-slave-active? sid)
-            (master-send-balance sid
-                (ix slave-bal-mask-ic1 (- sid 1))
-                (ix slave-bal-mask-ic2 (- sid 1))
-                code)
-        )
-        (setq sid (+ sid 1))
-    })
-})
+(defun send-slave-beep (code) (send-cached-balance-masks code))
 
 ;;;;;;;;;; Slave data aggregation ;;;;;;;;;;
 
-(defun update-temp-globals () {
-    (var max-sid (cfg-num-slaves))
-    (var sid 1)
-    (var temps-ok true)
+; Accumulate required IC/NTC temperatures from the same slave snapshot as cells.
+; Slave order is IC1, cell1, IC2, cell2; status[4] enables the two cell NTCs.
+(defun scan-slave-temperatures (sid status ic2-count) {
+    (var flags (if (and status (>= (length status) 5)) (ix status 4) 3))
+    (var temps (master-get-slave-temps sid))
+    (var expected (if (> ic2-count 0) 4 2))
+    (var valid (and temps (>= (length temps) expected)))
+    (if valid (looprange i 0 expected {
+        (var is-ic (= (mod i 2) 0))
+        (var enabled (!= (bitwise-and flags (if (< i 2) 1 2)) 0))
+        (var temp (ix temps i))
+        (if (and (not is-ic) enabled) (setq cell-temp-mon-en true))
+        (if (or is-ic enabled) {
+            (if (temp-valid temp) {
+                (if is-ic {
+                    (if (> temp t-ic) (setq t-ic temp))
+                } {
+                    (if (< temp t-min) (setq t-min temp))
+                    (if (> temp t-max) (setq t-max temp))
+                })
+            } (setq valid false))
+        })
+    }))
+    valid
+})
 
+(defun scan-pack-from-slaves () {
+    (var missing false)
+    (var slave-fault false)
+    (var bad-cell false)
+    (var stale-slave false)
+    (var temps-ok true)
+    (setq cell-num 0)
+    (setq vtot 0.0)
+    (setq c-min 9.0)
+    (setq c-max 0.0)
     (setq t-ic -300.0)
     (setq t-min 300.0)
     (setq t-max -300.0)
     (setq t-mos (trap-value '(master-get-temp-pcb) -300.0))
     (setq cell-temp-mon-en false)
 
-    (loopwhile (<= sid max-sid) {
+    (looprange sid 1 (+ (cfg-num-slaves) 1) {
         (if (master-slave-active? sid) {
-            ; Slave temp order: BQ1 IC, BQ1 cell, BQ2 IC, BQ2 cell.
-            ; Status field 4 is the two-bit external-sensor enable mask.
-            (var status (master-get-slave-status sid))
-            (var temp-flags (if (and status (>= (length status) 5))
-                (ix status 4)
-                3
-            ))
-            (var bq1-cell-en (!= (bitwise-and temp-flags 0x01) 0))
-            (var bq2-cell-en (!= (bitwise-and temp-flags 0x02) 0))
-            (var temps (master-get-slave-temps sid))
-            (var expected (if (> (master-get-cells-ic2 sid) 0) 4 2))
-
-            (if (and temps (>= (length temps) expected)) {
-                (looprange i 0 expected {
-                    (var is-ic (or (= i 0) (= i 2)))
-                    (var is-cell (= (mod i 2) 1))
-                    (var enabled (if (= i 1) bq1-cell-en bq2-cell-en))
-                    (var required (or is-ic enabled))
-                    (var temp (ix temps i))
-
-                    (if (and is-cell enabled) (setq cell-temp-mon-en true))
-                    (if (temp-valid temp) {
-                        (if is-ic {
-                            (if (> temp t-ic) (setq t-ic temp))
-                        } {
-                            (if (and is-cell enabled) {
-                                (if (< temp t-min) (setq t-min temp))
-                                (if (> temp t-max) (setq t-max temp))
-                            })
-                        })
-                    } {
-                        (if required (setq temps-ok false))
-                    })
-                })
-            } {
-                (setq temps-ok false)
-            })
-        })
-
-        (setq sid (+ sid 1))
-    })
-
-    (if (not cell-temp-mon-en) {
-        (setq t-min -300.0)
-        (setq t-max -300.0)
-    })
-
-    (setq temp-data-ok (and temps-ok (all-temps-valid)))
-})
-
-(defun scan-pack-from-slaves () {
-    (var max-sid (cfg-num-slaves))
-    (var sid 1)
-    (var missing false)
-    (var slave-fault false)
-    (var bad-cell false)
-    (var stale-slave false)
-    (var any-cells false)
-
-    (setq cell-num 0)
-    (setq vtot 0.0)
-    (setq c-min 9.0)
-    (setq c-max 0.0)
-
-    (loopwhile (<= sid max-sid) {
-        (if (master-slave-active? sid) {
-            (if (not (master-slave-fresh? sid))
-                (setq stale-slave true))
-
+            (if (not (master-slave-fresh? sid)) (setq stale-slave true))
             (var status (master-get-slave-status sid))
             (var faults (if status (ix status 1) 0))
-            (var s-ic1 (master-get-cells-ic1 sid))
-            (var s-ic2 (master-get-cells-ic2 sid))
-            (var cnt (+ s-ic1 s-ic2))
+            (var ic2-count (master-get-cells-ic2 sid))
+            (var count (+ (master-get-cells-ic1 sid) ic2-count))
             (var cells (master-get-slave-cells sid))
-
-            (if (> (bitwise-and faults 0x0B) 0)
-                (setq slave-fault true)
-            )
-
-            (if (and cells (> cnt 0) (= (length cells) cnt)) {
+            (if (> (bitwise-and faults 0x0B) 0) (setq slave-fault true))
+            (if (not (scan-slave-temperatures sid status ic2-count)) (setq temps-ok false))
+            (if (and cells (> count 0) (= (length cells) count)) {
                 (loopforeach v cells {
-                    (if (or (< v 1.0) (> v 5.0)) {
-                        (setq bad-cell true)
-                    } {
-                        (setq any-cells true)
+                    (if (number-in-range v 1.0 5.0) {
                         (setq cell-num (+ cell-num 1))
                         (setq vtot (+ vtot v))
                         (if (< v c-min) (setq c-min v))
                         (if (> v c-max) (setq c-max v))
-                    })
+                    } (setq bad-cell true))
                 })
-            } {
-                (setq bad-cell true)
-            })
-        } {
-            (setq missing true)
-        })
-
-        (setq sid (+ sid 1))
+            } (setq bad-cell true))
+        } (setq missing true))
     })
 
-    (if (not any-cells) {
-        (setq c-min 0.0)
-        (setq c-max 0.0)
-    })
-
-    (setq pack-status
-        (cond
-            (missing "WAIT_SLAVE")
-            (slave-fault "SLAVE_FAULT")
-            (bad-cell "BAD_CELL")
-            ((not any-cells) "NO_CELL")
-            (stale-slave "STALE_SLAVE")
-            ((not temp-data-ok) "TEMP_NA")
-            (true "")
-        )
-    )
-
-    (setq slave-data-fresh (and
-        any-cells
-        (not missing)
-        (not slave-fault)
-        (not bad-cell)
-        (not stale-slave)
-    ))
-    (setq pack-data-ok (and
-        any-cells
-        (not missing)
-        (not slave-fault)
-        (not bad-cell)
-        (not stale-slave)
-        temp-data-ok
-    ))
-
-    ; The C master-update-vesc-bms extension is the single owner of standard
-    ; VESC cell topology, voltages, totals, extrema, and temperatures. Lisp
-    ; keeps its own scan values for control decisions but must not race the C
-    ; publication used by VESC Tool and standard BMS CAN frames.
-
+    (if (= cell-num 0) { (setq c-min 0.0) (setq c-max 0.0) })
+    (if (not cell-temp-mon-en) { (setq t-min -300.0) (setq t-max -300.0) })
+    (setq temp-data-ok (and temps-ok (temp-valid t-ic) (temp-valid t-mos)
+        (or (not cell-temp-mon-en) (and (temp-valid t-min) (temp-valid t-max)))))
+    (setq slave-data-fresh (and (> cell-num 0) (not missing) (not slave-fault)
+        (not bad-cell) (not stale-slave)))
+    (setq pack-data-ok (and slave-data-fresh temp-data-ok))
+    (setq pack-status (cond
+        (missing "WAIT_SLAVE")
+        (slave-fault "SLAVE_FAULT")
+        (bad-cell "BAD_CELL")
+        ((= cell-num 0) "NO_CELL")
+        (stale-slave "STALE_SLAVE")
+        ((not temp-data-ok) "TEMP_NA")
+        (true "")))
+    ; C owns VESC cell/temperature publication; these globals are for control.
     pack-data-ok
 })
 
@@ -763,10 +570,8 @@ loopwhile-thd
         (set-bms-val 'bms-v-charge vt-vchg)
         (set-bms-val 'bms-i-in iout)
         (set-bms-val 'bms-i-in-ic iout)
-        (update-temp-globals)
         (scan-pack-from-slaves)
-        true
-    )))
+        true)))
     (mutex-unlock pack-refresh-mutex)
     (match result
         ((exit-ok _) true)
@@ -774,8 +579,7 @@ loopwhile-thd
             (setq pack-data-ok false)
             (setq slave-data-fresh false)
             false
-        })
-    )
+        }))
 })
 
 ;;;;;;;;;; Shutdown and sleep ;;;;;;;;;;
@@ -785,22 +589,17 @@ loopwhile-thd
         ((= reason shutdown-reason-timer) "timer")
         ((= reason shutdown-reason-low-soc-timer) "low-soc-timer")
         ((= reason shutdown-reason-app) "app")
-        (true "unknown")
-))
+        (true "unknown")))
 
 (defun fail-close-outputs (clear-bal-trigger) {
     (var local-ok false)
     (match (trap (master-fail-close-local))
         ((exit-ok _) (setq local-ok true))
-        (_ (match (trap (gpio-write 5 0))
-            ((exit-ok _) (setq local-ok true))
-            (_ nil)
-        ))
-    )
+        (_ (match (trap (gpio-write 5 0)) ((exit-ok _) (setq local-ok true)) (_ nil))))
 
     (setq is-charging false)
     (setq charge-ok false)
-    (if clear-bal-trigger (clear-balance-request))
+    (if clear-bal-trigger (setq trigger-bal-after-charge false))
     (var bal-close-ok (stop-all-balancing))
     (var close-ok (and local-ok bal-close-ok))
 
@@ -817,31 +616,16 @@ loopwhile-thd
 
 (defun capture-current-zero () {
     (print "CAL: CHG_EN off, waiting 1 second for zero current")
-    ; Calibration only needs the charger switch open. Do not enter the balance
-    ; shutdown/CAN handoff here: that path can wait on a missing slave and has
-    ; nothing to do with measuring the local current-sense zero.
+    ; Capture the local ADC zero independently of slave availability.
     (master-set-chg 0)
     (setq is-charging false)
     (setq charge-ok false)
-    ; Lisp sleep yields, so VESC Tool and CAN processing remain responsive.
     (sleep 1.0)
     (print "CAL: sampling current ADC")
-    (var request-ok (trap-value '(master-calibrate-current) false))
-    (if request-ok {
-        ; The C command commits the offset before returning. Keep this small
-        ; poll for compatibility with older firmware and to verify the value
-        ; is visible through the public calibration status extension.
-        (var calibrated false)
-        (looprange i 0 150 {
-            (sleep 0.1)
-            (var status (trap-value '(master-current-calibration) false))
-            (if (and status (>= (length status) 4)
-                    (ix status 0) (not (ix status 3))) {
-                (setq calibrated true)
-                (break)
-            })
-        })
-        calibrated
+    ; Firmware 7 commits synchronously; verify once instead of polling for 15s.
+    (if (trap-value '(master-calibrate-current) false) {
+        (var status (trap-value '(master-current-calibration) nil))
+        (and status (>= (length status) 4) (ix status 0) (not (ix status 3)))
     } false)
 })
 
@@ -863,8 +647,7 @@ loopwhile-thd
 
 (defun start-current-calibration () {
     (if (not calibration-running) {
-        ; Set the latch before spawning so repeated 10 Hz charge checks cannot
-        ; queue several calibration contexts.
+        ; Latch before spawning so charge checks cannot queue multiple captures.
         (setq calibration-running true)
         (spawn 160 current-calibration-thd)
         true
@@ -903,8 +686,7 @@ loopwhile-thd
     (not (test-chg 1))
     (external-wake-inactive)
     (not (is-connected))
-    (not (can-active))
-))
+    (not (can-active))))
 
 (defun reset-sleep-total-time () {
     (setassoc rtc-val 'sleep-total-time-s 0)
@@ -913,62 +695,24 @@ loopwhile-thd
 
 (defun process-sleep-time () {
     (var source (master-wakeup-source))
-
+    ; The wall clock resets at boot: a timer wake adds the configured interval.
     (cond
-        ; External enable use resets the shutdown-days timer.
-        ((= source 1) {
-            (setassoc rtc-val 'sleep-total-time-s 0)
-        })
-        ; A timer wake means one configured sleep interval elapsed. app_main
-        ; resets gettimeofday on every boot, so wall-clock subtraction cannot
-        ; be used across deep sleep.
-        ((= source 2) {
-            (setassoc rtc-val 'sleep-total-time-s
-                (+ (rtc-number 'sleep-total-time-s 0) (sleep-duration-s)))
-        })
-    )
-
+        ((= source 1) (setassoc rtc-val 'sleep-total-time-s 0))
+        ((= source 2) (setassoc rtc-val 'sleep-total-time-s
+            (+ (rtc-number 'sleep-total-time-s 0) (sleep-duration-s)))))
     (setassoc rtc-val 'sleep-enter-time-s 0)
-
-    (if (or
-            (external-wake-active)
-            (is-comm-connected)
-            (can-active)
-        ) {
-        (setassoc rtc-val 'sleep-total-time-s 0)
-        (save-rtc-val)
-    } {
-        (save-rtc-val)
-        (if (and
-                (charger-data-ok)
-                (> (bms-get-param 'shutdown) 0)
-                (>= (rtc-number 'sleep-total-time-s 0) (* (bms-get-param 'shutdown) 86400))
-            )
-            (bms-shutdown-impl shutdown-reason-timer)
-        )
-    })
-
+    (save-rtc-val)
+    (update-sleep-shutdown-timer)
     source
 })
 
 (defun update-sleep-shutdown-timer () {
-    ; Any real external use resets the shutdown-days counter.
-    (if (or
-            (external-wake-active)
-            (is-comm-connected)
-            (can-active)
-        ) {
-        (if (> (rtc-number 'sleep-total-time-s 0) 0)
-            (reset-sleep-total-time)
-        )
+    (if (or (external-wake-active) (is-comm-connected) (can-active)) {
+        (if (> (rtc-number 'sleep-total-time-s 0) 0) (reset-sleep-total-time))
     } {
-        (if (and
-                (charger-data-ok)
-                (> (bms-get-param 'shutdown) 0)
-                (>= (rtc-number 'sleep-total-time-s 0) (* (bms-get-param 'shutdown) 86400))
-            )
-            (bms-shutdown-impl shutdown-reason-timer)
-        )
+        (if (and (charger-data-ok) (> (bms-get-param 'shutdown) 0)
+                (>= (rtc-number 'sleep-total-time-s 0) (* (bms-get-param 'shutdown) 86400)))
+            (bms-shutdown-impl shutdown-reason-timer))
     })
 })
 
@@ -982,8 +726,7 @@ loopwhile-thd
     (balance-state-is bal-state-idle)
     (not (test-chg 1))
     (not (is-connected))
-    (not (can-active))
-))
+    (not (can-active))))
 
 (defun enter-master-sleep () {
     ; Debounce and re-check all asynchronous wake/connection conditions.
@@ -1015,8 +758,7 @@ loopwhile-thd
                     ; Let the current reference settle before callbacks can trip.
                     (sleep 0.15)
                     (if (not (trap-value '(master-sleep-rearm-fast-oc) false))
-                        (print "Fast OC rearm failed after sleep cancellation")
-                    )
+                        (print "Fast OC rearm failed after sleep cancellation"))
                     (setassoc rtc-val 'sleep-enter-time-s 0)
                     (save-rtc-val)
                     (print "Sleep cancelled by ENABLE")
@@ -1038,26 +780,16 @@ loopwhile-thd
 
 (defun pack-generation () (trap-value '(master-get-pack-generation) 0))
 
-(defun qualify-dt-valid (dt) (and
-    (> dt 0.0)
-    (<= dt control-max-qualify-dt)
-))
+(defun qualify-dt-valid (dt) (and (> dt 0.0) (<= dt control-max-qualify-dt)))
 
 (defun set-soc-value (new-soc source reason force-log) {
     (var bounded (truncate new-soc 0.0 1.0))
     (var previous soc)
     (var batt-ah (bms-get-param 'batt_ah))
-    (var coulomb-candidate (if (> batt-ah 0.0)
-        (truncate (/ ah-cnt-soc batt-ah) 0.0 1.0)
-        0.0
-    ))
+    (var coulomb-candidate (if (> batt-ah 0.0) (truncate (/ ah-cnt-soc batt-ah) 0.0 1.0) 0.0))
     (var voltage-candidate (calc-soc c-min))
 
-    (if (or
-            force-log
-            (< previous 0.0)
-            (> (abs (- bounded previous)) 0.05)
-        )
+    (if (or force-log (< previous 0.0) (> (abs (- bounded previous)) 0.05))
         (print (str-merge
             "SOC " source "/" reason
             " prev=" (str-from-n previous "%.3f")
@@ -1067,21 +799,26 @@ loopwhile-thd
             " I=" (str-from-n iout "%.2f")
             " min=" (str-from-n c-min "%.3f")
             " max=" (str-from-n c-max "%.3f")
-            " gen=" (str-from-n (pack-generation) "%d")
-        ))
-    )
+            " gen=" (str-from-n (pack-generation) "%d"))))
 
     (setq soc bounded)
     (set-bms-val 'bms-soc bounded)
+})
+
+(defun publish-counters () {
+    (set-bms-val 'bms-ah-cnt ah-cnt)
+    (set-bms-val 'bms-wh-cnt wh-cnt)
+    (set-bms-val 'bms-ah-cnt-chg-total ah-chg-tot)
+    (set-bms-val 'bms-wh-cnt-chg-total wh-chg-tot)
+    (set-bms-val 'bms-ah-cnt-dis-total ah-dis-tot)
+    (set-bms-val 'bms-wh-cnt-dis-total wh-dis-tot)
 })
 
 (defun update-soc-and-counters (dt) {
     (var batt-ah (bms-get-param 'batt_ah))
     (var dt-ok (qualify-dt-valid dt))
 
-    (if (and pack-data-ok (< ah-cnt-soc 0.0))
-        (setq ah-cnt-soc (* (calc-soc c-min) batt-ah))
-    )
+    (if (and pack-data-ok (< ah-cnt-soc 0.0)) (setq ah-cnt-soc (* (calc-soc c-min) batt-ah)))
 
     (if (and pack-data-ok (> batt-ah 0.0)) {
         ; Do not extrapolate current across a scheduler stall.
@@ -1097,11 +834,9 @@ loopwhile-thd
         } {
             (if (>= soc 0.0)
                 (set-soc-value
-                    (lpf soc voltage-soc
-                        (truncate (* 100.0 (bms-get-param 'soc_filter_const)) 0.0 1.0))
+                    (lpf soc voltage-soc (truncate (* 100.0 (bms-get-param 'soc_filter_const)) 0.0 1.0))
                     "VOLTAGE" "TRACK" false)
-                (set-soc-value voltage-soc "VOLTAGE" "INITIAL" true)
-            )
+                (set-soc-value voltage-soc "VOLTAGE" "INITIAL" true))
         })
 
         (if (> (abs iout) (bms-get-param 'min_current_ah_wh_cnt)) {
@@ -1122,12 +857,7 @@ loopwhile-thd
     (checkpoint-soc false "PERIODIC")
     (if (< soc 0.0) (set-bms-val 'bms-soc 0.0))
     (set-bms-val 'bms-soh 1.0)
-    (set-bms-val 'bms-ah-cnt ah-cnt)
-    (set-bms-val 'bms-wh-cnt wh-cnt)
-    (set-bms-val 'bms-ah-cnt-chg-total ah-chg-tot)
-    (set-bms-val 'bms-wh-cnt-chg-total wh-chg-tot)
-    (set-bms-val 'bms-ah-cnt-dis-total ah-dis-tot)
-    (set-bms-val 'bms-wh-cnt-dis-total wh-dis-tot)
+    (publish-counters)
 })
 
 (defun fast-oc-direction () {
@@ -1196,14 +926,14 @@ loopwhile-thd
         (setq changed true)
     })
     ; A completed, fault-free charge proves the current path is healthy.
-    (if (and charge-complete (> (rtc-number 'short-count 0) 0)
-            (not (assoc rtc-val 'short-service))) {
+    (if (and charge-complete (> (rtc-number 'short-count 0) 0) (not (assoc rtc-val 'short-service))) {
         (setassoc rtc-val 'short-count 0)
         (setq changed true)
     })
     (if changed (save-rtc-val))
 
     (setq charge-complete false)
+    (setq charge-no-current false)
     (setq charge-block-beeped false)
     (setq charge-enable-beeped false)
 })
@@ -1229,12 +959,14 @@ loopwhile-thd
 })
 
 (defun charge-block-reason (charger-detected) {
+    (var monitor-temp (= (param-or 't_charge_mon_en 1) 1))
     (cond
         ((assoc rtc-val 'short-service) "FLT_SHORT_LOCK")
         ((fast-oc-latched) (if (> (fast-oc-direction) 0) "FLT_FAST_OC_REV" "FLT_FAST_OC_CHG"))
         ((not (fast-oc-armed)) "FLT_FAST_ADC")
         ((assoc rtc-val 'charge-fault) "FLT_CHG_OC")
         (charge-complete "CHG_COMPLETE")
+        (charge-no-current "CHG_NO_CURRENT")
         ((not chg-allowed) "CHG_DISABLED")
         ((not pack-data-ok) "WAIT_SLAVE")
         ((not slave-data-fresh) "CAN_STALE")
@@ -1246,19 +978,13 @@ loopwhile-thd
         ((not (current-data-ok)) "ADC_CURRENT")
         ((not (charger-data-ok)) "ADC_CHARGER")
         ((balance-in-progress) "BALANCING")
-        ((>= c-max (if is-charging
-            (bms-get-param 'vc_charge_end)
-            (bms-get-param 'vc_charge_start))) "CELL_HIGH")
+        ((>= c-max (if is-charging (bms-get-param 'vc_charge_end) (bms-get-param 'vc_charge_start))) "CELL_HIGH")
         ((<= c-min (bms-get-param 'vc_charge_min)) "CELL_LOW")
-        ((and (= (param-or 't_charge_mon_en 1) 1) (not temp-data-ok)) "TEMP_DATA")
-        ((and (= (param-or 't_charge_mon_en 1) 1)
-            (>= t-mos (bms-get-param 't_charge_max_mos))) "TEMP_MOS_HIGH")
-        ((and (= (param-or 't_charge_mon_en 1) 1) cell-temp-mon-en
-            (>= t-max (bms-get-param 't_charge_max))) "TEMP_CELL_HIGH")
-        ((and (= (param-or 't_charge_mon_en 1) 1) cell-temp-mon-en
-            (<= t-min (bms-get-param 't_charge_min))) "TEMP_CELL_LOW")
-        (true "")
-    )
+        ((and monitor-temp (not temp-data-ok)) "TEMP_DATA")
+        ((and monitor-temp (>= t-mos (bms-get-param 't_charge_max_mos))) "TEMP_MOS_HIGH")
+        ((and monitor-temp cell-temp-mon-en (>= t-max (bms-get-param 't_charge_max))) "TEMP_CELL_HIGH")
+        ((and monitor-temp cell-temp-mon-en (<= t-min (bms-get-param 't_charge_min))) "TEMP_CELL_LOW")
+        (true ""))
 })
 
 (defun update-charge-control (dt) {
@@ -1278,8 +1004,7 @@ loopwhile-thd
     (setq charger-detected-prev charger-detected)
 
     (if (and charger-detected (not current-zero-ready) (not calibration-running))
-        (start-current-calibration)
-    )
+        (start-current-calibration))
 
     ; Same simple slow-current guard as JFBMS32. The C fast comparator remains
     ; an independent backstop.
@@ -1293,56 +1018,40 @@ loopwhile-thd
     })
 
     ; Five seconds unplugged starts a completely new session.
-    (if (and (charger-data-ok) (not charger-detected)) {
-        (if (> (secs-since charge-dis-ts) 5.0) {
-            (set-chg false)
-            (clear-session-after-disconnect)
-        })
+    (if (and (charger-data-ok) (not charger-detected) (> (secs-since charge-dis-ts) 5.0)) {
+        (set-chg false)
+        (clear-session-after-disconnect)
     })
 
     ; Cell voltage is the charge-complete decision, as in JFBMS32.
-    (if (and is-charging pack-data-ok
-            (>= c-max (bms-get-param 'vc_charge_end)))
-        (finish-charge "CELL_LIMIT")
-    )
+    (if (and is-charging pack-data-ok (>= c-max (bms-get-param 'vc_charge_end)))
+        (finish-charge "CELL_LIMIT"))
 
     (rearm-charge-hysteresis)
 
     (var block-reason (charge-block-reason charger-detected))
     (setq charge-ok (and charger-detected (= (str-len block-reason) 0)))
 
-    (if charge-ok {
-        ; The balance controller owns an armed balance cycle. Charging waits
-        ; until it completes instead of interrupting its 30 s / 2 s phases.
-        (if (balance-in-progress) {
+    (cond
+        ((not charge-ok) (set-chg false))
+        ((balance-in-progress) {
             (setq charge-ok false)
             (setq block-reason "BALANCING")
             (set-chg false)
-        } {
-            ; Give each plug-in or post-balance hysteresis rearm time to
-            ; establish current before enforcing the configured minimum.
-            ; rearm-charge-hysteresis restarts charge-ts so an overnight
-            ; balance/top-up cycle does not require unplugging the charger.
-            (var min-current (bms-get-param 'min_charge_current))
-            (var min-current-ok (or
-                (< (secs-since charge-ts) charger-max-delay)
-                (> charge-current min-current)
-            ))
-                (if min-current-ok
-                (set-chg true)
-                {
-                    (set-chg false)
-                }
-            )
         })
-    } {
-        (set-chg false)
-    })
+        ((or (not is-charging) (< (secs-since charge-ts) charger-max-delay)
+                (> charge-current (bms-get-param 'min_charge_current))) (set-chg true))
+        (true {
+            ; An idle charger is not full: latch until unplugged or Chg En.
+            (setq charge-no-current true)
+            (setq charge-ok false)
+            (setq block-reason "CHG_NO_CURRENT")
+            (set-chg false)
+        }))
 
     (setq chg-status (if is-charging "CHARGING" block-reason))
 
-    (if (and charger-detected (not is-charging)
-            (> (str-len block-reason) 0) (not charge-block-beeped)) {
+    (if (and charger-detected (not is-charging) (> (str-len block-reason) 0) (not charge-block-beeped)) {
         (setq charge-block-beeped true)
         (spawn (fn () (user-beep 1 0.30)))
         (print (str-merge "CHG blocked: " block-reason))
@@ -1355,55 +1064,33 @@ loopwhile-thd
 
 ; Pick non-adjacent cells from one BQ76952 group. Cells are split into even and
 ; odd local indexes, then the stronger group is selected.
+(defun balance-group-score (cells c-min) {
+    (var score 0.0)
+    (loopforeach cell cells (setq score (+ score (- (cdr cell) c-min))))
+    score
+})
+
 (defun balance-ic-group (voltages c-min threshold max-ch) {
-    (var n (length voltages))
-
-    (if (= n 0) 0 {
-        (var even-grp '())
-        (var odd-grp '())
-
-        (looprange i 0 n {
-            (var v (ix voltages i))
-            (if (> (- v c-min) threshold) {
-                (if (= (mod i 2) 0)
-                    (setq even-grp (cons (cons i v) even-grp))
-                    (setq odd-grp (cons (cons i v) odd-grp))
-                )
-            })
-        })
-
-        (var even-sorted (sort (fn (a b) (> (cdr a) (cdr b))) even-grp))
-        (var odd-sorted (sort (fn (a b) (> (cdr a) (cdr b))) odd-grp))
-        (var use-even true)
-
-        (if (> (length odd-sorted) (length even-sorted))
-            (setq use-even false)
-        )
-
-        (if (= (length odd-sorted) (length even-sorted)) {
-            (var even-sum 0.0)
-            (loopforeach p even-sorted
-                (setq even-sum (+ even-sum (- (cdr p) c-min))))
-
-            (var odd-sum 0.0)
-            (loopforeach p odd-sorted
-                (setq odd-sum (+ odd-sum (- (cdr p) c-min))))
-
-            (if (> odd-sum even-sum) (setq use-even false))
-        })
-
-        (var grp (if use-even even-sorted odd-sorted))
-        (var mask 0)
-        (var cnt 0)
-
-        (loopforeach c grp {
-            (if (>= cnt max-ch) (break))
-            (setq mask (+ mask (shl 1 (car c))))
-            (setq cnt (+ cnt 1))
-        })
-
-        mask
+    (var groups (list '() '()))
+    (looprange i 0 (length voltages) {
+        (var v (ix voltages i))
+        (var parity (mod i 2))
+        (if (> (- v c-min) threshold) (setix groups parity (cons (cons i v) (ix groups parity))))
     })
+    (var even (sort (fn (a b) (> (cdr a) (cdr b))) (ix groups 0)))
+    (var odd (sort (fn (a b) (> (cdr a) (cdr b))) (ix groups 1)))
+    ; Prefer more eligible channels, then larger total voltage; ties use even.
+    (var use-odd (or (> (length odd) (length even))
+        (and (= (length odd) (length even))
+            (> (balance-group-score odd c-min) (balance-group-score even c-min)))))
+    (var mask 0)
+    (var count 0)
+    (loopforeach cell (if use-odd odd even) {
+        (if (>= count max-ch) (break))
+        (setq mask (+ mask (shl 1 (car cell))))
+        (setq count (+ count 1))
+    })
+    mask
 })
 
 (defun mask-to-bin (mask n) {
@@ -1421,140 +1108,90 @@ loopwhile-thd
     })
 })
 
-(defun any-cached-balancing () {
-    (var any false)
-    (looprange i 0 8 {
-        (if (or (> (ix slave-bal-mask-ic1 i) 0)
-                (> (ix slave-bal-mask-ic2 i) 0))
-            (setq any true)
-        )
-    })
-    any
-})
+(defun any-cached-balancing () (> (+ (apply + slave-bal-mask-ic1) (apply + slave-bal-mask-ic2)) 0))
 
 (defun mask-bit-count (mask) {
     (var count 0)
     (looprange i 0 16 {
-        (if (!= (bitwise-and mask (shl 1 i)) 0)
-            (setq count (+ count 1))
-        )
+        (if (!= (bitwise-and mask (shl 1 i)) 0) (setq count (+ count 1)))
     })
     count
 })
 
-(defun manual-balance-cell (cell enable) {
-    ; VESC Tool overrides should be immediate. Map the pack cell index to one
-    ; slave/IC, update the cached mask, and send it once. The balance thread
-    ; supplies the one-second keepalive and applies the same safety gate.
-    (var sid 1)
+; Map a pack cell into (slave, IC, bit, voltage), using the announced topology.
+(defunret pack-cell-location (cell) {
     (var base 0)
-    (var found false)
-    (var target-sid 0)
-    (var target-ic 0)
-    (var target-bit 0)
-    (var target-v 0.0)
-
-    (loopwhile (and (<= sid (cfg-num-slaves)) (not found)) {
-        (var ic1-cnt (master-get-cells-ic1 sid))
-        (var ic2-cnt (master-get-cells-ic2 sid))
-        (var count (+ ic1-cnt ic2-cnt))
+    (looprange sid 1 (+ (cfg-num-slaves) 1) {
+        (var ic1-count (master-get-cells-ic1 sid))
+        (var count (+ ic1-count (master-get-cells-ic2 sid)))
         (if (and (>= cell base) (< cell (+ base count))) {
-            (var local (- cell base))
             (var cells (master-get-slave-cells sid))
             (if (and cells (= (length cells) count)) {
-                (setq target-sid sid)
-                (setq target-v (ix cells local))
-                (if (< local ic1-cnt) {
-                    (setq target-ic 1)
-                    (setq target-bit (shl 1 local))
-                } {
-                    (setq target-ic 2)
-                    (setq target-bit (shl 1 (- local ic1-cnt)))
-                })
-                (setq found true)
+                (var local (- cell base))
+                (return (list sid (if (< local ic1-count) 1 2)
+                    (shl 1 (if (< local ic1-count) local (- local ic1-count)))
+                    (ix cells local)))
             })
         })
         (setq base (+ base count))
-        (setq sid (+ sid 1))
     })
+    nil
+})
 
-    (if (or (not found) (and (> enable 0) (not (balance-safe-now)))) {
-        ; A disable request is always safe. If topology disappeared, fail
-        ; closed by clearing every slave instead of leaving an unknown mask on.
+(defunret manual-balance-cell (cell enable) {
+    (var generation active-config-generation)
+    (var target (pack-cell-location cell))
+    (if (or (not target) (and (> enable 0) (not (balance-safe-now)))) {
+        ; Disabling an unknown cell stops the entire pack to fail closed.
         (if (= enable 0) (stop-all-balancing))
         (print "BAL OVR blocked: invalid cell or unsafe pack state")
-        false
-    } {
-        (if (not manual-bal-active) {
-            (setq trigger-bal-after-charge false)
-            (clear-cached-balancing)
-        })
-        (var index (- target-sid 1))
-        (var old-mask (if (= target-ic 1)
-            (ix slave-bal-mask-ic1 index)
-            (ix slave-bal-mask-ic2 index)))
-        (var new-mask (if (> enable 0)
-            (if (= (bitwise-and old-mask target-bit) 0)
-                (+ old-mask target-bit)
-                old-mask)
-            (if (> (bitwise-and old-mask target-bit) 0)
-                (- old-mask target-bit)
-                old-mask)))
-        (var mask-safe (and
-            (= (bitwise-and new-mask (shr new-mask 1)) 0)
-            (<= (mask-bit-count new-mask) (bms-get-param 'max_bal_ch))
-            (or (= enable 0) (>= target-v (bms-get-param 'vc_balance_min)))
-        ))
-
-        (if (not mask-safe) {
-            (print "BAL OVR blocked: voltage, adjacency, or channel limit")
-            false
-        } {
-            (if (= target-ic 1)
-                (setix slave-bal-mask-ic1 index new-mask)
-                (setix slave-bal-mask-ic2 index new-mask)
-            )
-            (if (any-cached-balancing) {
-                (master-set-chg 0)
-                (setq is-charging false)
-                (setq manual-bal-active true)
-                (set-c-balance-request true)
-                (if (send-cached-balance-masks 0) {
-                    (setix bal-state 0 bal-state-active)
-                    (setq bal-status "BAL_OVR")
-                    (print (str-merge "BAL OVR cell " (str-from-n cell "%d")
-                        (if (> enable 0) " on" " off")))
-                    true
-                } {
-                    (stop-all-balancing)
-                    false
-                })
-            } {
-                (stop-all-balancing)
-                true
-            })
-        })
+        (return false)
     })
+    (if (not manual-bal-active) {
+        (setq trigger-bal-after-charge false)
+        (clear-cached-balancing)
+    })
+    (var index (- (ix target 0) 1))
+    (var masks (if (= (ix target 1) 1) slave-bal-mask-ic1 slave-bal-mask-ic2))
+    (var bit (ix target 2))
+    (var old-mask (ix masks index))
+    (var mask (if (> enable 0) (bitwise-or old-mask bit) (bitwise-and old-mask (bitwise-not bit))))
+    (if (not (and (= (bitwise-and mask (shr mask 1)) 0)
+            (<= (mask-bit-count mask) (bms-get-param 'max_bal_ch))
+            (or (= enable 0) (>= (ix target 3) (bms-get-param 'vc_balance_min))))) {
+        (print "BAL OVR blocked: voltage, adjacency, or channel limit")
+        (return false)
+    })
+    (setq balance-cache-generation generation)
+    (setix masks index mask)
+    (if (not (any-cached-balancing)) {
+        (stop-all-balancing)
+        (return true)
+    })
+    (master-set-chg 0)
+    (setq is-charging false)
+    (setq manual-bal-active true)
+    (set-c-balance-request true)
+    (if (not (send-cached-balance-masks 0)) {
+        (stop-all-balancing)
+        (return false)
+    })
+    (setix bal-state 0 bal-state-active)
+    (setq bal-status "BAL_OVR")
+    (print (str-merge "BAL OVR cell " (str-from-n cell "%d") (if (> enable 0) " on" " off")))
+    true
 })
 
 (defun send-cached-balance-masks (beep-code) {
-    (var sid 1)
-    (var max-sid (cfg-num-slaves))
+    (var generation balance-cache-generation)
     (var all-ok true)
-
-    (loopwhile (<= sid max-sid) {
+    (looprange sid 1 (+ (cfg-num-slaves) 1) {
         (if (master-slave-active? sid) {
-            (if (not (master-send-balance
-                    sid
-                    (ix slave-bal-mask-ic1 (- sid 1))
-                    (ix slave-bal-mask-ic2 (- sid 1))
-                    beep-code))
-                (setq all-ok false)
-            )
+            (if (not (master-send-balance sid (ix slave-bal-mask-ic1 (- sid 1))
+                    (ix slave-bal-mask-ic2 (- sid 1)) beep-code generation))
+                (setq all-ok false))
         })
-        (setq sid (+ sid 1))
     })
-
     all-ok
 })
 
@@ -1596,33 +1233,17 @@ loopwhile-thd
     zero-ok
 })
 
-(defun balance-safe-now () (and
-    pack-data-ok
-    slave-data-fresh
-    temp-data-ok
-    (not is-charging)
-    (<= (* (abs iout)
-            (if (balance-state-is bal-state-active) 0.8 1.0))
-        (bms-get-param 'balance_max_current))
-    (>= c-min (bms-get-param 'vc_balance_min))
-    (or
-        (not cell-temp-mon-en)
-        (<= t-max (bms-get-param 't_bal_max_cell))
-    )
-    (<= t-ic (bms-get-param 't_bal_max_ic))
-))
+(defun balance-safe-now () (= (str-len (balance-block-reason)) 0))
 
-; Return the first safety condition that prevents balancing. Keep this aligned
-; with balance-safe-now so field logs identify the real cause instead of only
-; reporting the generic "pack conditions" message.
+; One safety gate serves control decisions, manual overrides and diagnostics.
 (defun balance-block-reason ()
     (cond
+        ((!= active-config-generation (master-config-generation)) "configuration changed")
         ((not pack-data-ok) (str-merge "pack data: " pack-status))
         ((not slave-data-fresh) "slave data stale")
         ((not temp-data-ok) "temperature data invalid")
         (is-charging "charging is active")
-        ((> (* (abs iout)
-                (if (balance-state-is bal-state-active) 0.8 1.0))
+        ((> (* (abs iout) (if (balance-state-is bal-state-active) 0.8 1.0))
             (bms-get-param 'balance_max_current))
             (str-merge "current=" (str-from-n iout "%.2f")
                 "A limit=" (str-from-n (bms-get-param 'balance_max_current) "%.2f") "A"))
@@ -1635,66 +1256,40 @@ loopwhile-thd
         ((> t-ic (bms-get-param 't_bal_max_ic))
             (str-merge "ic-temp=" (str-from-n t-ic "%.1f")
                 "C limit=" (str-from-n (bms-get-param 't_bal_max_ic) "%.1f") "C"))
-        (true "")
-    )
-)
+        ((not (all-configured-slaves-fresh)) "configured slave data stale")
+        (true "")))
 
-(defun all-configured-slaves-fresh () {
-    (var all-fresh true)
-    (var sid 1)
-    (var max-sid (cfg-num-slaves))
-
-    (loopwhile (<= sid max-sid) {
-        (if (not (and (master-slave-active? sid) (master-slave-fresh? sid)))
-            (setq all-fresh false))
-        (setq sid (+ sid 1))
+(defunret all-configured-slaves-fresh () {
+    (looprange sid 1 (+ (cfg-num-slaves) 1) {
+        (if (not (and (master-slave-active? sid) (master-slave-fresh? sid))) (return false))
     })
-
-    all-fresh
+    true
 })
 
 (defun slave-balance-masks (sid threshold max-ch) {
     (var cells (master-get-slave-cells sid))
-    (var ic1-cnt (master-get-cells-ic1 sid))
-    (var ic2-cnt (master-get-cells-ic2 sid))
-    (var cnt (+ ic1-cnt ic2-cnt))
-
-    (if (and cells (> cnt 0) (= (length cells) cnt)) {
-        (var ic1-volts (map (fn (i) (ix cells i)) (range ic1-cnt)))
-        (var ic2-volts (if (> ic2-cnt 0)
-            (map (fn (i) (ix cells (+ ic1-cnt i))) (range ic2-cnt))
-            '()
-        ))
+    (var ic1-count (master-get-cells-ic1 sid))
+    (var ic2-count (master-get-cells-ic2 sid))
+    (var count (+ ic1-count ic2-count))
+    (if (and cells (> count 0) (= (length cells) count))
         (list
-            (balance-ic-group ic1-volts c-min threshold max-ch)
-            (if (> ic2-cnt 0)
-                (balance-ic-group ic2-volts c-min threshold max-ch)
-                0
-            )
-        )
-    } nil)
+            (balance-ic-group (take cells ic1-count) c-min threshold max-ch)
+            (balance-ic-group (drop cells ic1-count) c-min threshold max-ch))
+        nil)
 })
 
-(defun balance-needed-now () {
+(defun fresh-slave-balance-masks (sid threshold max-ch)
+    (if (and (master-slave-active? sid) (master-slave-fresh? sid))
+        (slave-balance-masks sid threshold max-ch) nil))
+
+(defunret balance-needed-now () {
     (var max-ch (bms-get-param 'max_bal_ch))
     (var threshold (bms-get-param 'vc_balance_start))
-    (var needed false)
-    (var sid 1)
-    (var max-sid (cfg-num-slaves))
-
-    (loopwhile (<= sid max-sid) {
-        (if (and (master-slave-active? sid) (master-slave-fresh? sid)) {
-            (var masks (slave-balance-masks sid threshold max-ch))
-            (if masks {
-                (if (or (> (ix masks 0) 0) (> (ix masks 1) 0))
-                    (setq needed true)
-                )
-            })
-        })
-        (setq sid (+ sid 1))
+    (looprange sid 1 (+ (cfg-num-slaves) 1) {
+        (var masks (fresh-slave-balance-masks sid threshold max-ch))
+        (if (and masks (> (apply + masks) 0)) (return true))
     })
-
-    needed
+    false
 })
 
 (defun start-balance-request () {
@@ -1718,22 +1313,11 @@ loopwhile-thd
 
 (defun try-manual-balance-request () {
     (refresh-pack-data)
-    (var block-reason (balance-block-reason))
-    (if (and (= (str-len block-reason) 0)
-            (all-configured-slaves-fresh)
-            (balance-needed-now)) {
-        (start-balance-request)
-        true
-    } {
-        (if (> (str-len block-reason) 0)
-            (print (str-merge "BAL CMD: blocked: " block-reason))
-            (if (not (all-configured-slaves-fresh))
-                (print "BAL CMD: blocked: configured slave data stale")
-                (print "BAL CMD: no cells above start threshold")
-            )
-        )
-        false
-    })
+    (var reason (balance-block-reason))
+    (cond
+        ((> (str-len reason) 0) { (print (str-merge "BAL CMD: blocked: " reason)) false })
+        ((not (balance-needed-now)) { (print "BAL CMD: no cells above start threshold") false })
+        (true (start-balance-request)))
 })
 
 (defun clear-balance-request () {
@@ -1749,153 +1333,107 @@ loopwhile-thd
     })
 })
 
-(defun update-balance-masks (threshold) {
+(defun update-balance-masks (threshold generation) {
+    (setq balance-cache-generation generation)
     (var max-ch (bms-get-param 'max_bal_ch))
-    (var any-bal false)
-    (var sid 1)
-    (var max-sid (cfg-num-slaves))
-
     (clear-cached-balancing)
-    (loopwhile (<= sid max-sid) {
-        (if (and (master-slave-active? sid) (master-slave-fresh? sid)) {
-            (var masks (slave-balance-masks sid threshold max-ch))
-            (if masks {
-                (var ic1-cnt (master-get-cells-ic1 sid))
-                (var ic2-cnt (master-get-cells-ic2 sid))
-                (var ic1-mask (ix masks 0))
-                (var ic2-mask (ix masks 1))
-
-                (if (or (> ic1-mask 0) (> ic2-mask 0)) {
-                    (setq any-bal true)
-                    (print (str-merge "BAL S" (str-from-n sid "%d")
-                        " IC1:" (mask-to-bin ic1-mask ic1-cnt)
-                        " IC2:" (mask-to-bin ic2-mask ic2-cnt)
-                        " min=" (str-from-n c-min "%.3f")))
-                })
-
-                (setix slave-bal-mask-ic1 (- sid 1) ic1-mask)
-                (setix slave-bal-mask-ic2 (- sid 1) ic2-mask)
-            })
+    (looprange sid 1 (+ (cfg-num-slaves) 1) {
+        (var masks (fresh-slave-balance-masks sid threshold max-ch))
+        (if masks {
+            (setix slave-bal-mask-ic1 (- sid 1) (ix masks 0))
+            (setix slave-bal-mask-ic2 (- sid 1) (ix masks 1))
+            (if (> (apply + masks) 0)
+                (print (str-merge "BAL S" (str-from-n sid "%d")
+                    " IC1:" (mask-to-bin (ix masks 0) (master-get-cells-ic1 sid))
+                    " IC2:" (mask-to-bin (ix masks 1) (master-get-cells-ic2 sid))
+                    " min=" (str-from-n c-min "%.3f"))))
         })
-        (setq sid (+ sid 1))
     })
-
-    any-bal
+    (any-cached-balancing)
 })
 
 (defun balance-cycle-failed (message) {
     (print message)
     ; JFBMS32 cancels the automatic post-charge request when discharge current
     ; makes balancing unsafe. Other temporary safety conditions keep retrying.
-    (if (> iout (bms-get-param 'balance_max_current))
-        (setq trigger-bal-after-charge false)
-    )
+    (if (> iout (bms-get-param 'balance_max_current)) (setq trigger-bal-after-charge false))
     (fail-close-active-balance)
     (stop-all-balancing)
-    (if trigger-bal-after-charge
-        (setq bal-auto-retry-ts (systime))
-    )
+    (if trigger-bal-after-charge (setq bal-auto-retry-ts (systime)))
 })
 
-; Same basic loop as JFBMS32: turn all channels off, wait two seconds for clean
-; voltages, select non-adjacent high cells, then refresh the same masks once per
-; second. No acknowledgement/settled state machine is needed; the slave status
-; bitmap is the source used by VESC Tool, and each slave has its own watchdog.
+; Slaves publish their actual balance state and stop on keepalive timeout.
+; Settle with zero masks, select high non-adjacent cells, then keep them alive.
+; The captured generation prevents a settings save from reviving an old cycle.
+(defunret begin-balance-cycle () {
+    (var generation active-config-generation)
+    (refresh-pack-data)
+    (var reason (balance-block-reason))
+    (if (> (str-len reason) 0) {
+        (balance-cycle-failed (str-merge "BAL: blocked: " reason))
+        (return false)
+    })
+    (if (not (zero-balancing-preserve-request)) {
+        (balance-cycle-failed "BAL: could not send zero masks")
+        (return false)
+    })
+    (setq bal-status "BAL_SETTLE")
+    (sleep 2.0)
+    (refresh-pack-data)
+    (if (not (and (balance-safe-now) (balance-state-is bal-state-requested)
+            (= generation (master-config-generation)))) {
+        (balance-cycle-failed "BAL: unsafe after settle")
+        (return false)
+    })
+    (if (not (update-balance-masks balance-cycle-threshold generation)) {
+        (print "BAL: target reached")
+        (clear-balance-request)
+        (return false)
+    })
+    (if (not (send-cached-balance-masks 0)) {
+        (balance-cycle-failed "BAL: transmit failed")
+        (return false)
+    })
+    (setix bal-state 0 bal-state-active)
+    (setq bal-status "BAL")
+    (setq balance-active-start-ts (systime))
+    true
+})
+
 (defun balance-thd () {
     (var keepalive-ts (systime))
-
     (loopwhile t {
         (if (and (balance-state-is bal-state-idle) (c-balance-inhibited)) {
             (setix bal-state 0 bal-state-stopping)
             (setq bal-status "BAL_STOP")
         })
-
-        (if (balance-state-is bal-state-stopping)
-            (stop-all-balancing)
-        )
-
-        (if (and
-                (balance-state-is bal-state-idle)
-                trigger-bal-after-charge
-                (not is-charging)
-                (> (secs-since bal-auto-retry-ts) 5.0)
-            )
-            (start-balance-request)
-        )
-
-        (if (balance-state-is bal-state-requested) {
-            (refresh-pack-data)
-            (var block-reason (balance-block-reason))
-            (if (or (> (str-len block-reason) 0)
-                    (not (all-configured-slaves-fresh))) {
-                (balance-cycle-failed (str-merge "BAL: blocked: "
-                    (if (> (str-len block-reason) 0)
-                        block-reason
-                        "configured slave data stale")))
-            } {
-                (if (not (zero-balancing-preserve-request)) {
-                    (balance-cycle-failed "BAL: could not send zero masks")
-                } {
-                    (setq bal-status "BAL_SETTLE")
-                    (sleep 2.0)
-                    (refresh-pack-data)
-                    (if (not (balance-safe-now)) {
-                        (balance-cycle-failed "BAL: unsafe after settle")
-                    } {
-                        (if (update-balance-masks balance-cycle-threshold) {
-                            (if (send-cached-balance-masks 0) {
-                                (setix bal-state 0 bal-state-active)
-                                (setq bal-status "BAL")
-                                (setq balance-active-start-ts (systime))
-                                (setq keepalive-ts (systime))
-                            } {
-                                (balance-cycle-failed "BAL: transmit failed")
-                            })
-                        } {
-                            (print "BAL: target reached")
-                            (clear-balance-request)
-                        })
-                    })
-                })
-            })
-        })
+        (if (balance-state-is bal-state-stopping) (stop-all-balancing))
+        (if (and (balance-state-is bal-state-idle) trigger-bal-after-charge
+                (not is-charging) (> (secs-since bal-auto-retry-ts) 5.0))
+            (start-balance-request))
+        (if (and (balance-state-is bal-state-requested) (begin-balance-cycle))
+            (setq keepalive-ts (systime)))
 
         (if (balance-state-is bal-state-active) {
             (refresh-pack-data)
-            (var block-reason (balance-block-reason))
-            (if (or (> (str-len block-reason) 0)
-                    (not (all-configured-slaves-fresh))) {
-                (balance-cycle-failed (str-merge "BAL: stopped: "
-                    (if (> (str-len block-reason) 0)
-                        block-reason
-                        "configured slave data stale")))
-                (setq keepalive-ts (systime))
-            } {
-                (if manual-bal-active {
-                    (if (>= (secs-since keepalive-ts) balance-keepalive-period-s) {
-                        (setq keepalive-ts (systime))
-                        (if (not (send-cached-balance-masks 0))
-                            (balance-cycle-failed "BAL OVR: keepalive transmit failed")
-                        )
-                    })
-                } {
-                    (if (>= (secs-since balance-active-start-ts) balance-active-time-s) {
-                        (setq balance-cycle-threshold (bms-get-param 'vc_balance_end))
-                        (setix bal-state 0 bal-state-requested)
-                    } {
-                        (if (>= (secs-since keepalive-ts) balance-keepalive-period-s) {
-                            (setq keepalive-ts (systime))
-                            (if (not (send-cached-balance-masks 0))
-                                (balance-cycle-failed "BAL: keepalive transmit failed")
-                            )
-                        })
-                    })
+            (var reason (balance-block-reason))
+            (cond
+                ((> (str-len reason) 0) {
+                    (balance-cycle-failed (str-merge "BAL: stopped: " reason))
+                    (setq keepalive-ts (systime))
                 })
-            })
-        } {
-            (setq keepalive-ts (systime))
-        })
-
+                ((and (not manual-bal-active)
+                        (>= (secs-since balance-active-start-ts) balance-active-time-s)) {
+                    (setq balance-cycle-threshold (bms-get-param 'vc_balance_end))
+                    (setix bal-state 0 bal-state-requested)
+                })
+                ((>= (secs-since keepalive-ts) balance-keepalive-period-s) {
+                    (setq keepalive-ts (systime))
+                    (if (not (send-cached-balance-masks 0))
+                        (balance-cycle-failed (if manual-bal-active
+                            "BAL OVR: keepalive transmit failed" "BAL: keepalive transmit failed")))
+                }))
+        } (setq keepalive-ts (systime)))
         (sleep 0.1)
     })
 })
@@ -1913,23 +1451,25 @@ loopwhile-thd
                     (if manual-bal-active (stop-all-balancing))
                     (if (try-manual-balance-request)
                         (print "BAL CMD: start")
-                        (print "BAL CMD: ignored")
-                    )
+                        (print "BAL CMD: ignored"))
                 } {
                     (print "BAL CMD: stop")
-                    (clear-balance-request)
+                    (setq trigger-bal-after-charge false)
                     (stop-all-balancing)
                 })
             })
             ((event-bms-chg-allow (? allow)) {
                 (setq chg-allowed (= allow 1))
+                (if chg-allowed {
+                    (setq charge-no-current false)
+                    (setq charge-ts (systime))
+                })
                 (if (not chg-allowed) (set-chg nil))
                 (if (and chg-allowed (or
                         (assoc rtc-val 'short-service)
                         (assoc rtc-val 'charge-fault)
                         (fast-oc-latched)))
-                    (clear-service-faults)
-                )
+                    (clear-service-faults))
                 (set-bms-val 'bms-chg-allowed (bool-int chg-allowed))
                 (print (str-merge "CHG: " (if chg-allowed "allowed" "blocked")))
             })
@@ -1938,19 +1478,14 @@ loopwhile-thd
                     (setq ah-cnt 0.0)
                     (setq ah-chg-tot 0.0)
                     (setq ah-dis-tot 0.0)
-                    (set-bms-val 'bms-ah-cnt 0.0)
-                    (set-bms-val 'bms-ah-cnt-chg-total 0.0)
-                    (set-bms-val 'bms-ah-cnt-dis-total 0.0)
                 })
                 (if (= wh 1) {
                     (setq wh-cnt 0.0)
                     (setq wh-chg-tot 0.0)
                     (setq wh-dis-tot 0.0)
-                    (set-bms-val 'bms-wh-cnt 0.0)
-                    (set-bms-val 'bms-wh-cnt-chg-total 0.0)
-                    (set-bms-val 'bms-wh-cnt-dis-total 0.0)
                 })
                 (if (or (= ah 1) (= wh 1)) {
+                    (publish-counters)
                     (save-settings)
                     (print "BMS counters reset and stored")
                 })
@@ -1960,8 +1495,7 @@ loopwhile-thd
                 (start-current-calibration)
             })
             ((event-data-rx ? data) (handle-app-data data))
-            (_ nil)
-)))
+            (_ nil))))
 
 (defun handle-app-data (data)
     (match (trap (read data))
@@ -1969,8 +1503,7 @@ loopwhile-thd
             (print "APPUI requested BMS shutdown")
             (spawn (fn () (bms-shutdown-app)))
         })
-        (_ (print "Ignoring unsupported APPUI command"))
-))
+        (_ (print "Ignoring unsupported APPUI command"))))
 
 (defun update-status () {
     (var s "")
@@ -1978,83 +1511,53 @@ loopwhile-thd
     (setq s (status-append s chg-status))
     (setq s (status-append s bal-status))
     (setq s (status-append s pack-status))
-    (if calibration-running
-        (setq s (status-append s "CALIBRATING"))
-    )
+    (if calibration-running (setq s (status-append s "CALIBRATING")))
     ; An uncaptured current zero is an intentional 0 A startup state, not an
     ; ADC fault. Charger voltage and PCB temperature must still be valid.
-    (if (or (not (charger-data-ok)) (not (pcb-temp-data-ok)))
-        (setq s (status-append s "ADC_FAULT"))
-    )
-    (if bal-off-failed
-        (setq s (status-append s "BAL_OFF_FAIL"))
-    )
-    (if fail-close-failed
-        (setq s (status-append s "FAIL_CLOSE_FAIL"))
-    )
+    (if (or (not (charger-data-ok)) (not (pcb-temp-data-ok))) (setq s (status-append s "ADC_FAULT")))
+    (if bal-off-failed (setq s (status-append s "BAL_OFF_FAIL")))
+    (if fail-close-failed (setq s (status-append s "FAIL_CLOSE_FAIL")))
 
     (if (and chg-allowed (not charge-ok) (not is-charging) (test-chg 1) (= (str-len chg-status) 0))
-        (setq s (status-append s "CHG_BLOCK"))
-    )
+        (setq s (status-append s "CHG_BLOCK")))
 
     (set-bms-val 'bms-status s)
 })
 
 (defun update-slave-presence () {
-    (var id 1)
-    (var max-id (cfg-num-slaves))
-
-    (loopwhile (<= id max-id) {
-        (var active (if (master-slave-active? id) 1 0))
-        (var prev (ix prev-active (- id 1)))
-
-        (if (and (= active 1) (not-eq prev 1))
-            (print (str-merge "Slave " (str-from-n id "%d") " connected"))
-        )
-
-        (if (and (= active 0) (= prev 1)) {
-            (print (str-merge "Slave " (str-from-n id "%d") " disconnected"))
-            (set-chg nil)
-            (stop-all-balancing)
-            (send-slave-beep 0x04)
+    (looprange sid 1 (+ (cfg-num-slaves) 1) {
+        (var active (bool-int (master-slave-active? sid)))
+        (var previous (ix prev-active (- sid 1)))
+        (if (!= active previous) {
+            (print (str-merge "Slave " (str-from-n sid "%d")
+                (if (= active 1) " connected" " disconnected")))
+            (if (= active 0) {
+                (set-chg nil)
+                (stop-all-balancing)
+                (send-slave-beep 0x04)
+            })
+            (setix prev-active (- sid 1) active)
         })
-
-        (setix prev-active (- id 1) active)
-        (setq id (+ id 1))
     })
 })
 
-(defun event-supervisor () {
+(defun supervise (worker message) {
     (loopwhile t {
-        (match (trap (event-handler))
+        (match (trap (worker))
             ((exit-ok _) nil)
-            (_ {
-                (print "Event handler crashed, restarting")
-                (fail-close-outputs true)
-            })
-        )
+            (_ { (print message) (fail-close-outputs true) }))
         (sleep 0.2)
     })
 })
 
-(defun balance-supervisor () {
-    (loopwhile t {
-        (match (trap (balance-thd))
-            ((exit-ok _) nil)
-            (_ {
-                (print "Balance controller crashed, restarting fail-closed")
-                (fail-close-outputs true)
-            })
-        )
-        (sleep 0.2)
-    })
-})
+(defun event-supervisor () (supervise event-handler "Event handler crashed, restarting"))
+
+(defun balance-supervisor ()
+    (supervise balance-thd "Balance controller crashed, restarting fail-closed"))
 
 (defun fail-close-retry-thd () {
     (loopwhile t {
-        (if (or fail-close-failed bal-off-failed)
-            (fail-close-outputs true)
-        )
+        (if (or fail-close-failed bal-off-failed) (fail-close-outputs true))
         (sleep 0.5)
     })
 })
@@ -2067,14 +1570,11 @@ loopwhile-thd
             (< (- c-max c-min) 0.05)
             (> c-min 2.4)
             (> (secs-since 0) 3600)
-            sleep-unblock-en
-        )))
+            sleep-unblock-en)))
 
         (var should-unblock true)
         (looprange i 0 60 {
-            (if (not (sleep-unblock-ok))
-                (setq should-unblock false)
-            )
+            (if (not (sleep-unblock-ok)) (setq should-unblock false))
             (sleep 1.0)
         })
 
@@ -2089,25 +1589,46 @@ loopwhile-thd
 
 ;;;;;;;;;; Main loop ;;;;;;;;;;
 
+(defun sync-runtime-config () {
+    (var generation (master-config-generation))
+    (if (!= generation active-config-generation) {
+        ; Native apply has already stopped the hardware and invalidated CAN
+        ; snapshots. Clear matching Lisp state before acknowledging this save.
+        (master-set-chg 0)
+        (setq is-charging false)
+        (setq charge-ok false)
+        (setq trigger-bal-after-charge false)
+        (setq manual-bal-active false)
+        (clear-cached-balancing)
+        (setq balance-cache-generation generation)
+        (setix bal-state 0 bal-state-idle)
+        (set-c-balance-request false)
+        (setq bal-status "")
+        (setq charge-no-current false)
+        (setq charge-block-beeped false)
+        (setq charge-enable-beeped false)
+        (setq balance-cycle-threshold (bms-get-param 'vc_balance_start))
+        (setq charge-ts (systime))
+        (setq bal-auto-retry-ts (systime))
+        (setq i-zero-time 0.0)
+        (setq pack-data-ok false)
+        (setq slave-data-fresh false)
+        (setq temp-data-ok false)
+        (looprange i 0 8 {
+            (setix prev-active i 0)
+        })
+        ; Preserve SOC/counters and latched protection faults across a save.
+        (if (master-config-ack generation) {
+            (setq active-config-generation generation)
+            (print "BMS settings applied automatically; waiting for fresh pack data")
+        })
+    })
+})
+
 (defun main-control-step () {
+    (sync-runtime-config)
     ; Drain CAN at 20 Hz.
     (master-can-read-all)
-
-    ; Track balance mask changes from slaves quickly.
-    (var sid-fast 1)
-    (loopwhile (<= sid-fast (cfg-num-slaves)) {
-        (if (master-slave-active? sid-fast) {
-            (var status (master-get-slave-status sid-fast))
-            (if status {
-                (var cur-mask (car status))
-                (var prev-mask (ix prev-bal-mask (- sid-fast 1)))
-                (if (not-eq cur-mask prev-mask)
-                    (setix prev-bal-mask (- sid-fast 1) cur-mask)
-                )
-            })
-        })
-        (setq sid-fast (+ sid-fast 1))
-    })
 
     ; 10 Hz control and display work.
     (if (= (mod loop-cnt 2) 0) {
@@ -2116,9 +1637,7 @@ loopwhile-thd
 
         (refresh-pack-data)
 
-        (if pack-data-ok
-            (update-soc-and-counters dt)
-        )
+        (if pack-data-ok (update-soc-and-counters dt))
 
         (update-charge-control dt)
         (update-sleep-shutdown-timer)
@@ -2128,13 +1647,9 @@ loopwhile-thd
         (update-slave-presence)
 
         ; Measure idle time for sleep and shutdown decisions.
-        (if (or
-                (not (current-data-ok))
-                (> (abs iout) (bms-get-param 'min_current_sleep))
-            )
+        (if (or (not (current-data-ok)) (> (abs iout) (bms-get-param 'min_current_sleep)))
             (setq i-zero-time 0.0)
-            (setq i-zero-time (+ i-zero-time dt))
-        )
+            (setq i-zero-time (+ i-zero-time dt)))
 
         ; Set SOC to 0 below empty voltage and not under load.
         (if (and
@@ -2154,16 +1669,12 @@ loopwhile-thd
         (if (and low-soc-timer-wake-pending (valid-pack-reading)) {
             (var low-soc-shutdown (low-soc-timer-wake))
             (setq low-soc-timer-wake-pending false)
-            (if low-soc-shutdown
-                (bms-shutdown-low-soc-timer)
-            )
+            (if low-soc-shutdown (bms-shutdown-low-soc-timer))
         })
 
         ; The master has no local BQ to put to sleep; slaves handle their own
         ; BQ state and the master only drops COM/ESP.
-        (if (sleep-allowed-now)
-            (enter-master-sleep)
-        )
+        (if (sleep-allowed-now) (enter-master-sleep))
     })
 
     (setq loop-cnt (+ loop-cnt 1))
@@ -2171,41 +1682,36 @@ loopwhile-thd
 
 (defun main () {
     (print "=== JFBMS Master ===")
+    (loopwhile (!= (bms-fw-version) 7) {
+        (master-set-chg 0)
+        (print (if (< (bms-fw-version) 7)
+            "Firmware too old; update master firmware"
+            "Package too old; update master Lisp application"))
+        (sleep 5.0)
+    })
     (var boot-status (trap-value '(master-boot-status) '(0 0)))
     (if (and boot-status (>= (length boot-status) 2))
         (print (str-merge "Boot count=" (str-from-n (ix boot-status 0) "%d")
-            " reset-reason=" (str-from-n (ix boot-status 1) "%d")))
-    )
+            " reset-reason=" (str-from-n (ix boot-status 1) "%d"))))
 
-    ; Reset values that must be relative to this boot, not image creation.
-    (setq bal-auto-retry-ts (systime))
-    (setq trigger-bal-after-charge false)
+    ; Reuse live configuration initialization on every image boot.
+    (setq active-config-generation -1)
+    (sync-runtime-config)
     (setq balance-active-start-ts (systime))
-    (setq balance-cycle-threshold (bms-get-param 'vc_balance_start))
     (setq charge-complete false)
     (setq charger-detected-prev false)
-    (setq charge-block-beeped false)
-    (setq charge-enable-beeped false)
-    (setq manual-bal-active false)
     (setq calibration-running false)
-    (setq charge-ts (systime))
     (var current-cal (trap-value '(master-current-calibration) '(nil 1.65 0.0 nil)))
-    (setq current-zero-ready (and current-cal (>= (length current-cal) 1)
-        (ix current-cal 0)))
+    (setq current-zero-ready (and current-cal (>= (length current-cal) 1) (ix current-cal 0)))
     (if current-zero-ready
-        (print (str-merge "CAL: using stored zero "
-            (str-from-n (ix current-cal 1) "%.4f") " V"))
-    )
+        (print (str-merge "CAL: using stored zero " (str-from-n (ix current-cal 1) "%.4f") " V")))
     (setq last-fast-trip-count -1)
     (setq charge-dis-ts (systime))
     (setq t-last (systime))
     (setq primary-can-status-ts (systime))
     (setq loop-cnt 0)
 
-    (if (> app-wdt-timeout 0)
-        (wdt-configure true app-wdt-timeout)
-        (wdt-disable)
-    )
+    (if (> app-wdt-timeout 0) (wdt-configure true app-wdt-timeout) (wdt-disable))
 
     ; COM enable low (active), charge off.
     (gpio-hold-deepsleep 0)
@@ -2272,8 +1778,7 @@ loopwhile-thd
                 (fail-close-outputs true)
                 (set-bms-val 'bms-status "CONTROL_FAULT")
                 (sleep 0.5)
-            })
-        )
+            }))
 
         (wdt-reset)
         (sleep 0.05)

@@ -12,6 +12,74 @@ static bool cell_counts_valid(int cells_ic1, int cells_ic2) {
 			(cells_ic2 == 0 || (cells_ic2 >= 3 && cells_ic2 <= 16));
 }
 
+bool jfbms32_config_valid(const main_config_t *conf) {
+	if (!conf || !cell_counts_valid(conf->cells_ic1, conf->cells_ic2)) return false;
+	// Keep scalar ranges aligned with jfbms32_settings.xml. The cell-voltage
+	// ceiling also respects the script's existing valid-pack envelope (<5 V).
+#define CONFIG_RANGE(field, low, high) do { \
+	if ((double)conf->field < (low) || (double)conf->field > (high)) return false; \
+} while (0)
+#define CONFIG_FLOAT_RANGE(field, low, high) do { \
+	if (!isfinite(conf->field)) return false; \
+	CONFIG_RANGE(field, low, high); \
+} while (0)
+	CONFIG_RANGE(controller_id, 1, 254);
+	CONFIG_RANGE(can_baud_rate, 0, 8);
+	CONFIG_RANGE(can_status_rate_hz, 0, 200);
+	CONFIG_RANGE(wifi_mode, 0, 2);
+	CONFIG_RANGE(ble_mode, 0, 3);
+	if (conf->ble_pin > 999999 || conf->ble_service_capacity > 99 ||
+			conf->ble_chr_descr_capacity > 99) return false;
+	CONFIG_RANGE(max_bal_ch, 0, 1000);
+	CONFIG_RANGE(temp_num, 0, 16);
+	CONFIG_RANGE(temp_res, NTC_RES_4_7K, NTC_RES_200K);
+	if (conf->temp_num > 0 && conf->temp_beta == 0) return false;
+	CONFIG_RANGE(shutdown, 0, 999);
+	CONFIG_RANGE(psw_scd_tres, 0, 15);
+	CONFIG_FLOAT_RANGE(batt_ah, 0.0f, 999.0f);
+	CONFIG_FLOAT_RANGE(vc_empty, 0.0f, 4.999f);
+	CONFIG_FLOAT_RANGE(vc_full, 0.0f, 4.999f);
+	CONFIG_FLOAT_RANGE(vc_charge_min, 0.0f, 4.999f);
+	CONFIG_FLOAT_RANGE(vc_charge_start, 0.0f, 4.999f);
+	CONFIG_FLOAT_RANGE(vc_charge_end, 0.0f, 4.999f);
+	CONFIG_FLOAT_RANGE(vc_balance_min, 0.0f, 4.999f);
+	CONFIG_FLOAT_RANGE(vc_balance_start, 0.0f, 99.0f);
+	CONFIG_FLOAT_RANGE(vc_balance_end, 0.0f, 99.0f);
+	CONFIG_FLOAT_RANGE(balance_max_current, 0.0f, 999.0f);
+	CONFIG_FLOAT_RANGE(min_current_ah_wh_cnt, 0.0f, 999.0f);
+	CONFIG_FLOAT_RANGE(min_current_sleep, 0.0f, 999.0f);
+	CONFIG_FLOAT_RANGE(min_charge_current, 0.0f, 999.0f);
+	CONFIG_FLOAT_RANGE(max_charge_current, 0.0f, 999.0f);
+	CONFIG_FLOAT_RANGE(hw_occ_current, 4.0f, 124.0f);
+	CONFIG_FLOAT_RANGE(hw_ocd_current, 4.0f, 200.0f);
+	CONFIG_FLOAT_RANGE(t_charge_min, -45.0f, 150.0f);
+	CONFIG_FLOAT_RANGE(t_charge_max, -15.0f, 150.0f);
+	CONFIG_FLOAT_RANGE(t_charge_max_mos, -15.0f, 180.0f);
+	CONFIG_FLOAT_RANGE(t_bal_max_cell, -15.0f, 150.0f);
+	CONFIG_FLOAT_RANGE(t_bal_max_ic, -15.0f, 150.0f);
+	CONFIG_FLOAT_RANGE(sleep, 1.0f, 168.0f);
+	CONFIG_FLOAT_RANGE(soc_filter_const, 0.0f, 1.0f);
+#undef CONFIG_FLOAT_RANGE
+#undef CONFIG_RANGE
+	if (!(conf->vc_empty < conf->vc_full) ||
+			!(conf->vc_charge_min < conf->vc_charge_start) ||
+			conf->vc_charge_start > conf->vc_charge_end ||
+			conf->vc_charge_end > conf->vc_full ||
+			conf->vc_balance_min > conf->vc_full ||
+			conf->vc_balance_end > conf->vc_balance_start ||
+			conf->min_charge_current > conf->max_charge_current ||
+			!(conf->t_charge_min < conf->t_charge_max)) return false;
+#define CONFIG_STRING(field) do { \
+	if (!memchr(conf->field, '\0', sizeof(conf->field))) return false; \
+} while (0)
+	CONFIG_STRING(wifi_sta_ssid); CONFIG_STRING(wifi_sta_key);
+	CONFIG_STRING(wifi_ap_ssid); CONFIG_STRING(wifi_ap_key);
+	CONFIG_STRING(tcp_hub_url); CONFIG_STRING(tcp_hub_id); CONFIG_STRING(tcp_hub_pass);
+	CONFIG_STRING(ble_name);
+#undef CONFIG_STRING
+	return true;
+}
+
 // Limit every string scan by both its field size and the packet remainder.
 static bool config_string(uint8_t *buffer, size_t capacity, int32_t *index,
 		const char *value, size_t field_size) {
@@ -113,6 +181,8 @@ bool jfbms32_confparser_deserialize_main_config_t(const uint8_t *buffer, size_t 
 	if ((size_t)ind > length || (size) > length - (size_t)ind) return false; \
 	statement; \
 } while (0)
+#define READ_BOOL(field) READ_VALUE(1, \
+	if (buffer[ind] > 1) return false; candidate.field = buffer[ind++])
 
 	uint32_t signature;
 	READ_VALUE(4, signature = buffer_get_uint32(buffer, &ind));
@@ -128,8 +198,8 @@ bool jfbms32_confparser_deserialize_main_config_t(const uint8_t *buffer, size_t 
 	if (!config_read_string(buffer, length, &ind, candidate.wifi_sta_key, sizeof(candidate.wifi_sta_key))) return false;
 	if (!config_read_string(buffer, length, &ind, candidate.wifi_ap_ssid, sizeof(candidate.wifi_ap_ssid))) return false;
 	if (!config_read_string(buffer, length, &ind, candidate.wifi_ap_key, sizeof(candidate.wifi_ap_key))) return false;
-	READ_VALUE(1, candidate.use_tcp_local = buffer[ind++]);
-	READ_VALUE(1, candidate.use_tcp_hub = buffer[ind++]);
+	READ_BOOL(use_tcp_local);
+	READ_BOOL(use_tcp_hub);
 	if (!config_read_string(buffer, length, &ind, candidate.tcp_hub_url, sizeof(candidate.tcp_hub_url))) return false;
 	READ_VALUE(2, candidate.tcp_hub_port = buffer_get_uint16(buffer, &ind));
 	if (!config_read_string(buffer, length, &ind, candidate.tcp_hub_id, sizeof(candidate.tcp_hub_id))) return false;
@@ -147,8 +217,8 @@ bool jfbms32_confparser_deserialize_main_config_t(const uint8_t *buffer, size_t 
 	}
 	READ_VALUE(1, candidate.temp_num = buffer[ind++]);
 	READ_VALUE(4, candidate.batt_ah = buffer_get_float32_auto(buffer, &ind));
-	READ_VALUE(1, candidate.soc_use_ah = buffer[ind++]);
-	READ_VALUE(1, candidate.block_sleep = buffer[ind++]);
+	READ_BOOL(soc_use_ah);
+	READ_BOOL(block_sleep);
 	READ_VALUE(4, candidate.vc_empty = buffer_get_float32_auto(buffer, &ind));
 	READ_VALUE(4, candidate.vc_full = buffer_get_float32_auto(buffer, &ind));
 	READ_VALUE(4, candidate.vc_balance_start = buffer_get_float32_auto(buffer, &ind));
@@ -175,12 +245,10 @@ bool jfbms32_confparser_deserialize_main_config_t(const uint8_t *buffer, size_t 
 	READ_VALUE(4, candidate.hw_occ_current = buffer_get_float32_auto(buffer, &ind));
 	READ_VALUE(4, candidate.hw_ocd_current = buffer_get_float32_auto(buffer, &ind));
 	READ_VALUE(1, candidate.psw_scd_tres = buffer[ind++]);
-	if (!isfinite(candidate.hw_occ_current) || candidate.hw_occ_current < 4.0f ||
-			candidate.hw_occ_current > 124.0f || !isfinite(candidate.hw_ocd_current) ||
-			candidate.hw_ocd_current < 4.0f || candidate.hw_ocd_current > 200.0f ||
-			candidate.psw_scd_tres < 0 || candidate.psw_scd_tres > 15) return false;
+	if (!jfbms32_config_valid(&candidate)) return false;
 
 #undef READ_VALUE
+#undef READ_BOOL
 	if ((size_t)ind != length) return false;
 	*conf = candidate;
 	return true;

@@ -35,6 +35,7 @@ typedef struct {
 } flast_stats;
 
 bool flash_helper_erase_code(int ind, int size);
+bool flash_helper_install_default_lisp(const uint8_t *code, uint32_t len);
 bool flash_helper_write_code(int ind, uint32_t offset, uint8_t *data, uint32_t len, uint32_t save_after);
 bool flash_helper_code_data(int ind, uint32_t offset, uint8_t *data, uint32_t len);
 const uint8_t *flash_helper_code_data_ptr(int ind);
