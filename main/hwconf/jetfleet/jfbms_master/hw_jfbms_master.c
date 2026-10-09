@@ -2397,7 +2397,7 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 
 	bms->temp_ic = have_ic_temp ? t_ic_max : -300.0f;
 	bms->temp_max_cell = have_cell_temp ? t_cell_max : -300.0f;
-	bms->is_charging = gpio_get_level(PIN_CHG_EN) ? 1 : 0;
+	bms->is_charging = (GPIO.out.val & BIT(PIN_CHG_EN)) ? 1 : 0;
 	bms->is_balancing = cell_snapshot_complete && any_balancing ? 1 : 0;
 	bms->data_version = cell_snapshot_complete ? 1 : 0;
 

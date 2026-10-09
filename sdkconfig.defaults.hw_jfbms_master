@@ -1,1 +1,3 @@
 CONFIG_ADC_CONTINUOUS_ISR_IRAM_SAFE=y
+# The IRAM-safe ADC DMA ISR calls xRingbufferSendFromISR during flash writes.
+# CONFIG_RINGBUF_PLACE_ISR_FUNCTIONS_INTO_FLASH is not set

@@ -687,7 +687,7 @@
             <longName>Fast Charge Overcurrent Protection</longName>
             <type>5</type>
             <transmittable>1</transmittable>
-            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Enables the independent ADC monitor that quickly disables CHG_EN when charge-path current crosses Fast Charge Overcurrent in either the charging or reverse direction. A trip is latched, and changing this switch is not a fault-reset command.&lt;/p&gt;&lt;p&gt;Fast protection is required for charging. Disabling this setting keeps the charge gate off. The charger remains responsible for current regulation.&lt;/p&gt;&lt;p&gt;Changes apply automatically when written.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Enables the independent ADC monitor that quickly disables CHG_EN when charge-path current crosses Fast Charge Overcurrent in either the charging or reverse direction. A trip is latched, and changing this switch is not a fault-reset command.&lt;/p&gt;&lt;p&gt;Disabling removes this fast current trip; charging is still allowed and only the slower software Max Charge Current check remains. The charger remains responsible for current regulation.&lt;/p&gt;&lt;p&gt;Changes apply automatically when written.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_FAST_CHARGE_OC_EN</cDefine>
             <valInt>1</valInt>
         </fast_charge_oc_en>

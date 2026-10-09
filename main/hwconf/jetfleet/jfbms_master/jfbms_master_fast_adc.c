@@ -26,6 +26,11 @@
 #if !CONFIG_ADC_CONTINUOUS_ISR_IRAM_SAFE
 #error "JFBMS master requires CONFIG_ADC_CONTINUOUS_ISR_IRAM_SAFE=y"
 #endif
+// The IRAM-safe ADC DMA ISR calls xRingbufferSendFromISR; in flash that is a
+// cache-error panic on every flash write (boot loop on hardware).
+#if CONFIG_RINGBUF_PLACE_ISR_FUNCTIONS_INTO_FLASH
+#error "JFBMS master requires CONFIG_RINGBUF_PLACE_ISR_FUNCTIONS_INTO_FLASH=n"
+#endif
 
 #define JFBMS_ADC_FRAME_BYTES       256
 #define JFBMS_ADC_STORE_BYTES       2048
@@ -357,6 +362,7 @@ static bool adc_set_current_monitor_enabled(bool enable) {
 	return true;
 }
 
+
 // The ADC driver must be stopped before this helper is called.
 static bool adc_remove_current_monitor(void) {
 	if (!m_adc_monitor) return true;
@@ -616,8 +622,10 @@ void jfbms_fast_adc_set_software_offset(float offset_v) {
 
 bool jfbms_fast_adc_ready(void) {
 	main_config_t *cfg = (main_config_t *)&backup.config;
+	// Disabling fast OC is a deliberate user choice: charging then relies on
+	// the slower software current check.
 	return m_adc_started && m_fast_oc_armed &&
-			cfg->fast_charge_oc_en && m_adc_monitor_enabled;
+			(!cfg->fast_charge_oc_en || m_adc_monitor_enabled);
 }
 
 bool jfbms_fast_oc_sleep_disarm(void) {

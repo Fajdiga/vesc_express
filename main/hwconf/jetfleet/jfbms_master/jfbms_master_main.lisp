@@ -1007,7 +1007,7 @@ loopforeach
         (checkpoint-soc true reason)
         (setq trigger-bal-after-charge true)
         (setq bal-auto-retry-ts (systime))
-        (send-slave-beep 0x03)
+        ; Master buzzer only, same 3 short high beeps as JFBMS32.
         (spawn (fn () (user-beep 3 0.2)))
         (print (str-merge "CHG complete: " reason))
     })
