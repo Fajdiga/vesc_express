@@ -12,15 +12,21 @@ static bool cell_counts_valid(int cells_ic1, int cells_ic2) {
 			(cells_ic2 == 0 || (cells_ic2 >= 3 && cells_ic2 <= 16));
 }
 
+static const char *m_config_error;
+const char *jfbms32_config_error(void) { return m_config_error; }
+
+#define CONFIG_FAIL(reason) do { m_config_error = reason; return false; } while (0)
+
 bool jfbms32_config_valid(const main_config_t *conf) {
-	if (!conf || !cell_counts_valid(conf->cells_ic1, conf->cells_ic2)) return false;
+	m_config_error = NULL;
+	if (!conf || !cell_counts_valid(conf->cells_ic1, conf->cells_ic2)) CONFIG_FAIL("cells_ic1/ic2: use 3-16 cells, or 0 for IC2");
 	// Keep scalar ranges aligned with jfbms32_settings.xml. The cell-voltage
 	// ceiling also respects the script's existing valid-pack envelope (<5 V).
 #define CONFIG_RANGE(field, low, high) do { \
-	if ((double)conf->field < (low) || (double)conf->field > (high)) return false; \
+	if ((double)conf->field < (low) || (double)conf->field > (high)) CONFIG_FAIL(#field " out of range"); \
 } while (0)
 #define CONFIG_FLOAT_RANGE(field, low, high) do { \
-	if (!isfinite(conf->field)) return false; \
+	if (!isfinite(conf->field)) CONFIG_FAIL(#field " must be finite"); \
 	CONFIG_RANGE(field, low, high); \
 } while (0)
 	CONFIG_RANGE(controller_id, 1, 254);
@@ -29,48 +35,49 @@ bool jfbms32_config_valid(const main_config_t *conf) {
 	CONFIG_RANGE(wifi_mode, 0, 2);
 	CONFIG_RANGE(ble_mode, 0, 3);
 	if (conf->ble_pin > 999999 || conf->ble_service_capacity > 99 ||
-			conf->ble_chr_descr_capacity > 99) return false;
-	CONFIG_RANGE(max_bal_ch, 0, 1000);
-	CONFIG_RANGE(temp_num, 0, 16);
+			conf->ble_chr_descr_capacity > 99) CONFIG_FAIL("BLE PIN/capacity out of range");
+	CONFIG_RANGE(max_bal_ch, 0, 8);
+	CONFIG_RANGE(temp_num, 0, 4);
 	CONFIG_RANGE(temp_res, NTC_RES_4_7K, NTC_RES_200K);
-	if (conf->temp_num > 0 && conf->temp_beta == 0) return false;
+	if (conf->temp_num > 0 && conf->temp_beta == 0) CONFIG_FAIL("temp_beta must be positive");
 	CONFIG_RANGE(shutdown, 0, 999);
 	CONFIG_RANGE(psw_scd_tres, 0, 15);
 	CONFIG_FLOAT_RANGE(batt_ah, 0.0f, 999.0f);
-	CONFIG_FLOAT_RANGE(vc_empty, 0.0f, 4.999f);
-	CONFIG_FLOAT_RANGE(vc_full, 0.0f, 4.999f);
-	CONFIG_FLOAT_RANGE(vc_charge_min, 0.0f, 4.999f);
-	CONFIG_FLOAT_RANGE(vc_charge_start, 0.0f, 4.999f);
-	CONFIG_FLOAT_RANGE(vc_charge_end, 0.0f, 4.999f);
-	CONFIG_FLOAT_RANGE(vc_balance_min, 0.0f, 4.999f);
+	CONFIG_FLOAT_RANGE(vc_empty, 1.5f, 4.999f);
+	CONFIG_FLOAT_RANGE(vc_full, 1.5f, 4.999f);
+	CONFIG_FLOAT_RANGE(vc_charge_min, 1.5f, 4.999f);
+	CONFIG_FLOAT_RANGE(vc_charge_start, 1.5f, 4.999f);
+	CONFIG_FLOAT_RANGE(vc_charge_end, 1.5f, 4.999f);
+	CONFIG_FLOAT_RANGE(vc_balance_min, 1.5f, 4.999f);
 	CONFIG_FLOAT_RANGE(vc_balance_start, 0.0f, 99.0f);
 	CONFIG_FLOAT_RANGE(vc_balance_end, 0.0f, 99.0f);
 	CONFIG_FLOAT_RANGE(balance_max_current, 0.0f, 999.0f);
 	CONFIG_FLOAT_RANGE(min_current_ah_wh_cnt, 0.0f, 999.0f);
 	CONFIG_FLOAT_RANGE(min_current_sleep, 0.0f, 999.0f);
-	CONFIG_FLOAT_RANGE(min_charge_current, 0.0f, 999.0f);
-	CONFIG_FLOAT_RANGE(max_charge_current, 0.0f, 999.0f);
+	CONFIG_FLOAT_RANGE(min_charge_current, 0.0f, 124.0f);
+	CONFIG_FLOAT_RANGE(max_charge_current, 0.0f, 124.0f);
 	CONFIG_FLOAT_RANGE(hw_occ_current, 4.0f, 124.0f);
 	CONFIG_FLOAT_RANGE(hw_ocd_current, 4.0f, 200.0f);
-	CONFIG_FLOAT_RANGE(t_charge_min, -45.0f, 150.0f);
-	CONFIG_FLOAT_RANGE(t_charge_max, -15.0f, 150.0f);
-	CONFIG_FLOAT_RANGE(t_charge_max_mos, -15.0f, 180.0f);
-	CONFIG_FLOAT_RANGE(t_bal_max_cell, -15.0f, 150.0f);
-	CONFIG_FLOAT_RANGE(t_bal_max_ic, -15.0f, 150.0f);
+	CONFIG_FLOAT_RANGE(t_charge_min, -40.0f, 60.0f);
+	CONFIG_FLOAT_RANGE(t_charge_max, -15.0f, 60.0f);
+	CONFIG_FLOAT_RANGE(t_charge_max_mos, -15.0f, 100.0f);
+	CONFIG_FLOAT_RANGE(t_bal_max_cell, -15.0f, 60.0f);
+	CONFIG_FLOAT_RANGE(t_bal_max_ic, -15.0f, 100.0f);
 	CONFIG_FLOAT_RANGE(sleep, 1.0f, 168.0f);
 	CONFIG_FLOAT_RANGE(soc_filter_const, 0.0f, 1.0f);
 #undef CONFIG_FLOAT_RANGE
 #undef CONFIG_RANGE
-	if (!(conf->vc_empty < conf->vc_full) ||
-			!(conf->vc_charge_min < conf->vc_charge_start) ||
-			conf->vc_charge_start > conf->vc_charge_end ||
-			conf->vc_charge_end > conf->vc_full ||
-			conf->vc_balance_min > conf->vc_full ||
-			conf->vc_balance_end > conf->vc_balance_start ||
-			conf->min_charge_current > conf->max_charge_current ||
-			!(conf->t_charge_min < conf->t_charge_max)) return false;
+	if (!(conf->vc_empty < conf->vc_full)) CONFIG_FAIL("vc_empty must be below vc_full");
+	if (!(conf->vc_charge_min < conf->vc_charge_start)) CONFIG_FAIL("vc_charge_min must be below vc_charge_start");
+	if (conf->vc_charge_start > conf->vc_charge_end) CONFIG_FAIL("vc_charge_start must not exceed vc_charge_end");
+	if (conf->vc_charge_end > conf->vc_full) CONFIG_FAIL("vc_charge_end must not exceed vc_full");
+	if (conf->vc_balance_min > conf->vc_full) CONFIG_FAIL("vc_balance_min must not exceed vc_full");
+	if (conf->vc_balance_end > conf->vc_balance_start) CONFIG_FAIL("vc_balance_end must not exceed vc_balance_start");
+	if (conf->min_charge_current > conf->max_charge_current) CONFIG_FAIL("min_charge_current must not exceed max_charge_current");
+	if (conf->max_charge_current > conf->hw_occ_current) CONFIG_FAIL("max_charge_current must not exceed hw_occ_current");
+	if (!(conf->t_charge_min < conf->t_charge_max)) CONFIG_FAIL("t_charge_min must be below t_charge_max");
 #define CONFIG_STRING(field) do { \
-	if (!memchr(conf->field, '\0', sizeof(conf->field))) return false; \
+	if (!memchr(conf->field, '\0', sizeof(conf->field))) CONFIG_FAIL(#field " is not terminated"); \
 } while (0)
 	CONFIG_STRING(wifi_sta_ssid); CONFIG_STRING(wifi_sta_key);
 	CONFIG_STRING(wifi_ap_ssid); CONFIG_STRING(wifi_ap_key);
@@ -174,6 +181,7 @@ int32_t jfbms32_confparser_serialize_main_config_t(uint8_t *buffer, size_t capac
 }
 
 bool jfbms32_confparser_deserialize_main_config_t(const uint8_t *buffer, size_t length, main_config_t *conf) {
+	m_config_error = "Malformed configuration packet";
 	if (!buffer || !conf) return false;
 	main_config_t candidate = *conf;
 	int32_t ind = 0;
@@ -245,11 +253,10 @@ bool jfbms32_confparser_deserialize_main_config_t(const uint8_t *buffer, size_t 
 	READ_VALUE(4, candidate.hw_occ_current = buffer_get_float32_auto(buffer, &ind));
 	READ_VALUE(4, candidate.hw_ocd_current = buffer_get_float32_auto(buffer, &ind));
 	READ_VALUE(1, candidate.psw_scd_tres = buffer[ind++]);
-	if (!jfbms32_config_valid(&candidate)) return false;
-
 #undef READ_VALUE
 #undef READ_BOOL
 	if ((size_t)ind != length) return false;
+	if (!jfbms32_config_valid(&candidate)) return false;
 	*conf = candidate;
 	return true;
 }

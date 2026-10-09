@@ -489,6 +489,11 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 			break;
 		}
 
+		// Clear the previous rejection before decoding this packet. Validators
+		// reset their diagnostic reason when checking the current configuration.
+#if defined(OVR_CONF_ERROR) && defined(OVR_CONF_VALIDATE)
+		(void)OVR_CONF_VALIDATE(conf);
+#endif
 		bool decoded = false;
 #ifdef OVR_CONF_DESERIALIZE_BOUNDED
 		decoded = conf_ind == 0 && OVR_CONF_DESERIALIZE_BOUNDED(data + 1, len - 1, conf);
@@ -509,13 +514,20 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 			applied = OVR_CONF_APPLY();
 	#endif
 			if (!applied) {
+#ifdef OVR_CONF_ERROR
+				const char *reason = OVR_CONF_ERROR();
+#endif
 				// Restore both the persisted candidate and any board-specific
 				// runtime protection derived from it.
 				backup.config = previous_conf;
 	#ifdef OVR_CONF_APPLY
 				(void)OVR_CONF_APPLY();
 	#endif
+#ifdef OVR_CONF_ERROR
+				commands_printf("Configuration rejected: %s", reason ? reason : "Hardware settings could not be applied");
+#else
 				commands_printf("Warning: Configuration rejected while applying hardware safety settings");
+#endif
 				free(conf);
 				break;
 			}
@@ -531,7 +543,12 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 			send_buffer[ind++] = packet_id;
 			reply_func(send_buffer, ind);
 		} else {
+#ifdef OVR_CONF_ERROR
+			const char *reason = OVR_CONF_ERROR();
+			commands_printf("Configuration rejected: %s", reason ? reason : "Malformed configuration packet");
+#else
 			commands_printf("Warning: Could not set configuration");
+#endif
 		}
 
 		free(conf);

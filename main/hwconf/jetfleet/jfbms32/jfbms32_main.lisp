@@ -6,9 +6,13 @@
 (def charger-max-delay 10.0)
 (def current-scale 0.9675) ; Shared V1/V2 meter calibration: 1.19A actual / 1.23A reported
 (def sleep-unblock-en true) ; Enable automatic sleep unblocking
-(def app-wdt-timeout 120) ; Seconds. Set to 0 to disable the app watchdog.
-(def user-beeps-en true) ; Enable normal user feedback beeps.
-(def critical-beep-duty 0.5) ; Loud duty cycle for critical fault alarms.
+(def app-wdt-timeout 10) ; Seconds. Fed only after a successful control scan; same as JFBMS Master.
+(def user-beeps-en true) ; Informational beeps. Fault and shutdown alarms always sound.
+(def beep-duty-alarm 0.5) ; Loud 4 kHz drive for faults that need attention. Same as JFBMS Master.
+(def beep-duty-quiet 0.03) ; Quiet drive for informational beeps. Same as JFBMS Master.
+(def beep-freq-high 4000) ; OK / info tone, Hz
+(def beep-freq-low 2700) ; attention tone, Hz
+(def buzzer-pin 3)
 (def bq-wake-alarm-period 3) ; Failed init attempts between BQ wake alarms. Set to 1 for every attempt.
 
 ;;;;;;;;; End User Settings ;;;;;;;;;
@@ -22,8 +26,15 @@
 (def charge-ok false)
 (def charge-complete false)
 (def charge-no-current false)
+(def charge-hw-refused false)
+(def charge-current 0.0)
+(def charge-current-filt 0.0)
+(def balance-request-ts nil)
+(def shutdown-in-progress false)
 (def charge-complete-msg false)
 (def charger-detected-prev false)
+(def charge-block-beeped false)
+(def charge-enable-beeped false)
 (def c-min 0.0)
 (def c-max 0.0)
 (def t-min 0.0)
@@ -120,8 +131,9 @@ loopwhile-thd
 (defun bms-current-raw () (* (bms-get-current) -1.0 current-scale))
 (defun bms-current () (- (bms-current-raw) current-zero-offset))
 
-(defun beep-duty (times dt duty) {
+(defun beep-duty (times dt duty freq) {
     (mutex-lock buz-mutex)
+    (pwm-start freq 0.0 0 buzzer-pin)
     (loopwhile (> times 0) {
         (pwm-set-duty duty 0)
         (sleep dt)
@@ -132,11 +144,57 @@ loopwhile-thd
     (mutex-unlock buz-mutex)
 })
 
-(defun beep (times dt) { (beep-duty times dt 0.01) })
+; Alarm beeps always sound; user beeps are informational and can be disabled.
+(defun beep (times dt) (beep-duty times dt beep-duty-alarm beep-freq-high))
 
-(defun critical-beep (times dt) { (beep-duty times dt critical-beep-duty) })
+(defun user-beep (times dt) (if user-beeps-en (beep-duty times dt beep-duty-quiet beep-freq-high)))
 
-(defun user-beep (times dt) { (if user-beeps-en (beep times dt)) })
+(defun user-beep-low (times dt) (if user-beeps-en (beep-duty times dt beep-duty-quiet beep-freq-low)))
+
+; Play (freq-hz seconds) notes back to back; one buzzer user at a time.
+(defun tone-seq (duty notes) {
+    (mutex-lock buz-mutex)
+    (loopforeach n notes {
+        (pwm-start (first n) duty 0 buzzer-pin)
+        (sleep (second n))
+        (pwm-set-duty 0.0 0)
+        (sleep 0.06)
+    })
+    (mutex-unlock buz-mutex)
+})
+
+(defun user-tones (notes) (if user-beeps-en (tone-seq beep-duty-quiet notes)))
+
+; Rising = charging started, falling = charging blocked.
+(defun charge-start-beep () (user-tones '((2700 0.2) (3600 0.2) (4800 0.3))))
+
+(defun charge-block-beep () (user-tones '((4800 0.2) (3600 0.2) (2700 0.6))))
+
+; Beep table, identical on JFBMS32 and JFBMS Master. Minimum beep 0.2 s.
+; High tone = OK/info, low tone = needs attention. One result per plug-in.
+; Quiet (user-beep / user-beep-low, can be disabled):
+;   2 short high       init, settings applied, manual zero captured
+;   rising 3 notes     charging started (2.7 -> 3.6 -> 4.8 kHz)
+;   3 short high       charge complete
+;   4 short high       sleep unblocked
+;   falling 3 notes    charge blocked (4.8 -> 3.6 -> 2.7 kHz, still blocked 3 s after plug-in)
+;   2 long low         charge fault latched
+; Loud (beep, always on):
+;   15 short shutdown warning             5 short  shutdown failed (then reboot)
+;   3 long   sleep failed (max every 30 s)
+;   1 long + N short  monitor not responding (JFBMS32: BQ wake stage N,
+;                     Master: slave N lost)
+;   5 x 0.4 s         ADC stall reset (Master only)
+
+(def sleep-fail-alarm-ts nil)
+
+; Loud, rate limited: a failed sleep retries every control scan.
+(defun sleep-fail-alarm () {
+    (if (or (not sleep-fail-alarm-ts) (> (secs-since sleep-fail-alarm-ts) 30.0)) {
+        (setq sleep-fail-alarm-ts (systime))
+        (spawn (fn () (beep 3 0.6)))
+    })
+})
 
 (def rtc-val-magic 124)
 
@@ -161,7 +219,7 @@ loopwhile-thd
         (var tries 0)
         (loopwhile (and (= status 4) (< tries 20)) {
             (bq-exit-deepsleep-all)
-            (wdt-reset)
+            (if (not shutdown-in-progress) (wdt-reset))
             (sleep 0.05)
             (setq status (bq-status-read ic))
             (setq tries (+ tries 1))
@@ -187,7 +245,7 @@ loopwhile-thd
         ; more pack energy on a continuous buzzer.
         (if (bq-wake-report-due attempts) (bq-wake-debug-beep last-bq-wake-stage))
         (bq-exit-deepsleep-all)
-        (wdt-reset)
+        (if (not shutdown-in-progress) (wdt-reset))
         (sleep (if (< attempts 5) 1.0 3.0))
     })
     (check-bq-awake 1 5 6 attempts)
@@ -223,10 +281,10 @@ loopwhile-thd
     (true "none")))
 
 (defun bq-wake-debug-beep (stage) {
-    ; BQ wake/init issue marker: 6 fast beeps, pause, then stage count.
-    (critical-beep 6 0.04)
+    ; BQ not responding: one long marker, pause, then stage count.
+    (beep 1 0.6)
     (sleep 0.4)
-    (critical-beep stage 0.18)
+    (beep stage 0.2)
 })
 
 (defun bq-exit-deepsleep-all () {
@@ -275,9 +333,8 @@ loopwhile-thd
     (true "unknown")))
 
 (defun shutdown-reason-beep (reason) {
-    ; Final local warning before power-off. Keep the original rapid
-    ; shutdown pattern, but drive it with the loud critical duty cycle.
-    (critical-beep 30 0.1)
+    ; Final local warning before power-off; same 30 x 0.1 s alarm as the master.
+    (beep 15 0.2)
 })
 
 (defun print-shutdown-reason (reason) { (print "Shutdown reason:" (shutdown-reason-name reason)) })
@@ -355,10 +412,7 @@ loopwhile-thd
         (if (and res (< res 0.1)) {
             (var cur (canget-current-in d))
             (if (number? cur)
-                (setq i-sum (+ i-sum cur)) {
-                    (print "CAN current invalid for id" d)
-                    (exit-error 0)
-            })
+                (setq i-sum (+ i-sum cur)))
         })
     })
     i-sum
@@ -369,30 +423,26 @@ loopwhile-thd
 ; to save power.
 (defun with-com (expr) {
     (mutex-lock com-mutex)
-    (gpio-write 9 0)
-    (var res (looprange i 0 4 {
-        (match (trap (eval expr))
-            ((exit-ok (? a)) (break a))
-            (_ (if (= i 3) {
-                (mutex-unlock com-mutex)
-                (exit-error 0)
-        })))
+    (var result (trap {
+        (bms-set-com 0)
+        (var res (looprange i 0 4 {
+            (match (trap (eval expr))
+                ((exit-ok (? a)) (break a))
+                (_ (if (= i 3) (exit-error 0))))
+        }))
+        (if (and (not (can-active)) (external-wake-inactive)
+                (not com-force-on) (not (is-connected)) (not is-charging))
+            (bms-set-com 1))
+        res
     }))
-    (if (and
-        (not (can-active))
-        (external-wake-inactive)
-        (not com-force-on)
-        (not (is-connected))
-        (not is-charging))
-        (gpio-write 9 1))
     (mutex-unlock com-mutex)
-    res
+    (match result ((exit-ok (? value)) value) (_ (exit-error 0)))
 })
 
 (defun com-force (en)
     (if en {
         (setq com-force-on true)
-        (gpio-write 9 0)
+        (bms-set-com 0)
     } {
         (setq com-force-on false)
 }))
@@ -459,6 +509,7 @@ loopwhile-thd
     ((not temps-valid) "TEMP_INVALID")
     ((!= bq-hard-fault-mask 0) "BQ_HARD_FAULT")
     ((bq-current-fault-active) "BQ_CURRENT_FAULT")
+    (charge-hw-refused "CHG_HW_REFUSED")
     ((assoc rtc-val 'charge-fault) "FLT_CHG_OC")
     (charge-complete "CHG_COMPLETE")
     (charge-no-current "CHG_NO_CURRENT")
@@ -523,14 +574,16 @@ loopwhile-thd
 
 (defun bms-shutdown-failed-alarm () {
     (print "BMS hardware shutdown failed")
+    ; Two attempts have failed. Alarm instead of rebooting into a shutdown loop.
     (loopwhile t {
-        (fail-close-outputs true)
-        (critical-beep 20 0.05)
-        (sleep 0.5)
+        (wdt-reset)
+        (beep 5 0.2)
+        (sleep 5.0)
     })
 })
 
 (defun bms-shutdown-impl (save-counters reason) {
+	(setq shutdown-in-progress true)
     (print "BMS shutdown sequence starting")
     (print-shutdown-reason reason)
     (fail-close-outputs true)
@@ -538,7 +591,12 @@ loopwhile-thd
     (setassoc rtc-val 'sleep-enter-time-s (get-time-of-day-s))
     (save-rtc-val)
     (if save-counters (save-settings))
-    (match (trap (bms-hw-shutdown)) ((exit-ok _) nil) (_ (bms-shutdown-failed-alarm)))
+    (wdt-reset)
+    (looprange attempt 0 2 {
+        (match (trap (bms-hw-shutdown)) ((exit-ok _) (break)) (_ nil))
+        (sleep 0.1)
+    })
+    (bms-shutdown-failed-alarm)
 })
 
 (defun bms-shutdown () (bms-shutdown-impl true shutdown-reason-unknown))
@@ -560,6 +618,7 @@ loopwhile-thd
     (not chg-detected)
     (valid-pack-reading)
     (< soc 0.05)
+    (<= c-min (bms-get-param 'vc_empty))
     (not trigger-bal-after-charge)
     (external-wake-inactive)
     ; block_sleep is intentionally honored here so a fresh, unconfigured
@@ -615,10 +674,10 @@ loopwhile-thd
     })
     (if (is-connected) (setq do-sleep false))
     (if (can-active) (setq do-sleep false))
-    (user-beep 2 0.1)
+    (user-beep 2 0.2)
     (var wake-source (process-sleep-time))
     (if (can-active) (setq do-sleep false))
-    (var soc -2.0)
+    (setq soc -2.0)
     (var v-cells nil)
 
     ; It takes a few reads to get valid voltages the first time
@@ -632,7 +691,8 @@ loopwhile-thd
     })
     (setassoc rtc-val 'c-min c-min)
     (setassoc rtc-val 'c-max c-max)
-    (setassoc rtc-val 'v-tot (apply + v-cells))
+    (setq vtot (apply + v-cells))
+    (setassoc rtc-val 'v-tot vtot)
     (setassoc rtc-val 'soc soc)
     (setassoc rtc-val 'updated true)
     (save-rtc-val)
@@ -652,21 +712,19 @@ loopwhile-thd
         (update-temps)
         (setq bq-status (update-bq-status))
         (setq ichg (- (bms-current)))
-        (if (> ichg (bms-get-param 'max_charge_current)) {
-            (setassoc rtc-val 'charge-fault true)
-        })
+        (if (> ichg (bms-get-param 'max_charge_current)) (latch-charge-fault))
         (set-chg (= (str-len (charge-block-reason)) 0))
         (looprange i 0 (* charger-max-delay 10.0) {
             (sleep 0.1)
+            (if (not shutdown-in-progress) (wdt-reset))
             (setq bq-status (update-bq-status))
             (var startup-cells (sort < (with-com '(bms-get-vcells))))
             (setq c-min (first startup-cells))
             (setq c-max (ix startup-cells -1))
             (update-temps)
             (setq ichg (- (bms-current)))
-            (if (> ichg (bms-get-param 'max_charge_current)) {
-                (setassoc rtc-val 'charge-fault true)
-            })
+            (if (> ichg (bms-get-param 'max_charge_current)) (latch-charge-fault))
+            (if (<= (bms-get-vchg) 5.0) { (set-chg false) (break) })
             (if (or (not (bms-control-ok))
                     (> (str-len (charge-block-reason)) 0)) {
                 (set-chg false)
@@ -705,6 +763,7 @@ loopwhile-thd
             })
             (_ {
                 (print "bms-sleep FAILED in start-fun -- deferring sleep-deep, will retry")
+                (sleep-fail-alarm)
                 (sleep 1.0)
     })))
 })
@@ -725,10 +784,11 @@ loopwhile-thd
     (ah-dis-tot  . (5 f))
     (wh-dis-tot  . (6 f))
     (ah-cnt-soc  . (7 f))
-    (bq-hard-fault . (8 i))))
+    (bq-hard-fault . (8 i))
+    (current-zero . (9 f))))
 
 ; Settings version
-(def settings-version 242i32)
+(def settings-version 243i32)
 
 (defun read-setting (name)
     (let (
@@ -806,6 +866,7 @@ loopwhile-thd
         (set-chg false)
         (var latched (bitwise-or bq-hard-fault-mask observed-mask))
         (if (!= latched bq-hard-fault-mask) {
+            (spawn (fn () (user-beep-low 2 0.6))) ; charge fault
             (persist-bq-hard-fault latched)
             (cancel-bq-reset "")
         })
@@ -889,8 +950,7 @@ loopwhile-thd
     (if bq-reset-requested {
         ; One attempt per press: with-com's automatic retry is inappropriate here.
         (mutex-lock com-mutex)
-        (gpio-write 9 0)
-        (var result (trap (bq-reset-step)))
+        (var result (trap { (bms-set-com 0) (bq-reset-step) }))
         (mutex-unlock com-mutex)
         (match result
             ((exit-ok _) true)
@@ -898,13 +958,32 @@ loopwhile-thd
     })
 })
 
+(defun latch-charge-fault () {
+    (if (not (assoc rtc-val 'charge-fault)) (spawn (fn () (user-beep-low 2 0.6)))) ; charge fault
+    (setassoc rtc-val 'charge-fault true)
+})
+
 (defun set-chg (chg) {
     (if (and chg temps-valid (bms-control-ok) (= bq-hard-fault-mask 0)
             (not (bq-current-fault-active))) {
-        (if (not is-charging) (setq charge-ts (systime)))
-        (gpio-write 9 0)
-        (bms-set-chg 1)
-        (setq is-charging true)
+        (var enabled (match (trap { (bms-set-com 0) (bms-set-chg 1) })
+            ((exit-ok (? value)) value) (_ false)))
+        (setq charge-hw-refused (not enabled))
+        (if enabled {
+            (if (not is-charging) {
+                (setq charge-ts (systime))
+                (if (not charge-enable-beeped) {
+                    (setq charge-enable-beeped true)
+                    (spawn charge-start-beep)
+                })
+            })
+            (setq is-charging true)
+        } {
+            (bms-set-chg 0)
+            (setq is-charging false)
+            (setq charge-ok false)
+            (setq charge-session-valid false)
+        })
     } {
         ; Trigger balancing only when a real, fault-free charge session
         ; ends. Voltage alone must not arm balancing.
@@ -918,6 +997,7 @@ loopwhile-thd
             (not (bq-current-fault-active))
         ) {
             (setq trigger-bal-after-charge true)
+            (setq balance-request-ts (systime))
         })
         (setq charge-session-valid false)
         (bms-set-chg 0)
@@ -925,10 +1005,10 @@ loopwhile-thd
     })
 })
 
-; Charger presence and permission to start are different measurements.
-; The original 5 V presence threshold remains valid with the charge gate on;
-; pack + 0.7 V is required only to start, before the charger is loaded.
+; Leave the charger uninterrupted during its startup grace. Afterwards, low
+; port voltage or current ends charging without gate-off measurement probes.
 (defun charge-control-step () {
+    (var low-current (<= charge-current-filt (bms-get-param 'min_charge_current)))
     (var charger-detected (> vt-vchg 5.0))
     ; Refresh presence before considering any five-second disconnect reset.
     (if charger-detected (setq charge-dis-ts (systime)))
@@ -937,28 +1017,49 @@ loopwhile-thd
         (setq charge-complete false)
         (setq charge-complete-msg false)
         (setq charge-no-current false)
+        (setq charge-block-beeped false)
+        (setq charge-enable-beeped false)
     })
     (if (and charger-detected (not charger-detected-prev)) {
         (setq charge-ts (systime))
+        (setq charge-block-beeped false)
+        (setq charge-enable-beeped false)
+        (print "CHG: charger detected")
     })
     (setq charger-detected-prev charger-detected)
 
-    ; Only the measured end voltage can complete a charging session.
+    ; The measured end voltage completes charging immediately.
     (if (and is-charging (>= c-max (bms-get-param 'vc_charge_end))) {
+        (if (not charge-complete) {
+            (spawn (fn () (user-beep 3 0.2)))
+            (print "CHG complete: CELL_LIMIT")
+        })
         (setq charge-complete true)
         (setq charge-complete-msg true)
     })
-    (if (and is-charging (> (- iout) (bms-get-param 'max_charge_current))) {
-        (setassoc rtc-val 'charge-fault true)
+    ; Top-up, as on JFBMS Master: once post-charge balancing is finished and
+    ; the settled cells fall below vc_charge_start, a new charge may start.
+    (if (and charge-complete (not is-charging) (not is-balancing)
+            (not trigger-bal-after-charge)
+            (< c-max (bms-get-param 'vc_charge_start))) {
+        (setq charge-complete false)
+        (setq charge-complete-msg false)
+        (setq charge-ts (systime))
+        (print "CHG rearmed below vc_charge_start")
     })
-    ; An idle charger is not a full battery. Hold the timeout until unplugged
-    ; or the user explicitly requests another attempt through Chg En.
-    (if (and is-charging (not charge-complete)
-            (>= (secs-since charge-ts) charger-max-delay)
-            (<= (- iout) (bms-get-param 'min_charge_current))) {
-        (setq charge-no-current true)
+    (if (and is-charging (> charge-current (bms-get-param 'max_charge_current))) (latch-charge-fault))
+    (if (and is-charging charger-detected (not charge-complete)
+            (>= (secs-since charge-ts) charger-max-delay) low-current) {
+        (if (and charge-session-valid (>= c-max (bms-get-param 'vc_charge_start))) {
+            (setq charge-complete true)
+            (setq charge-complete-msg true)
+            (spawn (fn () (user-beep 3 0.2)))
+            (print "CHG complete: CURRENT_TAPER")
+        } (setq charge-no-current true))
     })
     (process-bq-reset)
+    ; Retry a transient native refusal after the next complete safety scan.
+    (setq charge-hw-refused false)
     (setq charge-ok (= (str-len (charge-block-reason)) 0))
     (if (and charger-detected charge-ok
             (or is-charging (> vt-vchg (+ vtot 0.7)))) {
@@ -1008,8 +1109,12 @@ loopwhile-thd
         (setq vtot (apply + v-cells))
         (setq vout (with-com '(bms-get-vout)))
         (setq vt-vchg (bms-get-vchg))
-        (setq iout (+ (with-com '(bms-current)) (can-sum-current)))
-        (if (and is-charging (> (- iout) (bms-get-param 'min_charge_current))) {
+        (setq charge-current (- (with-com '(bms-current))))
+        ; Same EMA as the master (0.85 per ~100 ms scan) for end-of-charge only;
+        ; over-current checks keep the raw value.
+        (setq charge-current-filt (if is-charging (lpf charge-current-filt charge-current 0.15) charge-current))
+        (setq iout (+ (- charge-current) (can-sum-current)))
+        (if (and is-charging (> charge-current (bms-get-param 'min_charge_current))) {
             (setq charge-session-valid true)
         })
         (if (and is-balancing (not (balance-safe-now))) {
@@ -1040,7 +1145,7 @@ loopwhile-thd
             (setq soc (/ ah-cnt-soc batt-ah))
         } {
             (if (>= soc 0.0)
-                (setq soc (lpf soc (calc-soc c-min) (* 100.0 (bms-get-param 'soc_filter_const))))
+                (setq soc (lpf soc (calc-soc c-min) (truncate (* 100.0 (bms-get-param 'soc_filter_const)) 0.0 1.0)))
                 (setq soc (calc-soc c-min)))
         })
         (var dt (secs-since t-last))
@@ -1098,6 +1203,13 @@ loopwhile-thd
                     (if (<= vt-vchg (+ vtot 0.7)) "CHG_VOLTAGE_LOW" "CHG_NO_CURRENT"))
             })
             (true "")))
+        ; Only a block that outlasts plug-in transients; complete is not blocked.
+        (if (and charger-detected (not is-charging) (> (str-len chg-status) 0)
+                (not-eq chg-status "CHG_COMPLETE") (> (secs-since charge-ts) 3.0)
+                (not charge-block-beeped)) {
+            (setq charge-block-beeped true)
+            (spawn charge-block-beep)
+        })
 
         ; Set combined BMS status
         (var bq-status-display (if (> (str-len bq-status) 0) bq-status bq-status-latched))
@@ -1135,7 +1247,10 @@ loopwhile-thd
             (setq i-zero-time (+ i-zero-time dt)))
 
         ; Go to sleep when button is off, not balancing and not connected
-        (if (and (external-wake-inactive) (> i-zero-time 1.0) (not is-balancing) (not (is-connected)) (not (can-active))) {
+        (if (and trigger-bal-after-charge balance-request-ts
+                (> (secs-since balance-request-ts) 60.0) (not is-balancing))
+            (setq trigger-bal-after-charge false))
+        (if (and (external-wake-inactive) (> i-zero-time 1.0) (not is-charging) (not charger-detected) (not trigger-bal-after-charge) (not is-balancing) (not (is-connected)) (not (can-active))) {
             (sleep 0.1)
             (if (external-wake-inactive) {
                 (setassoc rtc-val 'sleep-enter-time-s (get-time-of-day-s))
@@ -1150,6 +1265,7 @@ loopwhile-thd
                     })
                     (_ {
                         (print "bms-sleep FAILED in main-ctrl idle path -- deferring sleep-deep, will retry")
+                        (sleep-fail-alarm)
                         (sleep 1.0)
                 }))
             })
@@ -1167,7 +1283,7 @@ loopwhile-thd
                 (exit-error 0)
             })
         })
-        (wdt-reset)
+        (if (not shutdown-in-progress) (wdt-reset))
         (sleep 0.1)
     })
 })
@@ -1195,25 +1311,31 @@ loopwhile-thd
     (if (< c-min (bms-get-param 'vc_balance_min)) { (setq bal-ok false) })
     (if (> t-max (bms-get-param 't_bal_max_cell)) { (setq bal-ok false) })
     (if (> t-ic (bms-get-param 't_bal_max_ic)) { (setq bal-ok false) })
-    (if (<= (bms-get-param 'max_bal_ch) 0) (setq bal-ok false))
+    (if (<= (bms-get-param 'max_bal_ch) 0) {
+        (setq bal-ok false)
+        (setq trigger-bal-after-charge false)
+    })
     (if bal-ok {
+        ; Same rule as JFBMS Master: highest cells first, never two adjacent
+        ; cells on the same BQ, at most max_bal_ch channels per BQ.
         (var bal-chs (map (fn (x) 0) (range vc-len)))
         (var ch-cnt 0)
+        (var ic1-cells (first active-hw-config))
+        (var ic-cnt (list 0 0))
+        (var max-ch (bms-get-param 'max_bal_ch))
+        (var threshold (bms-get-param (if is-balancing 'vc_balance_end 'vc_balance_start)))
         (loopforeach c cells-sorted {
             (var n-cell (first c))
-            (var v-cell (second c))
+            (var ic (if (< n-cell ic1-cells) 0 1))
             (if (and
-                (> (- v-cell c-min)
-                    (if is-balancing
-                        (bms-get-param 'vc_balance_end)
-                        (bms-get-param 'vc_balance_start)))
-                ; Do not balance adjacent cells
-                (or (eq n-cell 0) (= (ix bal-chs (- n-cell 1)) 0))
-                (or (eq n-cell (- vc-len 1)) (= (ix bal-chs (+ n-cell 1)) 0))) {
+                (> (- (second c) c-min) threshold)
+                (< (ix ic-cnt ic) max-ch)
+                (or (= n-cell 0) (= n-cell ic1-cells) (= (ix bal-chs (- n-cell 1)) 0))
+                (or (= n-cell (- vc-len 1)) (= n-cell (- ic1-cells 1)) (= (ix bal-chs (+ n-cell 1)) 0))) {
                     (setix bal-chs n-cell 1)
+                    (setix ic-cnt ic (+ (ix ic-cnt ic) 1))
                     (setq ch-cnt (+ ch-cnt 1))
             })
-            (if (>= ch-cnt (bms-get-param 'max_bal_ch)) (break))
         })
         (if (> ch-cnt 0) {
             (setq trigger-bal-after-charge false)
@@ -1229,9 +1351,11 @@ loopwhile-thd
     })
     (if (not bal-ok) { (disable-balancing) })
     (setq bal-status (if is-balancing "BAL" ""))
+    ; 30 s balancing, then the 2 s settle above, as on JFBMS Master.
     (var bal-ok-before bal-ok)
-    (looprange i 0 15 {
+    (looprange i 0 30 {
         (if (not (eq bal-ok-before bal-ok)) (break))
+        (if (and trigger-bal-after-charge (not is-balancing)) (break))
         (sleep 1.0)
     })
 }))
@@ -1245,7 +1369,16 @@ loopwhile-thd
                 (if (= wh 1) (setq wh-cnt 0.0))
             })
             ((event-bms-force-bal (? v)) (if (= v 1) (setq bal-ok true) (setq bal-ok false)))
-            (event-bms-zero-ofs (setq current-zero-offset (with-com '(bms-current-raw))))
+            (event-bms-zero-ofs {
+                (var zero (with-com '(bms-current-raw)))
+                (if (and (number? zero) (>= zero -2.0) (<= zero 2.0)) {
+                    (if (write-setting 'current-zero zero) {
+                        (setq current-zero-offset zero)
+                        (print "CAL: zero captured and stored")
+                        (spawn (fn () (user-beep 2 0.2)))
+                    } (print "CAL: could not store current zero"))
+                } (print "CAL: zero rejected; remove current before calibration"))
+            })
             ((event-data-rx ? data) (handle-app-data data))
             (_ nil)
 )))
@@ -1263,23 +1396,33 @@ loopwhile-thd
     '(cells_ic1 cells_ic2 temp_num temp_res hw_occ_current hw_ocd_current psw_scd_tres)))
 
 (defun main () {
-    (if (> app-wdt-timeout 0) (wdt-configure true app-wdt-timeout) (wdt-disable))
-
+    (loopwhile-thd ("io-diag" 100) t {
+        (var previous nil)
+        (loopwhile t {
+            (sleep 5.0)
+            (var counts (list (bms-i2c-errors)))
+            (if (and (not-eq counts previous) (> (apply + counts) 0)) {
+                (print "I2C/CRC errors:" counts)
+                (setq previous counts)
+            })
+        })
+    })
     ; Compatibility Check
     (loopwhile (!= (bms-fw-version) 9) {
         (if (< (bms-fw-version) 9)
             (print "Firmware too old, please update")
             (print "Package too old, please update"))
-        (gpio-write 9 0) ; Enable CAN
+        (bms-set-com 0) ; Enable CAN
         (sleep 5)
     })
+    (if (> app-wdt-timeout 0) (wdt-configure true app-wdt-timeout) (wdt-disable))
     (set-fw-name "")
     (def charge-dis-ts (systime))
     (def t-last (systime))
     (def charge-ts (systime))
 
     ; Buzzer
-    (pwm-start 2730 0.0 0 3)
+    (pwm-start beep-freq-high 0.0 0 buzzer-pin)
     (if (= (bufget-u8 (rtc-data) 900) rtc-val-magic) {
         (var tmp (unflatten (rtc-data)))
         (if tmp (setq rtc-val tmp))
@@ -1292,7 +1435,14 @@ loopwhile-thd
 
     ; Timer shutdown can happen inside start-fun, before the normal main
     ; loop starts. Load counters now so save-settings is always safe.
-    (def settings-valid (not (not-eq (read-setting 'ver-code) settings-version)))
+    (var stored-version (read-setting 'ver-code))
+    (def settings-valid (or (= stored-version 242i32) (= stored-version settings-version)))
+    (var saved-zero (if (= stored-version settings-version) (read-setting 'current-zero) 0.0))
+    (setq current-zero-offset (if (and (number? saved-zero) (>= saved-zero -2.0) (<= saved-zero 2.0)) saved-zero 0.0))
+    (if (= stored-version 242i32) {
+        (write-setting 'current-zero current-zero-offset)
+        (write-setting 'ver-code settings-version)
+    })
     (def ah-cnt (number-or (read-setting 'ah-cnt) 0.0))
     (def wh-cnt (number-or (read-setting 'wh-cnt) 0.0))
     (def ah-chg-tot (number-or (read-setting 'ah-chg-tot) 0.0))
@@ -1315,6 +1465,7 @@ loopwhile-thd
     (if (not settings-valid) {
         (setq ah-cnt-soc (* (calc-soc c-min) (bms-get-param 'batt_ah)))
         (write-setting 'ah-cnt-soc ah-cnt-soc)
+        (write-setting 'current-zero current-zero-offset)
         (write-setting 'ver-code settings-version)
         (setq settings-valid true)
     })
@@ -1345,7 +1496,7 @@ loopwhile-thd
             (fail-close-outputs true)
             (com-force true)
             (init-hw)
-            (user-beep 2 0.05)
+            (spawn (fn () (user-beep 2 0.2)))
             (setq active-hw-config cfg)
             (setq cell-num (+ (first cfg) (second cfg)))
             (set-bms-val 'bms-cell-num cell-num)

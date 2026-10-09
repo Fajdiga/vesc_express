@@ -281,7 +281,7 @@
             <cDefine>CONF_TEMP_NUM</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
-            <maxInt>16</maxInt>
+            <maxInt>4</maxInt>
             <minInt>0</minInt>
             <showDisplay>0</showDisplay>
             <stepInt>1</stepInt>
@@ -352,7 +352,7 @@
             <longName>Block Sleep Mode</longName>
             <type>5</type>
             <transmittable>1</transmittable>
-            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Enabled keeps the BMS awake instead of entering its normal automatic deep sleep. Disabled allows sleep when the pack is idle and the other sleep conditions are met.&lt;/p&gt;&lt;p&gt;Keeping the BMS awake uses more battery energy. This is not a charging or balancing enable switch.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Enabled keeps the BMS awake instead of entering its normal automatic deep sleep. Disabled allows sleep when the pack is idle and the other sleep conditions are met.&lt;/p&gt;&lt;p&gt;Keeping the BMS awake uses more battery energy. This is not a charging or balancing enable switch.&lt;/p&gt;&lt;p&gt;After about 1 hour of balanced idle operation, Block Sleep clears automatically and is saved.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_BLOCK_SLEEP</cDefine>
             <valInt>1</valInt>
         </block_sleep>
@@ -360,11 +360,11 @@
             <longName>Max Balance Channels</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Maximum number of cells selected for balancing at the same time across the complete pack. Set 0 to disable balancing.&lt;/p&gt;&lt;p&gt;Only nonadjacent channels are selected, so the actual count can be lower. Fewer channels reduce heat but can make balancing take longer.&lt;/p&gt;&lt;p&gt;Values above the physical cell count cannot create additional channels. This limit does not start balancing by itself.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Maximum number of cells balanced at the same time on each BQ monitor, not across the entire pack. Set 0 to disable balancing.&lt;/p&gt;&lt;p&gt;The highest cells are chosen first, and two adjacent cells on the same BQ are never balanced together, so the actual count can be lower. Balancing runs in 30-second periods with a 2-second pause to measure settled cell voltages.&lt;/p&gt;&lt;p&gt;Fewer channels reduce heat but can make balancing take longer. This limit does not start balancing by itself.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_MAX_BAL_CH</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
-            <maxInt>1000</maxInt>
+            <maxInt>8</maxInt>
             <minInt>0</minInt>
             <showDisplay>0</showDisplay>
             <stepInt>1</stepInt>
@@ -382,7 +382,7 @@
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
             <maxDouble>4.999</maxDouble>
-            <minDouble>0</minDouble>
+            <minDouble>1.5</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>0.01</stepDouble>
             <valDouble>3.1</valDouble>
@@ -400,7 +400,7 @@
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
             <maxDouble>4.999</maxDouble>
-            <minDouble>0</minDouble>
+            <minDouble>1.5</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>0.01</stepDouble>
             <valDouble>4.2</valDouble>
@@ -448,13 +448,13 @@
             <longName>Charge Start Voltage</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Highest-cell voltage, in volts per cell, below which a new charge is allowed to start. Once charging is running, Charge End Voltage becomes the upper limit.&lt;/p&gt;&lt;p&gt;Set this no higher than Charge End Voltage; a lower start value provides hysteresis. Charging also requires valid measurements, safe temperatures, an available charger and no blocking fault.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Highest-cell voltage, in volts per cell, below which a new charge is allowed to start. Once charging is running, Charge End Voltage becomes the upper limit.&lt;/p&gt;&lt;p&gt;Set this no higher than Charge End Voltage; a lower start value provides hysteresis. After a completed charge, once post-charge balancing has finished and the highest cell is below this value, the BMS tops the pack up again while the charger stays connected. Charging also requires valid measurements, safe temperatures, an available charger and no blocking fault.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_CHARGE_START</cDefine>
             <editorDecimalsDouble>3</editorDecimalsDouble>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
             <maxDouble>4.999</maxDouble>
-            <minDouble>0</minDouble>
+            <minDouble>1.5</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>0.01</stepDouble>
             <valDouble>4.15</valDouble>
@@ -472,7 +472,7 @@
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
             <maxDouble>4.999</maxDouble>
-            <minDouble>0</minDouble>
+            <minDouble>1.5</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>0.01</stepDouble>
             <valDouble>4.2</valDouble>
@@ -490,7 +490,7 @@
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
             <maxDouble>4.999</maxDouble>
-            <minDouble>0</minDouble>
+            <minDouble>1.5</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>0.01</stepDouble>
             <valDouble>3</valDouble>
@@ -508,7 +508,7 @@
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
             <maxDouble>4.999</maxDouble>
-            <minDouble>0</minDouble>
+            <minDouble>1.5</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>0.01</stepDouble>
             <valDouble>3.5</valDouble>
@@ -525,13 +525,13 @@
             <editorDecimalsDouble>1</editorDecimalsDouble>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
-            <maxDouble>150</maxDouble>
+            <maxDouble>60</maxDouble>
             <minDouble>-15</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>1</stepDouble>
             <valDouble>45</valDouble>
             <vTxDoubleScale>10</vTxDoubleScale>
-            <suffix> Â°C</suffix>
+            <suffix> &#176;C</suffix>
             <vTx>7</vTx>
         </t_bal_max_cell>
         <t_bal_max_ic>
@@ -543,13 +543,13 @@
             <editorDecimalsDouble>1</editorDecimalsDouble>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
-            <maxDouble>150</maxDouble>
+            <maxDouble>100</maxDouble>
             <minDouble>-15</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>1</stepDouble>
             <valDouble>85</valDouble>
             <vTxDoubleScale>10</vTxDoubleScale>
-            <suffix> Â°C</suffix>
+            <suffix> &#176;C</suffix>
             <vTx>7</vTx>
         </t_bal_max_ic>
         <balance_max_current>
@@ -615,13 +615,13 @@
             <editorDecimalsDouble>1</editorDecimalsDouble>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
-            <maxDouble>150</maxDouble>
+            <maxDouble>60</maxDouble>
             <minDouble>-15</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>1</stepDouble>
             <valDouble>45</valDouble>
             <vTxDoubleScale>10</vTxDoubleScale>
-            <suffix> Â°C</suffix>
+            <suffix> &#176;C</suffix>
             <vTx>7</vTx>
         </t_charge_max>
         <t_charge_max_mos>
@@ -633,25 +633,25 @@
             <editorDecimalsDouble>1</editorDecimalsDouble>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
-            <maxDouble>180</maxDouble>
+            <maxDouble>100</maxDouble>
             <minDouble>-15</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>1</stepDouble>
             <valDouble>85</valDouble>
             <vTxDoubleScale>10</vTxDoubleScale>
-            <suffix> Â°C</suffix>
+            <suffix> &#176;C</suffix>
             <vTx>7</vTx>
         </t_charge_max_mos>
         <min_charge_current>
             <longName>Min Charge Current</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Minimum charging current, in amps, expected from an active charger after the 10-second startup grace period. If current is at or below this value before Charge End Voltage is reached, charging stops with CHG_NO_CURRENT.&lt;/p&gt;&lt;p&gt;This does not mean the battery is full and does not regulate charger current. Unplug for more than 5 seconds or use Chg En to retry after correcting the cause.&lt;/p&gt;&lt;p&gt;Choose a value below the lowest current expected from your charger.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Minimum charging current, in amps, expected after the 10-second startup grace period. After that grace, current at or below this threshold switches charging off on the next scan. A valid session near Charge Start Voltage finishes as CHG_COMPLETE; otherwise it stops with CHG_NO_CURRENT. Low measured charger-port voltage switches charging off during startup too. Choose this threshold below the charger's normal current. Unplug for more than 5 seconds or use Chg En to retry.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_MIN_CHARGE_CURRENT</cDefine>
             <editorDecimalsDouble>2</editorDecimalsDouble>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
-            <maxDouble>999</maxDouble>
+            <maxDouble>124</maxDouble>
             <minDouble>0</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>0.01</stepDouble>
@@ -664,12 +664,12 @@
             <longName>Max Charge Current</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Software charging-overcurrent threshold, in amps. If measured charging current exceeds this value while charging, the BMS disables charging and latches a fault.&lt;/p&gt;&lt;p&gt;This is a trip threshold, not a charger current regulator. Select a value above normal charger current but within the ratings of the cells and charging hardware.&lt;/p&gt;&lt;p&gt;Correct the cause before clearing the fault or reconnecting.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Software charging-overcurrent threshold, in amps. If measured charging current exceeds this value while charging, the BMS disables charging and latches a fault. This setting must not exceed Hardware Charge Overcurrent.&lt;/p&gt;&lt;p&gt;This is a trip threshold, not a charger current regulator. Select a value above normal charger current but within the ratings of the cells and charging hardware.&lt;/p&gt;&lt;p&gt;Correct the cause before clearing the fault or reconnecting.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_MAX_CHARGE_CURRENT</cDefine>
             <editorDecimalsDouble>2</editorDecimalsDouble>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
-            <maxDouble>999</maxDouble>
+            <maxDouble>124</maxDouble>
             <minDouble>0</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>0.1</stepDouble>
@@ -716,7 +716,7 @@
             <longName>Voltage SOC Smoothing</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Smoothing strength for voltage-based state of charge (SOC). A smaller value gives a slower, steadier response; a larger value follows voltage changes faster.&lt;/p&gt;&lt;p&gt;0 holds the previous estimate during filtering. The displayed value is scaled: 10 means a stored value of 0.00001.&lt;/p&gt;&lt;p&gt;Use displayed values from 0 to 10000; 10000 means no smoothing. Values above 10000 can make JFBMS32 estimates overshoot.&lt;/p&gt;&lt;p&gt;Unused when Coulomb Counting SOC is enabled.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Smoothing strength for voltage-based state of charge (SOC). A smaller value gives a slower, steadier response; a larger value follows voltage changes faster.&lt;/p&gt;&lt;p&gt;0 holds the previous estimate during filtering. The displayed value is scaled: 10 means a stored value of 0.00001.&lt;/p&gt;&lt;p&gt;Use displayed values from 0 to 10000; 10000 means no smoothing. Values above 10000 are treated as no smoothing.&lt;/p&gt;&lt;p&gt;Unused when Coulomb Counting SOC is enabled.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_SOC_FILTER_CONST</cDefine>
             <editorDecimalsDouble>1</editorDecimalsDouble>
             <editorScale>1e+06</editorScale>
@@ -739,13 +739,13 @@
             <editorDecimalsDouble>1</editorDecimalsDouble>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
-            <maxDouble>150</maxDouble>
-            <minDouble>-45</minDouble>
+            <maxDouble>60</maxDouble>
+            <minDouble>-40</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>1</stepDouble>
             <valDouble>0</valDouble>
             <vTxDoubleScale>10</vTxDoubleScale>
-            <suffix> Â°C</suffix>
+            <suffix> &#176;C</suffix>
             <vTx>7</vTx>
         </t_charge_min>
         <hw_occ_current>

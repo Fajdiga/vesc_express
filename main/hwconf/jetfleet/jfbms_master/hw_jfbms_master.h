@@ -66,6 +66,9 @@
 // let received/echoed standard BMS CAN frames replace its locally assembled
 // slave snapshot (especially cell_num and v_cell[]).
 #define HW_BMS_CAN_VALUES_LOCAL_OWNER
+#define HW_BMS_DATA_VALID() jfbms_master_bms_data_valid()
+#define HW_BMS_NATIVE_REFRESH_TIME
+bool jfbms_master_bms_data_valid(void);
 
 // Configuration overrides
 #define OVR_CONF_PARSER_C			"jfbms_master_confparser.c"
@@ -76,8 +79,7 @@
 #define OVR_CONF_SERIALIZE_BOUNDED	jfbms_master_confparser_serialize_main_config_t
 #define OVR_CONF_DESERIALIZE_BOUNDED	jfbms_master_confparser_deserialize_main_config_t
 #define OVR_CONF_SET_DEFAULTS		jfbms_master_confparser_set_defaults_main_config_t
-#define OVR_CONF_MIGRATE_LEGACY(signature, config) \
-	jfbms_master_migrate_legacy_config((signature), (config))
+#define OVR_CONF_ERROR() jfbms_master_config_error()
 #define OVR_CONF_VALIDATE(config) \
 	jfbms_master_validate_config((config))
 #define OVR_CONF_APPLY() \
@@ -160,9 +162,6 @@ typedef struct {
 	// Enter sleep mode when the current magnitude is below this value
 	float min_current_sleep;
 
-	// Charge port voltage at which a charger is considered plugged in
-	float v_charge_detect;
-
 	// Only allow charging when the cell temperature is below this value
 	float t_charge_max;
 
@@ -193,15 +192,9 @@ typedef struct {
 	// Only allow charging when the cell temperature is above this value
 	float t_charge_min;
 
-	// Enable temperature monitoring during charging
-	bool t_charge_mon_en;
-
-	// These fields deliberately reuse the raw-NVS offsets of the obsolete
-	// power-switch members. Do not reorder them: deployed settings blobs depend on
-	// the ESP32 4-byte ABI offsets documented by the static assertions below.
+	// Fast ADC charge-path overcurrent trip
 	float fast_charge_oc_a;
 	bool fast_charge_oc_en;
-	uint8_t config_reserved[19];
 
 	// --- Master-specific parameters ---
 
@@ -209,14 +202,12 @@ typedef struct {
 	int num_slaves;
 } main_config_t;
 
-_Static_assert(sizeof(main_config_t) == 404,
-		"JFBMS master config ABI changed; add an explicit NVS migration");
-_Static_assert(offsetof(main_config_t, num_slaves) == 400,
-		"JFBMS master num_slaves offset changed; legacy NVS would be lost");
+// main_config_t is stored raw in NVS. A layout change must also change its
+// size (or schema signature) so old settings reset to defaults instead of
+// loading into the wrong fields. Update this value deliberately.
+_Static_assert(sizeof(main_config_t) == 380,
+		"JFBMS master config layout changed; confirm stored settings reset safely");
 
-#define JFBMS_MASTER_CONFIG_SIGNATURE_LEGACY 1155088901U
-#define JFBMS_MASTER_CONFIG_SIGNATURE_WITH_CHARGE_TIMERS 2475902502U
-bool jfbms_master_migrate_legacy_config(uint32_t signature, main_config_t *conf);
 bool jfbms_master_validate_config(const main_config_t *conf);
 bool jfbms_master_apply_config(void);
 
@@ -254,8 +245,8 @@ bool jfbms_master_apply_config(void);
 #define PIN_SHUTDOWN				19	// Shutdown drive, high-Z idle, push-pull high when active
 
 // ADC channels
-// GPIO2 = current sense amp output (center ~1.65 V; assembled-board transfer
-// function is bench-calibrated in hw_jfbms_master.c)
+// GPIO2 = current sense amp output (center ~1.65 V; transfer function including
+// the INA181 input-filter gain error is in hw_jfbms_master.c ISENSE_*)
 // GPIO3 = charger voltage divider (300 kΩ : 4.7 kΩ → 64.83×)
 // GPIO4 = NTC NCP18XH103F03RB (10 k @ 25 °C, B25/85 = 3434), 10 kΩ pull-up to 3.3 V
 #define HW_ADC_CH2					ADC_CHANNEL_2 // Current sense
@@ -299,6 +290,7 @@ typedef struct {
 } master_bms_data_t;
 
 // Functions
+const char *jfbms_master_config_error(void);
 void hw_init(void);
 void hw_shutdown(void);
 

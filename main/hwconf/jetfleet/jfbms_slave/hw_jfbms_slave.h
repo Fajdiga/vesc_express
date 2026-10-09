@@ -56,6 +56,7 @@
 #define OVR_CONF_SERIALIZE_BOUNDED	jfbms_slave_confparser_serialize_main_config_t
 #define OVR_CONF_DESERIALIZE_BOUNDED	jfbms_slave_confparser_deserialize_main_config_t
 #define OVR_CONF_VALIDATE(config) jfbms_slave_validate_config(config)
+#define OVR_CONF_ERROR() jfbms_slave_config_error()
 #define OVR_CONF_APPLY() jfbms_slave_apply_config()
 #define OVR_CONF_SET_DEFAULTS		jfbms_slave_confparser_set_defaults_main_config_t
 #define OVR_CONF_MAIN_CONFIG
@@ -105,6 +106,7 @@ typedef struct {
 } main_config_t;
 
 bool jfbms_slave_validate_config(const main_config_t *conf);
+const char *jfbms_slave_config_error(void);
 bool jfbms_slave_apply_config(void);
 
 // Default setting Overrides

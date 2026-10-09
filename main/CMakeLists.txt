@@ -304,10 +304,16 @@ if(VESC_ENABLE_STORAGE)
     )
 endif()
 
+set(COMPONENT_LDFRAGMENTS)
+if(HW_NAME STREQUAL "JFBMS_MASTER")
+    list(APPEND COMPONENT_LDFRAGMENTS "hwconf/jetfleet/jfbms_master/adc_monitor.lf")
+endif()
+
 idf_component_register(
     SRCS ${COMPONENT_SRCS}
     INCLUDE_DIRS ${COMPONENT_ADD_INCLUDEDIRS}
     REQUIRES ${COMPONENT_REQUIRES}
+    LDFRAGMENTS ${COMPONENT_LDFRAGMENTS}
 )
 
 # BMS boards need their controller application on a factory-erased device.

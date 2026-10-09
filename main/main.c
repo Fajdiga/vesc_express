@@ -328,6 +328,16 @@ void app_main(void) {
 			}
 		}
 
+#ifdef OVR_CONF_VALIDATE
+		if (!OVR_CONF_VALIDATE((const main_config_t *)&backup.config)) {
+			int id = backup.config.controller_id;
+			CAN_BAUD baud = backup.config.can_baud_rate;
+			OVR_CONF_SET_DEFAULTS((main_config_t *)&backup.config);
+			if (id >= 1 && id <= 254) backup.config.controller_id = id;
+			if (baud >= CAN_BAUD_125K && baud <= CAN_BAUD_100K) backup.config.can_baud_rate = baud;
+			config_migrated = true;
+		}
+#endif
 		nvs_close(my_handle);
 	}
 	if (config_migrated) {

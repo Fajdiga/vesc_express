@@ -14,6 +14,7 @@
 
 // Functions
 // Shared admission check for packets, Lisp setters and hardware startup.
+const char *jfbms32_config_error(void);
 bool jfbms32_config_valid(const main_config_t *conf);
 // Returns -1 if capacity is insufficient or a string lacks a terminator.
 int32_t jfbms32_confparser_serialize_main_config_t(uint8_t *buffer, size_t capacity, const main_config_t *conf);

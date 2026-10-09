@@ -64,22 +64,34 @@ static TaskHandle_t m_control_watchdog_task;
 // and I/O permission, including the final GPIO enable decision.
 static uint16_t m_protection_faults;
 static bool m_protection_ready, m_protection_locked, m_protection_io_ok;
+static bool m_shutdown_ic1, m_shutdown_ic2;
 
 // Error messages
 static char *error_comm_bq1 = "BQ1 communication error";
 static char *error_comm_bq2 = "BQ2 communication error";
 
-static void bms_set_chg_hw(bool enable) {
+static bool bms_set_chg_hw(bool enable) {
 	portENTER_CRITICAL(&m_control_lock);
-	enable &= !m_protection_faults && (!m_protection_ready || m_protection_io_ok);
+	enable &= m_protection_ready && m_protection_io_ok && !m_protection_faults &&
+			m_control_monitoring && bms_safety_allowed(&m_control_state,
+					(uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS));
 	gpio_set_level(PIN_PSW_EN, 1);
 	gpio_set_level(PIN_CHG_EN, enable ? 1 : 0);
 	portEXIT_CRITICAL(&m_control_lock);
+	return enable;
 }
 
 static void bms_clear_balance_state(void) {
 	m_bal_state_ic1 = 0;
 	m_bal_state_ic2 = 0;
+}
+
+// Count bus/CRC errors without printing from protection tasks or under locks.
+static uint32_t m_i2c_error_count;
+static lbm_value ext_i2c_errors(lbm_value *args, lbm_uint argn) {
+    (void)args;
+    if (argn != 0) return ENC_SYM_EERROR;
+    return lbm_enc_u32(__atomic_load_n(&m_i2c_error_count, __ATOMIC_RELAXED));
 }
 
 static esp_err_t i2c_tx_rx(
@@ -88,6 +100,7 @@ static esp_err_t i2c_tx_rx(
 ) {
 
 	if (xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+		__atomic_fetch_add(&m_i2c_error_count, 1, __ATOMIC_RELAXED);
 		return ESP_ERR_TIMEOUT;
 	}
 
@@ -108,6 +121,7 @@ static esp_err_t i2c_tx_rx(
 	}
 	xSemaphoreGive(i2c_mutex);
 
+	if (res != ESP_OK) __atomic_fetch_add(&m_i2c_error_count, 1, __ATOMIC_RELAXED);
 	return res;
 }
 
@@ -191,7 +205,6 @@ static bool bq_read_block(
 	uint8_t *read_data_ptr = read_data;
 
 	if (res != ESP_OK) {
-		commands_printf_lisp("I2C Error: %d", res);
 		return false;
 	}
 
@@ -204,7 +217,7 @@ static bool bq_read_block(
 
 	read_data_ptr++;
 	if (crc != *read_data_ptr) {
-		commands_printf_lisp("Bad CRC1");
+		__atomic_fetch_add(&m_i2c_error_count, 1, __ATOMIC_RELAXED);
 		return false;
 	} else {
 		*buf = *(read_data_ptr - 1);
@@ -217,7 +230,7 @@ static bool bq_read_block(
 		buf++;
 
 		if (crc != *read_data_ptr) {
-			commands_printf_lisp("Bad CRC2");
+			__atomic_fetch_add(&m_i2c_error_count, 1, __ATOMIC_RELAXED);
 			return false;
 		} else {
 			*buf = *(read_data_ptr - 1);
@@ -394,6 +407,7 @@ static bool bms_disable_balancing_hw(bool include_ic2) {
 
 static bool bms_fail_close_outputs_hw(bool include_ic2) {
 	bms_set_chg_hw(false);
+	gpio_set_level(PIN_OUT_EN, 0);
 	return bms_disable_balancing_hw(include_ic2);
 }
 
@@ -445,8 +459,7 @@ static bool bms_protection_poll_hw(void) {
 	return ok;
 }
 
-// Opt-in supervision for the normal control script. Raw hardware extensions
-// neither arm nor renew this timer and remain usable without a control script.
+// Charge enable requires a live control scan, including for raw extensions.
 static uint32_t control_time_ms(void) {
 	return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 }
@@ -471,31 +484,27 @@ static bool control_watchdog_tripped(void) {
 static void control_watchdog_task(void *arg) {
 	(void)arg;
 	bool balance_off_verified = false;
-	bool reported = false;
 	while (true) {
 		vTaskDelay(pdMS_TO_TICKS(BMS_PROTECTION_POLL_MS));
+		// Cut the gate before a failed I2C read can delay this task.
+		if (control_watchdog_tripped()) {
+			bms_set_chg_hw(false);
+			gpio_set_level(PIN_OUT_EN, 0);
+		}
 		// Reuse this task for current protection, independently of the Lisp
 		// scan. Contention can delay a software cutoff; OCD/SCD stay autonomous.
-		if (xSemaphoreTake(bq_mutex, 0) == pdTRUE) {
-			if (m_control_monitoring && m_protection_ready) {
-				int com_prev = gpio_get_level(PIN_COM_EN);
-				gpio_set_level(PIN_COM_EN, 0);
+		if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(5) + 1) == pdTRUE) {
+			if (m_protection_ready) {
 				(void)bms_protection_poll_hw();
-				gpio_set_level(PIN_COM_EN, com_prev);
 			}
 			xSemaphoreGive(bq_mutex);
 		}
 		if (!control_watchdog_tripped()) {
 			balance_off_verified = false;
-			reported = false;
 			continue;
 		}
 		// Charge shutdown never waits for an I2C mutex or a failed balance write.
 		bms_set_chg_hw(false);
-		if (!reported) {
-			commands_printf("BMS control timeout: charge off, stopping balancing");
-			reported = true;
-		}
 		if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) continue;
 		// A supervised restart may have completed while this task waited.
 		if (control_watchdog_tripped()) {
@@ -545,15 +554,23 @@ static lbm_value ext_control_feed(lbm_value *args, lbm_uint argn) {
 static lbm_value ext_control_ok(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	if (argn != 0) return ENC_SYM_EERROR;
-	return control_watchdog_tripped() ? ENC_SYM_NIL : ENC_SYM_TRUE;
+	return m_control_monitoring && !control_watchdog_tripped() ? ENC_SYM_TRUE : ENC_SYM_NIL;
 }
 
-// Stop the normal script before using this opt-out for manual hardware tests.
+static lbm_value ext_watchdog_stack(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	if (argn != 0 || !m_control_watchdog_task) return ENC_SYM_EERROR;
+	return lbm_enc_u(uxTaskGetStackHighWaterMark(m_control_watchdog_task));
+}
+
+// Stopping supervision also stops charging.
 static lbm_value ext_control_stop(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	if (argn != 0) return ENC_SYM_EERROR;
 	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) return ENC_SYM_EERROR;
+	bms_set_chg_hw(false);
 	control_watchdog_disarm();
+	gpio_set_level(PIN_OUT_EN, 0);
 	xSemaphoreGive(bq_mutex);
 	return ENC_SYM_TRUE;
 }
@@ -565,11 +582,8 @@ static lbm_value ext_protection_status(lbm_value *args, lbm_uint argn) {
 		bms_set_chg_hw(false);
 		return ENC_SYM_EERROR;
 	}
-	int com_prev = gpio_get_level(PIN_COM_EN);
-	gpio_set_level(PIN_COM_EN, 0);
 	bool ok = m_protection_ready && bms_protection_poll_hw();
 	uint16_t faults = bms_protection_fault_mask();
-	gpio_set_level(PIN_COM_EN, com_prev);
 	xSemaphoreGive(bq_mutex);
 	return ok ? lbm_enc_i(faults) : ENC_SYM_EERROR;
 }
@@ -582,11 +596,8 @@ static lbm_value ext_protection_lock(lbm_value *args, lbm_uint argn) {
 		bms_set_chg_hw(false);
 		return ENC_SYM_EERROR;
 	}
-	int com_prev = gpio_get_level(PIN_COM_EN);
-	gpio_set_level(PIN_COM_EN, 0);
 	bms_protection_latch(faults);
 	bool ok = !bms_protection_fault_mask() || bms_protection_hold_hw();
-	gpio_set_level(PIN_COM_EN, com_prev);
 	xSemaphoreGive(bq_mutex);
 	return ok ? ENC_SYM_TRUE : ENC_SYM_EERROR;
 }
@@ -598,8 +609,6 @@ static lbm_value ext_protection_reset(lbm_value *args, lbm_uint argn) {
 	if (argn != 0) return ENC_SYM_EERROR;
 	bms_set_chg_hw(false);
 	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) return ENC_SYM_EERROR;
-	int com_prev = gpio_get_level(PIN_COM_EN);
-	gpio_set_level(PIN_COM_EN, 0);
 	uint16_t live = 0;
 	bool ok = m_protection_ready && bms_protection_read_hw(&live) && !live;
 	for (unsigned reg = PFStatusA; ok && reg <= PFStatusD; reg += 2) {
@@ -634,7 +643,6 @@ static lbm_value ext_protection_reset(lbm_value *args, lbm_uint argn) {
 		m_protection_locked = false;
 		(void)bms_protection_hold_hw();
 	}
-	gpio_set_level(PIN_COM_EN, com_prev);
 	xSemaphoreGive(bq_mutex);
 	return lbm_enc_i(ok ? 1 : 0);
 }
@@ -879,9 +887,11 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 	bms_set_chg_hw(false);
 	bms_clear_balance_state();
 	if (!jfbms32_config_valid((const main_config_t *)&backup.config)) {
-		lbm_set_error_reason("Invalid BMS safety configuration");
+		lbm_set_error_reason((char *)jfbms32_config_error());
+		commands_printf_lisp("Configuration rejected: %s", jfbms32_config_error());
 		return ENC_SYM_NIL;
 	}
+	if (m_control_state.shutdown) return ENC_SYM_EERROR;
 
 	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
 		lbm_set_error_reason("bq_mutex timeout in bms-init");
@@ -1169,6 +1179,12 @@ static lbm_value ext_bms_hw_shutdown(lbm_value *args, lbm_uint argn) {
 
 	bms_set_chg_hw(false);
 	bms_clear_balance_state();
+	gpio_set_level(PIN_OUT_EN, 0);
+	portENTER_CRITICAL(&m_control_lock);
+	m_protection_ready = false;
+	bms_safety_inhibit(&m_control_state, true);
+	portEXIT_CRITICAL(&m_control_lock);
+	control_watchdog_disarm();
 
 	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
 		lbm_set_error_reason("bq_mutex timeout in bms-hw-shutdown");
@@ -1176,17 +1192,14 @@ static lbm_value ext_bms_hw_shutdown(lbm_value *args, lbm_uint argn) {
 	}
 
 	gpio_set_level(PIN_COM_EN, 0);
-	(void)bms_disable_balancing_hw(m_cells_ic2 != 0);
+	if (!m_shutdown_ic1) (void)bms_disable_balancing_hw(m_cells_ic2 != 0 && !m_shutdown_ic2);
 
-	if (m_cells_ic2 != 0 && !bms_shutdown_bq(BQ_ADDR_2)) {
-		(void)bms_fail_close_outputs_hw(m_cells_ic2 != 0);
-		xSemaphoreGive(bq_mutex);
-		lbm_set_error_reason("BQ2 shutdown command failed");
-		return ENC_SYM_EERROR;
-	}
+	// An unresponsive BQ2 (e.g. still in SHUTDOWN after a partial noise wake)
+	// must not keep BQ1 and the ESP powered: continue with BQ1 and the pin.
+	if (m_cells_ic2 != 0 && !m_shutdown_ic2) m_shutdown_ic2 = bms_shutdown_bq(BQ_ADDR_2);
 
-	if (!bms_shutdown_bq(BQ_ADDR_1)) {
-		(void)bms_fail_close_outputs_hw(m_cells_ic2 != 0);
+	if (!m_shutdown_ic1) m_shutdown_ic1 = bms_shutdown_bq(BQ_ADDR_1);
+	if (!m_shutdown_ic1) {
 		xSemaphoreGive(bq_mutex);
 		lbm_set_error_reason("BQ1 shutdown command failed");
 		return ENC_SYM_EERROR;
@@ -1206,7 +1219,7 @@ static lbm_value ext_bms_hw_shutdown(lbm_value *args, lbm_uint argn) {
 	gpio_hold_dis(PIN_SHUTDOWN);
 	gpio_set_level(PIN_SHUTDOWN, 0);
 
-	vTaskDelay(pdMS_TO_TICKS(10000));
+	vTaskDelay(pdMS_TO_TICKS(1000));
 	bms_set_chg_hw(false);
 	bms_clear_balance_state();
 	lbm_set_error_reason("BMS shutdown pin did not power off");
@@ -1413,14 +1426,31 @@ static lbm_value ext_set_btn_wakeup_state(lbm_value *args, lbm_uint argn) {
 
 static lbm_value ext_set_out(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
+	bool enable = lbm_dec_as_i32(args[0]) != 0;
+	portENTER_CRITICAL(&m_control_lock);
+	enable &= m_protection_ready && m_protection_io_ok && !m_protection_faults &&
+			m_control_monitoring && bms_safety_allowed(&m_control_state,
+					(uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS));
 	gpio_set_level(PIN_PSW_EN, 1);
-	gpio_set_level(PIN_OUT_EN, lbm_dec_as_i32(args[0]));
-	return ENC_SYM_TRUE;
+	gpio_set_level(PIN_OUT_EN, enable);
+	portEXIT_CRITICAL(&m_control_lock);
+	return !lbm_dec_as_i32(args[0]) || enable ? ENC_SYM_TRUE : ENC_SYM_NIL;
 }
 
 static lbm_value ext_set_chg(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
-	bms_set_chg_hw(lbm_dec_as_i32(args[0]) != 0);
+	bool enable = lbm_dec_as_i32(args[0]) != 0;
+	bool enabled = bms_set_chg_hw(enable);
+	return !enable || enabled ? ENC_SYM_TRUE : ENC_SYM_NIL;
+}
+
+// Serialize Lisp COM_EN changes with complete BQ transactions, including the
+// background balance-stop path. BQ1-only protection reads never change COM_EN.
+static lbm_value ext_set_com(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(1);
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) return ENC_SYM_EERROR;
+	gpio_set_level(PIN_COM_EN, lbm_dec_as_i32(args[0]) != 0);
+	xSemaphoreGive(bq_mutex);
 	return ENC_SYM_TRUE;
 }
 
@@ -1688,7 +1718,6 @@ typedef struct {
 	lbm_uint t_bal_max_cell;
 	lbm_uint t_bal_max_ic;
 	lbm_uint t_charge_min;
-	lbm_uint t_charge_mon_en;
 	lbm_uint temp_beta;
 	lbm_uint temp_res;
 	lbm_uint shutdown;
@@ -1841,8 +1870,6 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 		res = get_or_set_float(set, &cfg->t_bal_max_ic, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.t_charge_min, "t_charge_min")) {
 		res = get_or_set_float(set, &cfg->t_charge_min, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.t_charge_mon_en, "t_charge_mon_en")) {
-		res = get_or_set_bool(set, &cfg->t_charge_mon_en, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.temp_res, "temp_res")) {
 		res = get_or_set_i(set, (int *)(&cfg->temp_res), &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.temp_beta, "temp_beta")) {
@@ -1851,7 +1878,7 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 
 	if (set && res == ENC_SYM_TRUE) {
 		if (!jfbms32_config_valid(cfg)) {
-			lbm_set_error_reason("Invalid BMS safety configuration");
+			lbm_set_error_reason((char *)jfbms32_config_error());
 			return ENC_SYM_EERROR;
 		}
 		backup.config = candidate;
@@ -2019,10 +2046,12 @@ static void load_extensions(bool main_found) {
 	lbm_add_extension("bms-control-start", ext_control_start);
 	lbm_add_extension("bms-control-feed", ext_control_feed);
 	lbm_add_extension("bms-control-ok", ext_control_ok);
+	lbm_add_extension("bms-watchdog-stack", ext_watchdog_stack);
 	lbm_add_extension("bms-control-stop", ext_control_stop);
 
 	// Enable/disable output switch
 	lbm_add_extension("bms-set-out", ext_set_out);
+	lbm_add_extension("bms-set-com", ext_set_com);
 
 	// Enable/disable charge switch
 	lbm_add_extension("bms-set-chg", ext_set_chg);
@@ -2044,6 +2073,7 @@ static void load_extensions(bool main_found) {
 
 	// Replace existing I2C-extensions
 	lbm_add_extension("i2c-start", ext_i2c_start);
+	lbm_add_extension("bms-i2c-errors", ext_i2c_errors);
 	lbm_add_extension("i2c-tx-rx", ext_i2c_tx_rx);
 	lbm_add_extension("i2c-detect-addr", ext_i2c_detect_addr);
 
@@ -2110,7 +2140,7 @@ void hw_init(void) {
 
 	i2c_param_config(0, &conf);
 	i2c_driver_install(0, conf.mode, 0, 0, 0);
-	if (xTaskCreate(control_watchdog_task, "bms-control-wdt", 2048, NULL, 8,
+	if (xTaskCreate(control_watchdog_task, "bms-control-wdt", 4096, NULL, 8,
 			&m_control_watchdog_task) != pdPASS) {
 		m_control_watchdog_task = NULL;
 	}

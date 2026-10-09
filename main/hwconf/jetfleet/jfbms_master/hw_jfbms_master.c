@@ -55,9 +55,15 @@
 // correction: 100 V/V × 1 mΩ = 0.1 V/A, or 10 A/V.
 // ============================================================================
 
-#define ISENSE_GAIN    100.0f
-#define ISENSE_RSHUNT  0.001f
-#define ISENSE_SCALE   (1.0f / (ISENSE_GAIN * ISENSE_RSHUNT)) // 10 A/V
+#define ISENSE_GAIN    100.0f   // U9 INA181A3
+#define ISENSE_RSHUNT  0.001f   // R35 FPM253WFR001TML, 1 mOhm
+// R23/R24 (120 Ohm) input filter resistors load the INA181 inputs. Datasheet
+// gain error factor = 1250 / (1250 + R_S): 0.912 for 120 Ohm (reads ~9 % low).
+#define ISENSE_FILTER_R  120.0f
+#define ISENSE_GAIN_ERR  (1250.0f / (1250.0f + ISENSE_FILTER_R))
+// Bench trim: actual / reported current. Leave 1.0 unless a meter says otherwise.
+#define ISENSE_TRIM      1.0f
+#define ISENSE_SCALE   (ISENSE_TRIM / (ISENSE_GAIN * ISENSE_RSHUNT * ISENSE_GAIN_ERR)) // ~10.96 A/V
 #define ISENSE_ZERO_DEADBAND_A 0.10f
 #define ISENSE_DEFAULT_OFFSET_V 1.65f
 #define ISENSE_OFFSET_MIN_V 1.50f
@@ -222,9 +228,9 @@ static bool control_config_changed(const main_config_t *cfg) {
 			CHANGED(vc_balance_min) || CHANGED(balance_max_current) ||
 			CHANGED(t_bal_max_cell) || CHANGED(t_bal_max_ic) ||
 			CHANGED(vc_charge_start) || CHANGED(vc_charge_end) ||
-			CHANGED(vc_charge_min) || CHANGED(v_charge_detect) ||
+			CHANGED(vc_charge_min) ||
 			CHANGED(t_charge_min) || CHANGED(t_charge_max) ||
-			CHANGED(t_charge_max_mos) || CHANGED(t_charge_mon_en) ||
+			CHANGED(t_charge_max_mos) ||
 			CHANGED(min_charge_current) || CHANGED(max_charge_current);
 #undef CHANGED
 }
@@ -247,78 +253,66 @@ static bool bms_temp_valid(float temp_c) {
 // profile. The shared adc.c wrapper delegates to hw_adc_get_voltage().
 #include "jfbms_master_fast_adc.c"
 
-// Board-owned compatibility and safety hooks. These intentionally live
-// outside the VESC Tool-generated parser so regeneration cannot erase them.
-bool jfbms_master_migrate_legacy_config(uint32_t signature,
-		main_config_t *conf) {
-	if (!conf || (signature != JFBMS_MASTER_CONFIG_SIGNATURE_LEGACY &&
-			signature != JFBMS_MASTER_CONFIG_SIGNATURE_WITH_CHARGE_TIMERS)) {
-		return false;
-	}
-
-	if (signature == JFBMS_MASTER_CONFIG_SIGNATURE_LEGACY) {
-		conf->fast_charge_oc_en = CONF_FAST_CHARGE_OC_EN;
-		conf->fast_charge_oc_a = CONF_FAST_CHARGE_OC_A;
-		if (conf->max_charge_current <= conf->min_charge_current ||
-				conf->max_charge_current >= conf->fast_charge_oc_a) {
-			conf->max_charge_current = CONF_MAX_CHARGE_CURRENT;
-		}
-	}
-	memset(conf->config_reserved, 0, sizeof(conf->config_reserved));
-	return true;
-}
+// Board-owned safety hooks. These intentionally live outside the VESC
+// Tool-generated parser so regeneration cannot erase them.
+static const char *m_config_error;
+const char *jfbms_master_config_error(void) { return m_config_error; }
 
 bool jfbms_master_validate_config(const main_config_t *conf) {
-	if (!conf) return false;
-	const float *safety_floats[] = {
-		&conf->batt_ah, &conf->vc_empty, &conf->vc_full,
-		&conf->vc_balance_start, &conf->vc_balance_end,
-		&conf->vc_charge_start, &conf->vc_charge_end,
-		&conf->vc_charge_min, &conf->vc_balance_min,
-		&conf->balance_max_current, &conf->min_current_ah_wh_cnt,
-		&conf->min_current_sleep, &conf->v_charge_detect,
-		&conf->t_charge_max, &conf->t_charge_max_mos, &conf->sleep,
-		&conf->min_charge_current, &conf->max_charge_current,
-		&conf->soc_filter_const, &conf->t_bal_max_cell,
-		&conf->t_bal_max_ic, &conf->t_charge_min,
-		&conf->fast_charge_oc_a,
-	};
-	for (size_t i = 0; i < sizeof(safety_floats) / sizeof(safety_floats[0]); i++) {
-		if (!isfinite(*safety_floats[i])) return false;
-	}
-
-	return conf->batt_ah > 0.0f && conf->batt_ah <= 10000.0f &&
-			conf->can_baud_rate >= CAN_BAUD_125K && conf->can_baud_rate <= CAN_BAUD_100K &&
-			conf->can_status_rate_hz >= 0 && conf->can_status_rate_hz <= 200 &&
-			conf->max_bal_ch >= 1 && conf->max_bal_ch <= 8 &&
-			conf->vc_empty >= 1.5f && conf->vc_empty < conf->vc_full &&
-			conf->vc_full <= 5.0f &&
-			conf->vc_balance_start >= 0.0f && conf->vc_balance_start <= 0.5f &&
-			conf->vc_balance_end >= 0.0f &&
-			conf->vc_balance_end <= conf->vc_balance_start &&
-			conf->vc_charge_min >= 1.5f &&
-			conf->vc_charge_min < conf->vc_charge_start &&
-			conf->vc_charge_start <= conf->vc_charge_end &&
-			conf->vc_charge_end <= 5.0f &&
-			conf->vc_balance_min >= 1.5f && conf->vc_balance_min <= 5.0f &&
-			conf->balance_max_current >= 0.0f && conf->balance_max_current <= 100.0f &&
-			conf->min_current_ah_wh_cnt >= 0.0f && conf->min_current_ah_wh_cnt <= 100.0f &&
-			conf->min_current_sleep >= 0.0f && conf->min_current_sleep <= 100.0f &&
-			conf->v_charge_detect >= 1.0f && conf->v_charge_detect <= 200.0f &&
-			conf->t_charge_min >= -40.0f &&
-			conf->t_charge_min < conf->t_charge_max && conf->t_charge_max <= 120.0f &&
-			conf->t_charge_max_mos >= -40.0f && conf->t_charge_max_mos <= 120.0f &&
-			conf->t_bal_max_cell >= -40.0f && conf->t_bal_max_cell <= 120.0f &&
-			conf->t_bal_max_ic >= -40.0f && conf->t_bal_max_ic <= 120.0f &&
-			conf->sleep >= 0.0f && conf->sleep <= 8760.0f &&
-			conf->shutdown >= 0 && conf->shutdown <= 3650 &&
-			conf->min_charge_current > 0.0f &&
-			conf->min_charge_current < conf->max_charge_current &&
-			(!conf->fast_charge_oc_en ||
-				conf->max_charge_current < conf->fast_charge_oc_a) &&
-			conf->fast_charge_oc_a <= JFBMS_FAST_OC_MAX_A &&
-			conf->soc_filter_const >= 0.0f && conf->soc_filter_const <= 1.0f &&
-			conf->num_slaves >= 1 && conf->num_slaves <= MAX_SLAVES;
+	m_config_error = NULL;
+#define CHECK(rule, reason) do { if (!(rule)) { m_config_error = reason; return false; } } while (0)
+#define RANGE(field, low, high) CHECK(conf->field >= (low) && conf->field <= (high), #field " out of range")
+#define FLOAT_RANGE(field, low, high) do { CHECK(isfinite(conf->field), #field " must be finite"); RANGE(field, low, high); } while (0)
+	CHECK(conf, "Missing configuration");
+	RANGE(controller_id, 1, 254);
+	RANGE(can_baud_rate, CAN_BAUD_125K, CAN_BAUD_100K);
+	RANGE(can_status_rate_hz, 0, 200);
+	RANGE(wifi_mode, 0, 2);
+	RANGE(ble_mode, 0, 3);
+	CHECK(conf->ble_pin <= 999999 && conf->ble_service_capacity <= 99 &&
+			conf->ble_chr_descr_capacity <= 99, "BLE PIN/capacity out of range");
+#define STRING(field) CHECK(memchr(conf->field, '\0', sizeof(conf->field)), #field " is not terminated")
+	STRING(wifi_sta_ssid); STRING(wifi_sta_key); STRING(wifi_ap_ssid); STRING(wifi_ap_key);
+	STRING(tcp_hub_url); STRING(tcp_hub_id); STRING(tcp_hub_pass); STRING(ble_name);
+#undef STRING
+	RANGE(num_slaves, 1, MAX_SLAVES);
+	RANGE(max_bal_ch, 0, 8);
+	RANGE(shutdown, 0, 3650);
+	FLOAT_RANGE(batt_ah, 0.01f, 999.0f);
+	FLOAT_RANGE(vc_empty, 1.5f, 4.999f);
+	FLOAT_RANGE(vc_full, 1.5f, 4.999f);
+	FLOAT_RANGE(vc_charge_min, 1.5f, 4.999f);
+	FLOAT_RANGE(vc_charge_start, 1.5f, 4.999f);
+	FLOAT_RANGE(vc_charge_end, 1.5f, 4.999f);
+	FLOAT_RANGE(vc_balance_min, 1.5f, 4.999f);
+	FLOAT_RANGE(vc_balance_start, 0.0f, 0.5f);
+	FLOAT_RANGE(vc_balance_end, 0.0f, 0.5f);
+	FLOAT_RANGE(balance_max_current, 0.0f, 100.0f);
+	FLOAT_RANGE(min_current_ah_wh_cnt, 0.0f, 100.0f);
+	FLOAT_RANGE(min_current_sleep, 0.0f, 100.0f);
+	FLOAT_RANGE(t_charge_min, -40.0f, 120.0f);
+	FLOAT_RANGE(t_charge_max, -40.0f, 120.0f);
+	FLOAT_RANGE(t_charge_max_mos, -40.0f, 120.0f);
+	FLOAT_RANGE(t_bal_max_cell, -40.0f, 120.0f);
+	FLOAT_RANGE(t_bal_max_ic, -40.0f, 120.0f);
+	FLOAT_RANGE(sleep, 1.0f, 168.0f);
+	FLOAT_RANGE(min_charge_current, 0.01f, 15.9f);
+	FLOAT_RANGE(max_charge_current, 0.01f, 15.9f);
+	FLOAT_RANGE(fast_charge_oc_a, 0.03f, JFBMS_FAST_OC_MAX_A);
+	FLOAT_RANGE(soc_filter_const, 0.0f, 1.0f);
+	CHECK(conf->vc_empty < conf->vc_full, "vc_empty must be below vc_full");
+	CHECK(conf->vc_charge_min < conf->vc_charge_start, "vc_charge_min must be below vc_charge_start");
+	CHECK(conf->vc_charge_start <= conf->vc_charge_end, "vc_charge_start must not exceed vc_charge_end");
+	CHECK(conf->vc_charge_end <= conf->vc_full, "vc_charge_end must not exceed vc_full");
+	CHECK(conf->vc_balance_end <= conf->vc_balance_start, "vc_balance_end must not exceed vc_balance_start");
+	CHECK(conf->min_charge_current < conf->max_charge_current, "min_charge_current must be below max_charge_current");
+	CHECK(!conf->fast_charge_oc_en || conf->max_charge_current < conf->fast_charge_oc_a,
+			"max_charge_current must be below fast_charge_oc_a");
+	CHECK(conf->t_charge_min < conf->t_charge_max, "t_charge_min must be below t_charge_max");
+#undef FLOAT_RANGE
+#undef RANGE
+#undef CHECK
+	return true;
 }
 
 bool jfbms_master_apply_config(void) {
@@ -349,10 +343,9 @@ bool jfbms_master_apply_config(void) {
 			m_fast_oc_config_trip_a != cfg->fast_charge_oc_a;
 	if (monitor_changed) {
 		GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
-		// Rebuild both raw thresholds immediately; a lower configured trip must
-		// never wait for a reboot. Before the first pre-charge zero this uses the
-		// conservative 1.65 V midpoint.
+		// Runtime trip changes require a reboot; avoid stopping the live ADC.
 		if (!jfbms_fast_adc_set_current_offset(m_current_offset)) {
+			m_config_error = "Fast OC change requires reboot or usable ADC thresholds";
 			return false;
 		}
 		remember_fast_oc_config(cfg);
@@ -386,8 +379,6 @@ static int configured_slave_count(void) {
 #define STATUS_TEMP_BQ1_ENABLED       (1U << 0)
 #define STATUS_TEMP_BQ2_ENABLED       (1U << 1)
 
-// CAN RX circular buffer for 11-bit messages
-#define CAN_BUF_SIZE 128
 #define SLAVE_BROADCAST_ASSEMBLY_TIMEOUT_MS 75U
 // Charge remains guarded by the independent 300 ms hardware callback. Normal
 // pack control gets a wider window because balancing and BQ I2C service can
@@ -407,17 +398,6 @@ _Static_assert(SLAVE_CHARGE_FRESHNESS_TIMEOUT_MS < SLAVE_CONTROL_FRESHNESS_TIMEO
 #define STAGE_CELL_FRAME_MASK  0x00FFU
 #define STAGE_TEMP_FRAME_BIT   0x0100U
 
-typedef struct {
-	uint32_t id;
-	uint32_t rx_ms;
-	uint8_t data[8];
-	uint8_t len;
-	uint8_t bus;
-} can_msg_t;
-
-static can_msg_t can_rx_buf[CAN_BUF_SIZE];
-static volatile int can_rx_head = 0;
-static volatile int can_rx_tail = 0;
 static volatile uint32_t can_rx_overflow = 0;
 static volatile uint32_t can_rx_total = 0;
 static volatile uint32_t can_rx_esc_total = 0;
@@ -486,6 +466,9 @@ static volatile bool m_slave_snapshot_safe[MAX_SLAVES];
 static volatile bool m_slave_charge_safe[MAX_SLAVES];
 static esp_timer_handle_t m_pack_safety_timer;
 static volatile bool m_pack_watchdog_ready;
+static volatile uint32_t m_charge_feed_ms;
+static uint32_t m_configuration_warning_flags;
+#define MASTER_CHARGE_LEASE_MS 500U
 
 static bool slave_cell_counts_valid_values(int cells_ic1, int cells_ic2) {
 	return cells_ic1 >= 3 && cells_ic1 <= 16 &&
@@ -595,7 +578,9 @@ static void clear_slave_data(int idx) {
 }
 
 static bool timestamp_fresh(uint32_t timestamp, uint32_t now, uint32_t timeout) {
-	return timestamp != 0 && (now - timestamp) <= timeout;
+	int32_t elapsed = (int32_t)(now - timestamp);
+	return timestamp != 0 && elapsed >= -(int32_t)portTICK_PERIOD_MS &&
+			(elapsed < 0 || (uint32_t)elapsed <= timeout);
 }
 
 static bool slave_cell_counts_valid_locked(int idx) {
@@ -674,20 +659,21 @@ static bool slave_snapshot_values_safe_locked(int idx) {
 	return true;
 }
 
-static bool slave_snapshot_charge_safe_locked(int idx) {
-	if (!slave_snapshot_values_safe_locked(idx)) return false;
+// NULL when this slave snapshot permits charging, otherwise the status token
+// shown to the user.
+static const char *slave_snapshot_charge_block_locked(int idx) {
+	if (!slave_snapshot_values_safe_locked(idx)) return "SLAVE_DATA";
 	const main_config_t *cfg = (const main_config_t *)&backup.config;
 	int cells_ic1 = m_bms_data.cells_ic1[idx];
 	int cell_count = cells_ic1 + m_bms_data.cells_ic2[idx];
 	for (int cell = 0; cell < cell_count; cell++) {
 		int wire = slave_cell_wire_index(cell, cells_ic1);
 		float voltage = (float)m_bms_data.cell_voltages[idx][wire] / 1000.0f;
-		if (voltage <= cfg->vc_charge_min || voltage >= cfg->vc_charge_end) {
-			return false;
-		}
+		if (voltage <= cfg->vc_charge_min) return "CHG_CELL_LOW";
+		if (voltage >= cfg->vc_charge_end) return "CHG_CELL_HIGH";
 	}
 
-	if (!cfg->t_charge_mon_en) return true;
+	// Charge temperature limits are always enforced, as on JFBMS32.
 	bool temp_required[TEMPS_PER_SLAVE] = {
 		true,
 		(m_bms_data.temp_sensor_flags[idx] & STATUS_TEMP_BQ1_ENABLED) != 0,
@@ -698,23 +684,32 @@ static bool slave_snapshot_charge_safe_locked(int idx) {
 	for (int i = 0; i < TEMPS_PER_SLAVE; i++) {
 		if (!temp_required[i]) continue;
 		float temp_c = (float)m_bms_data.temperatures[idx][i] / 10.0f;
-		if ((i == 0 || i == 2) ? temp_c >= cfg->t_charge_max_mos :
-				(temp_c <= cfg->t_charge_min || temp_c >= cfg->t_charge_max)) {
-			return false;
+		if (i == 0 || i == 2) {
+			if (temp_c >= cfg->t_charge_max_mos) return "CHG_IC_HOT";
+		} else if (temp_c <= cfg->t_charge_min) {
+			return "CHG_CELL_COLD";
+		} else if (temp_c >= cfg->t_charge_max) {
+			return "CHG_CELL_HOT";
 		}
 	}
-	return true;
+	return NULL;
 }
 
-static bool pack_safety_ready_locked(uint32_t now_ms) {
+static bool slave_snapshot_charge_safe_locked(int idx) {
+	return slave_snapshot_charge_block_locked(idx) == NULL;
+}
+
+static const char *pack_safety_block_locked(uint32_t now_ms) {
 	int count = configured_slave_count();
 	for (int idx = 0; idx < count; idx++) {
 		bool fresh = slave_data_fresh_locked(idx, now_ms,
 				SLAVE_CHARGE_FRESHNESS_TIMEOUT_MS);
 		m_bms_data.fresh[idx] = fresh;
-		if (!fresh || !slave_snapshot_charge_safe_locked(idx)) return false;
+		if (!fresh) return "CAN_CHG_STALE";
+		const char *reason = slave_snapshot_charge_block_locked(idx);
+		if (reason) return reason;
 	}
-	return true;
+	return NULL;
 }
 
 static bool pack_charge_fresh_locked(uint32_t now_ms) {
@@ -728,12 +723,26 @@ static bool pack_charge_fresh_locked(uint32_t now_ms) {
 	return count > 0;
 }
 
-static bool pack_safety_ready(void) {
+static const char *pack_safety_block(void) {
 	uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
-	bool ready = pack_safety_ready_locked(now_ms);
+	const char *reason = pack_safety_block_locked(now_ms);
 	xSemaphoreGive(m_data_mutex);
-	return ready;
+	return reason;
+}
+
+// Guard every VESC BMS CAN transmit, including direct Lisp calls. Local status
+// writes cannot refresh cell telemetry after a slave stops reporting.
+bool jfbms_master_bms_data_valid(void) {
+	if (!m_data_mutex || !bms_get_values()->data_version) return false;
+	uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
+	bool valid = configured_slave_count() > 0;
+	for (int i = 0; valid && i < configured_slave_count(); i++) {
+		valid = slave_data_fresh_locked(i, now, SLAVE_CONTROL_FRESHNESS_TIMEOUT_MS);
+	}
+	xSemaphoreGive(m_data_mutex);
+	return valid;
 }
 
 // A 1 ms independent watchdog forces CHG_EN low if a configured slave has no
@@ -744,10 +753,22 @@ static void pack_safety_timer_cb(void *arg) {
 	// with esp_timer_get_time() mixes two different boot epochs; once their
 	// offset exceeds 300 ms the watchdog cuts every valid charge-enable pulse.
 	uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+	// A feed can arrive after now_ms was sampled; clamp that small future age.
+	int32_t charge_age = (int32_t)(now_ms - m_charge_feed_ms);
+	if (charge_age < -(int32_t)portTICK_PERIOD_MS ||
+			(charge_age >= 0 && (uint32_t)charge_age >= MASTER_CHARGE_LEASE_MS) ||
+			!jfbms_fast_adc_ready() || jfbms_fast_oc_latched() ||
+			adc_get_voltage(HW_ADC_CH2) < 0.0f || adc_get_voltage(HW_ADC_CH4) < 0.0f ||
+			!m_temp_pcb_valid || m_temp_pcb >= backup.config.t_charge_max_mos) {
+		GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
+		return;
+	}
 	int count = configured_slave_count();
 	for (int idx = 0; idx < count; idx++) {
 		uint32_t commit_ms = m_slave_complete_ms[idx];
-		uint32_t age_ms = commit_ms == 0 ? UINT32_MAX : now_ms - commit_ms;
+		int32_t elapsed = (int32_t)(now_ms - commit_ms);
+		uint32_t age_ms = commit_ms == 0 || elapsed < -(int32_t)portTICK_PERIOD_MS ?
+				UINT32_MAX : (elapsed < 0 ? 0 : (uint32_t)elapsed);
 		uint8_t reason = commit_ms == 0 ? 1 :
 				(age_ms > SLAVE_CHARGE_FRESHNESS_TIMEOUT_MS ? 2 :
 				(!m_slave_snapshot_safe[idx] ? 3 :
@@ -790,6 +811,11 @@ static bool valid_slave_msg_len(uint8_t msg_type, int len) {
 	return msg_type == 0x09 && len == 8;
 }
 
+static void parse_slave_message(uint32_t id, uint8_t *data, int len, uint8_t bus,
+		uint32_t rx_ms);
+static volatile uint32_t m_bal_report_mask[MAX_SLAVES];
+static volatile uint32_t m_bal_report_pending;
+
 static void slave_can_buffer_rx(uint32_t id, const uint8_t *data, int len, bool is_ext, uint8_t bus) {
 	if (is_ext) {
 		return;  // Only handle 11-bit standard IDs
@@ -812,19 +838,13 @@ static void slave_can_buffer_rx(uint32_t id, const uint8_t *data, int len, bool 
 		return;
 	}
 
-	int next_head = (can_rx_head + 1) % CAN_BUF_SIZE;
-	if (next_head == can_rx_tail) {
-		can_rx_overflow++;
-		return;  // Buffer full
-	}
-
-	can_rx_buf[can_rx_head].id = id;
-	can_rx_buf[can_rx_head].rx_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-	can_rx_buf[can_rx_head].len = (len > 8) ? 8 : len;
-	can_rx_buf[can_rx_head].bus = bus;
-	memcpy(can_rx_buf[can_rx_head].data, data, can_rx_buf[can_rx_head].len);
-	can_rx_head = next_head;
+	// Parse and commit here, in the CAN RX task, rather than queueing for the
+	// Lisp control loop. Snapshot freshness (and the 300 ms charge watchdog)
+	// then depends only on the bus, never on Lisp scheduling, GC or flash
+	// writes, and there is no intermediate ring to overflow with many slaves.
 	can_rx_total++;
+	parse_slave_message(id, (uint8_t *)data, len, bus,
+			xTaskGetTickCount() * portTICK_PERIOD_MS);
 
 	if (bus == SLAVE_CAN_BUS_ESC) {
 		can_rx_esc_total++;
@@ -1054,8 +1074,6 @@ static void reset_pack_state_for_config_change(void) {
 		m_slave_charge_safe[idx] = false;
 	}
 	m_pack_generation = 0;
-	can_rx_head = 0;
-	can_rx_tail = 0;
 	xSemaphoreGive(m_data_mutex);
 }
 
@@ -1226,17 +1244,18 @@ static void parse_slave_message(uint32_t id, uint8_t *data, int len, uint8_t bus
 
 	xSemaphoreGive(m_data_mutex);
 	if (balance_report_changed) {
-		commands_printf_lisp("BAL REPORT S%d IC1=0x%04lX IC2=0x%04lX",
-				slave_id,
-				(unsigned long)(balance_report_mask & 0xFFFFU),
-				(unsigned long)((balance_report_mask >> 16) & 0xFFFFU));
+		// Printing can block on USB; leave it to the Lisp-called timeout check.
+		m_bal_report_mask[idx] = balance_report_mask;
+		__atomic_fetch_or(&m_bal_report_pending, 1U << idx, __ATOMIC_RELAXED);
 	}
 	if (force_balance_inhibit) {
-		xSemaphoreTake(m_balance_tx_mutex, portMAX_DELAY);
+		// Runs in the CAN RX task: never block on m_balance_tx_mutex, which a
+		// multi-slave stop handoff can hold for hundreds of ms. Flags first, then
+		// the pin: master-set-chg rechecks the flags after raising CHG_EN, so it
+		// cannot leave the output high after this point.
 		m_balance_inhibit = true;
 		m_balance_requested = true;
-		gpio_set_level(PIN_CHG_EN, 0);
-		xSemaphoreGive(m_balance_tx_mutex);
+		GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
 	}
 }
 
@@ -1281,7 +1300,6 @@ typedef struct {
 	lbm_uint balance_max_current;
 	lbm_uint min_current_ah_wh_cnt;
 	lbm_uint min_current_sleep;
-	lbm_uint v_charge_detect;
 	lbm_uint t_charge_max;
 	lbm_uint t_charge_max_mos;
 	lbm_uint sleep;
@@ -1292,7 +1310,6 @@ typedef struct {
 	lbm_uint t_bal_max_cell;
 	lbm_uint t_bal_max_ic;
 	lbm_uint t_charge_min;
-	lbm_uint t_charge_mon_en;
 	lbm_uint fast_charge_oc_en;
 	lbm_uint fast_charge_oc_a;
 	// Master-specific
@@ -1343,8 +1360,6 @@ static bool compare_symbol(lbm_uint sym, lbm_uint *comp) {
 			lbm_add_symbol_const("min_current_ah_wh_cnt", comp);
 		} else if (comp == &syms_vesc.min_current_sleep) {
 			lbm_add_symbol_const("min_current_sleep", comp);
-		} else if (comp == &syms_vesc.v_charge_detect) {
-			lbm_add_symbol_const("v_charge_detect", comp);
 		} else if (comp == &syms_vesc.t_charge_max) {
 			lbm_add_symbol_const("t_charge_max", comp);
 		} else if (comp == &syms_vesc.t_charge_max_mos) {
@@ -1365,8 +1380,6 @@ static bool compare_symbol(lbm_uint sym, lbm_uint *comp) {
 			lbm_add_symbol_const("t_bal_max_ic", comp);
 		} else if (comp == &syms_vesc.t_charge_min) {
 			lbm_add_symbol_const("t_charge_min", comp);
-		} else if (comp == &syms_vesc.t_charge_mon_en) {
-			lbm_add_symbol_const("t_charge_mon_en", comp);
 		} else if (comp == &syms_vesc.fast_charge_oc_en) {
 			lbm_add_symbol_const("fast_charge_oc_en", comp);
 		} else if (comp == &syms_vesc.fast_charge_oc_a) {
@@ -1441,7 +1454,8 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 
 	lbm_uint name      = lbm_dec_sym(args[0]);
 	main_config_t *cfg = (main_config_t *)&backup.config;
-	main_config_t previous = *cfg;
+	main_config_t previous = *cfg, candidate = *cfg;
+	if (set) cfg = &candidate;
 
 	if (compare_symbol(name, &syms_vesc.can_baud_rate)) {
 		res = get_or_set_can_baud(set, &cfg->can_baud_rate, &set_arg);
@@ -1483,8 +1497,6 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 		res = get_or_set_float(set, &cfg->min_current_ah_wh_cnt, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.min_current_sleep)) {
 		res = get_or_set_float(set, &cfg->min_current_sleep, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.v_charge_detect)) {
-		res = get_or_set_float(set, &cfg->v_charge_detect, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.t_charge_max)) {
 		res = get_or_set_float(set, &cfg->t_charge_max, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.t_charge_max_mos)) {
@@ -1505,8 +1517,6 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 		res = get_or_set_float(set, &cfg->t_bal_max_ic, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.t_charge_min)) {
 		res = get_or_set_float(set, &cfg->t_charge_min, &set_arg);
-	} else if (compare_symbol(name, &syms_vesc.t_charge_mon_en)) {
-		res = get_or_set_bool(set, &cfg->t_charge_mon_en, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.fast_charge_oc_en)) {
 		res = get_or_set_bool(set, &cfg->fast_charge_oc_en, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.fast_charge_oc_a)) {
@@ -1516,10 +1526,16 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 	}
 
 	if (set && res == ENC_SYM_TRUE) {
-		if (!jfbms_master_validate_config(cfg) || !jfbms_master_apply_config()) {
-			*cfg = previous;
+		if (!jfbms_master_validate_config(cfg)) {
+			lbm_set_error_reason((char *)jfbms_master_config_error());
+			return ENC_SYM_EERROR;
+		}
+		backup.config = candidate;
+		if (!jfbms_master_apply_config()) {
+			const char *reason = jfbms_master_config_error();
+			backup.config = previous;
 			(void)jfbms_master_apply_config();
-			lbm_set_error_reason("Unsafe or unapplied BMS setting");
+			lbm_set_error_reason((char *)(reason ? reason : "Hardware settings could not be applied"));
 			return ENC_SYM_EERROR;
 		}
 	}
@@ -1556,7 +1572,7 @@ static lbm_value ext_bms_store_cfg(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 	if (!jfbms_master_validate_config((const main_config_t *)&backup.config)) {
-		lbm_set_error_reason("Invalid BMS configuration");
+		lbm_set_error_reason((char *)jfbms_master_config_error());
 		return ENC_SYM_EERROR;
 	}
 	main_store_backup_data();
@@ -1579,15 +1595,8 @@ static lbm_value ext_master_can_read_all(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 
-	int count = 0;
-	while (can_rx_tail != can_rx_head) {
-		can_msg_t *msg = &can_rx_buf[can_rx_tail];
-		parse_slave_message(msg->id, msg->data, msg->len, msg->bus, msg->rx_ms);
-		can_rx_tail = (can_rx_tail + 1) % CAN_BUF_SIZE;
-		count++;
-	}
-
-	return lbm_enc_i(count);
+	// Kept for script compatibility: frames are now parsed in the CAN RX task.
+	return lbm_enc_i(0);
 }
 
 // (master-can-available) - Get count of buffered messages
@@ -1595,10 +1604,7 @@ static lbm_value ext_master_can_available(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 
-	int available = can_rx_head - can_rx_tail;
-	if (available < 0) available += CAN_BUF_SIZE;
-
-	return lbm_enc_i(available);
+	return lbm_enc_i(0);  // No queue: frames are parsed on receipt.
 }
 
 // (master-can-overflow) - Get overflow count
@@ -1644,9 +1650,8 @@ static lbm_value ext_master_get_slave_cells(lbm_value *args, lbm_uint argn) {
 	for (int i = num_cells - 1; i >= 0; i--) {
 		int wire_index = slave_cell_wire_index(i, cells_ic1);
 		uint16_t mv = m_bms_data.cell_voltages[idx][wire_index];
-		if (mv != 0 && mv != 0xFFFF) {
-			vc_list = lbm_cons(lbm_enc_float((float)mv / 1000.0f), vc_list);
-		}
+		vc_list = lbm_cons(lbm_enc_float(mv == 0xFFFF ? -1.0f :
+				(float)mv / 1000.0f), vc_list);
 	}
 
 	xSemaphoreGive(m_data_mutex);
@@ -1852,6 +1857,15 @@ static lbm_value ext_master_stop_balance_sync(lbm_value *args, lbm_uint argn) {
 	uint32_t start_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
 	bool success = true;
 
+	// A slave that is no longer present cannot be balancing for long: it stops
+	// itself 3 s after the last keepalive. Requiring an ACK from it would keep
+	// the master in BAL_STOP/FAIL_CLOSE_FAIL until it returns. Snapshot presence
+	// before taking the TX mutex to keep the lock order data -> balance TX.
+	bool present[MAX_SLAVES];
+	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
+	for (int i = 0; i < MAX_SLAVES; i++) present[i] = m_bms_data.active[i];
+	xSemaphoreGive(m_data_mutex);
+
 	m_balance_inhibit = true;
 	gpio_set_level(PIN_CHG_EN, 0);
 	TickType_t handoff_wait = pdMS_TO_TICKS(timeout_ms);
@@ -1862,6 +1876,7 @@ static lbm_value ext_master_stop_balance_sync(lbm_value *args, lbm_uint argn) {
 
 	for (int pass = 0; pass < 3 && success; pass++) {
 		for (int slave = 1; slave <= configured_slave_count(); slave++) {
+			if (!present[slave - 1]) continue;
 			uint32_t elapsed_ms = xTaskGetTickCount() * portTICK_PERIOD_MS - start_ms;
 			if (elapsed_ms >= timeout_ms ||
 					!slave_can_transmit_sid_sync(CAN_ID_BAL_CMD(slave), zero_cmd,
@@ -1917,6 +1932,31 @@ static lbm_value ext_master_balance_inhibited(lbm_value *args, lbm_uint argn) {
 	return inhibited ? ENC_SYM_TRUE : ENC_SYM_NIL;
 }
 
+// Last reason master-set-chg refused CHG_EN; "" after a successful enable.
+// Read by Lisp so a C-side refusal is never shown as a blank status.
+static const char *volatile m_chg_block_reason = "";
+
+static const char *chg_enable_hw_block(void) {
+	if (!jfbms_fast_adc_ready()) return "FLT_FAST_ADC";
+	if (jfbms_fast_oc_latched()) return "FLT_FAST_OC";
+	if (!m_current_offset_calibrated || m_calibration_in_progress) return "CAL_ZERO";
+	if (!m_pack_watchdog_ready) return "PACK_WDT";
+	return NULL;
+}
+
+// Caller holds m_balance_tx_mutex.
+static const char *chg_enable_recheck_locked(void) {
+	if (m_config_ack_generation != m_config_generation) return "CONFIG_PENDING";
+	if (m_balance_inhibit || m_balance_requested) return "BALANCING";
+	return chg_enable_hw_block();
+}
+
+static lbm_value chg_refuse(const char *reason) {
+	gpio_set_level(PIN_CHG_EN, 0);
+	m_chg_block_reason = reason;
+	return ENC_SYM_NIL;
+}
+
 // (master-set-chg enable) -- the only permitted charge-enable path. Charge is
 // fail-closed until the continuous ADC monitor and pack freshness watchdog are
 // both armed, and the fast overcurrent latch has been cleared.
@@ -1931,43 +1971,46 @@ static lbm_value ext_master_set_chg(lbm_value *args, lbm_uint argn) {
 	jfbms_charger_get_status(&charger_status);
 	const main_config_t *cfg = (const main_config_t *)&backup.config;
 
-	if (!jfbms_fast_adc_ready() || jfbms_fast_oc_latched() ||
-			!m_current_offset_calibrated || m_calibration_in_progress ||
-			!m_pack_watchdog_ready ||
-			!m_current_valid || (cfg->t_charge_mon_en &&
-			(!m_temp_pcb_valid || m_temp_pcb >= cfg->t_charge_max_mos)) ||
-			!charger_status.valid || !charger_status.detected ||
-			!pack_safety_ready()) {
-		gpio_set_level(PIN_CHG_EN, 0);
-		return ENC_SYM_NIL;
+	const char *reason = chg_enable_hw_block();
+	if (!reason && !m_current_valid) reason = "ADC_CURRENT";
+	if (!reason &&
+			(!m_temp_pcb_valid || m_temp_pcb >= cfg->t_charge_max_mos)) {
+		reason = "CHG_MOS_HOT";
 	}
+	if (!reason && (!charger_status.valid || !charger_status.detected)) {
+		reason = "NO_CHARGER";
+	}
+	if (!reason) reason = pack_safety_block();
+	if (reason) return chg_refuse(reason);
 
 	xSemaphoreTake(m_balance_tx_mutex, portMAX_DELAY);
-	if (m_config_ack_generation != m_config_generation ||
-			m_balance_inhibit || m_balance_requested ||
-			!jfbms_fast_adc_ready() || jfbms_fast_oc_latched() ||
-			!m_current_offset_calibrated || m_calibration_in_progress ||
-			!m_pack_watchdog_ready) {
-		gpio_set_level(PIN_CHG_EN, 0);
+	reason = chg_enable_recheck_locked();
+	if (reason) {
 		xSemaphoreGive(m_balance_tx_mutex);
-		return ENC_SYM_NIL;
+		return chg_refuse(reason);
 	}
 
+	m_charge_feed_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
 	gpio_set_level(PIN_CHG_EN, 1);
 	// A fast-OC interrupt can cut the output after the checks above but before
 	// this write. Recheck its latch so enabling cannot overwrite that cut after
 	// the comparator has disabled itself on its first trip.
-	if (m_config_ack_generation != m_config_generation ||
-			m_balance_inhibit || m_balance_requested ||
-			!jfbms_fast_adc_ready() || jfbms_fast_oc_latched() ||
-			!m_current_offset_calibrated || m_calibration_in_progress ||
-			!m_pack_watchdog_ready) {
-		gpio_set_level(PIN_CHG_EN, 0);
-		xSemaphoreGive(m_balance_tx_mutex);
-		return ENC_SYM_NIL;
-	}
+	reason = chg_enable_recheck_locked();
 	xSemaphoreGive(m_balance_tx_mutex);
+	if (reason) return chg_refuse(reason);
+	m_chg_block_reason = "";
 	return ENC_SYM_TRUE;
+}
+
+// (master-chg-block-reason) -- why the last master-set-chg request was refused.
+static lbm_value ext_master_chg_block_reason(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	const char *reason = m_chg_block_reason;
+	lbm_value res;
+	if (!lbm_create_array(&res, strlen(reason) + 1)) return ENC_SYM_MERROR;
+	strcpy((char *)((lbm_array_header_t *)lbm_car(res))->data, reason);
+	return res;
 }
 
 // (master-check-timeouts timeout-ms) - Update operational freshness and
@@ -1976,6 +2019,38 @@ static lbm_value ext_master_check_timeouts(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 
 	uint32_t timeout = lbm_dec_as_u32(args[0]);
+	// Configuration mistakes are warnings: the installer owns topology/IDs.
+	static uint32_t warning_ms, filtered_reported, duplicates_reported[MAX_SLAVES];
+	uint32_t warning_now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+	if (warning_now - warning_ms >= 5000U) {
+		warning_ms = warning_now;
+		m_configuration_warning_flags = 0;
+		if (can_rx_filtered_total != filtered_reported) {
+			m_configuration_warning_flags |= 1U;
+			filtered_reported = can_rx_filtered_total;
+			commands_printf_lisp("CONFIG warning: slave %lu exceeds num_slaves; check configuration",
+					(unsigned long)(can_rx_filtered_last_id & 0x0F));
+		}
+		uint32_t duplicate_mask = 0;
+		xSemaphoreTake(m_data_mutex, portMAX_DELAY);
+		for (int i = 0; i < MAX_SLAVES; i++) {
+			uint32_t count = m_slave_stage[i].duplicate_count;
+			if (count >= duplicates_reported[i] && count - duplicates_reported[i] >= 3U) duplicate_mask |= 1U << i;
+			duplicates_reported[i] = count;
+		}
+		xSemaphoreGive(m_data_mutex);
+		if (duplicate_mask) m_configuration_warning_flags |= 2U;
+		for (int i = 0; i < MAX_SLAVES; i++) if (duplicate_mask & (1U << i))
+			commands_printf_lisp("CONFIG warning: repeated frames from slave %d; check for duplicate IDs", i + 1);
+	}
+
+	uint32_t pending = __atomic_exchange_n(&m_bal_report_pending, 0, __ATOMIC_RELAXED);
+	for (int i = 0; i < MAX_SLAVES; i++) {
+		if (!(pending & (1U << i))) continue;
+		uint32_t mask = m_bal_report_mask[i];
+		commands_printf_lisp("BAL REPORT S%d IC1=0x%04lX IC2=0x%04lX", i + 1,
+				(unsigned long)(mask & 0xFFFFU), (unsigned long)((mask >> 16) & 0xFFFFU));
+	}
 	if (timeout > SLAVE_CONTROL_FRESHNESS_TIMEOUT_MS) {
 		timeout = SLAVE_CONTROL_FRESHNESS_TIMEOUT_MS;
 	}
@@ -2034,8 +2109,6 @@ static lbm_value ext_master_reset_slaves(lbm_value *args, lbm_uint argn) {
 	xSemaphoreGive(m_balance_tx_mutex);
 
 	// Also reset CAN buffer
-	can_rx_head = 0;
-	can_rx_tail = 0;
 	can_rx_overflow = 0;
 	can_rx_total = 0;
 	can_rx_esc_total = 0;
@@ -2148,17 +2221,16 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 
 	// Stage one complete, positional pack snapshot. Never compact invalid cells:
 	// doing so shifts every later cell index and makes cells appear/disappear in
-	// VESC Tool. If any configured slave is missing, stale, or unsafe, retain the
-	// last complete published cell snapshot instead.
+	// VESC Tool. Only missing or stale snapshots stop CAN reporting. Fresh
+	// unsafe readings must still reach the ESC's standard BMS limit checks.
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
 
 	uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+	uint32_t oldest_cell_age_ms = 0;
 	if (expected_slaves <= 0) cell_snapshot_complete = false;
 	for (int s = 0; s < expected_slaves; s++) {
 		if (!m_bms_data.active[s] ||
-				!slave_data_fresh_locked(s, now_ms, SLAVE_CONTROL_FRESHNESS_TIMEOUT_MS) ||
-				!m_slave_snapshot_safe[s] ||
-				!slave_snapshot_values_safe_locked(s)) {
+				!slave_data_fresh_locked(s, now_ms, SLAVE_CONTROL_FRESHNESS_TIMEOUT_MS)) {
 			cell_snapshot_complete = false;
 			break;
 		}
@@ -2168,6 +2240,9 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 			break;
 		}
 		staged_cell_count += num_cells;
+		int32_t elapsed = (int32_t)(now_ms - m_slave_complete_ms[s]);
+		uint32_t age = elapsed < 0 ? 0 : (uint32_t)elapsed;
+		if (age > oldest_cell_age_ms) oldest_cell_age_ms = age;
 	}
 
 	if (cell_snapshot_complete) {
@@ -2182,7 +2257,10 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 			uint16_t reported_ic2 = (m_bms_data.balance_mask[s] >> 16) & 0xFFFFU;
 			for (int c = 0; c < num_cells; c++) {
 				int wire_index = slave_cell_wire_index(c, ic1_cnt);
-				float v = (float)m_bms_data.cell_voltages[s][wire_index] / 1000.0f;
+				uint16_t mv = m_bms_data.cell_voltages[s][wire_index];
+				// VESC has no invalid-cell code. A failed read uses 0 V to keep
+				// its low-cell limit active; successful reads, including 0, pass through.
+				float v = mv == 0xFFFF ? 0.0f : (float)mv / 1000.0f;
 				staged_cells[staged_cell_count] = v;
 				staged_bal_state[staged_cell_count] = c < ic1_cnt ?
 						((reported_ic1 >> c) & 1U) :
@@ -2197,14 +2275,16 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 	}
 
 	for (int s = 0; s < expected_slaves; s++) {
-		if (!m_bms_data.active[s] || !slave_cell_counts_valid_locked(s)) continue;
+		if (!cell_snapshot_complete || !m_bms_data.active[s] || !slave_cell_counts_valid_locked(s)) continue;
 		// Aggregate slave temperatures for VESC 6.06 convention
 		// Temp order per slave: [0]=BQ1 IC, [1]=BQ1 TS1 (cell), [2]=BQ2 IC, [3]=BQ2 TS1 (cell)
 		for (int t = 0; t < TEMPS_PER_SLAVE; t++) {
 			int16_t raw = m_bms_data.temperatures[s][t];
-			if (raw == 0x7FFF) continue;
-			float temp_c = (float)raw / 10.0f;
-			if (!bms_temp_valid(temp_c)) continue;
+			if ((t >= 2 && m_bms_data.cells_ic2[s] == 0) ||
+					(t == 1 && !(m_bms_data.temp_sensor_flags[s] & STATUS_TEMP_BQ1_ENABLED)) ||
+					(t == 3 && !(m_bms_data.temp_sensor_flags[s] & STATUS_TEMP_BQ2_ENABLED))) continue;
+			// Required failed sensors must not disappear from the ESC's limits.
+			float temp_c = raw == 0x7FFF ? 127.0f : (float)raw / 10.0f;
 			if (t == 0 || t == 2) {
 				if (temp_c > t_ic_max) t_ic_max = temp_c;
 				have_ic_temp = true;
@@ -2236,6 +2316,9 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 		// Publish the count last so readers never see a new topology before its
 		// positional voltage array has been fully populated.
 		bms->cell_num = staged_cell_count;
+	} else {
+		bms->cell_num = 0;
+		bms->v_tot = bms->v_cell_min = bms->v_cell_max = 0.0f;
 	}
 
 	{
@@ -2300,11 +2383,11 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 	}
 
 	// VESC 6.06 temperature sensor convention (indices 0-4)
-	bms->temps_adc[0] = have_ic_temp ? t_ic_max : 0.0f;                 // Balance IC
-	bms->temps_adc[1] = have_cell_temp ? t_cell_min : 0.0f;             // Cell Min
-	bms->temps_adc[2] = have_cell_temp ? t_cell_max : 0.0f;             // Cell Max
-	bms->temps_adc[3] = m_temp_pcb_valid ? m_temp_pcb : 0.0f;           // Mosfet / PCB NTC
-	bms->temps_adc[4] = 0.0f;                                           // Ambient N/A
+	bms->temps_adc[0] = have_ic_temp ? t_ic_max : -300.0f;             // Balance IC
+	bms->temps_adc[1] = have_cell_temp ? t_cell_min : -300.0f;         // Cell Min
+	bms->temps_adc[2] = have_cell_temp ? t_cell_max : -300.0f;         // Cell Max
+	bms->temps_adc[3] = m_temp_pcb_valid ? m_temp_pcb : -300.0f;       // Mosfet / PCB NTC
+	bms->temps_adc[4] = -300.0f;                                     // Ambient N/A
 	int temps_count = 5;
 	for (int i = 0; i < staged_external_temp_count && temps_count < BMS_MAX_TEMPS; i++) {
 		bms->temps_adc[temps_count++] = staged_external_temps[i];
@@ -2312,11 +2395,11 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 
 	bms->temp_adc_num = temps_count;
 
-	bms->temp_ic = have_ic_temp ? t_ic_max : 0.0f;
-	bms->temp_max_cell = have_cell_temp ? t_cell_max : 0.0f;
+	bms->temp_ic = have_ic_temp ? t_ic_max : -300.0f;
+	bms->temp_max_cell = have_cell_temp ? t_cell_max : -300.0f;
 	bms->is_charging = gpio_get_level(PIN_CHG_EN) ? 1 : 0;
 	bms->is_balancing = cell_snapshot_complete && any_balancing ? 1 : 0;
-	bms->data_version = 1;
+	bms->data_version = cell_snapshot_complete ? 1 : 0;
 
 	// SOC is owned by the Lisp controller. Do not overwrite it from voltage here;
 	// that would race the coulomb/voltage policy and allow foreign BMS traffic to
@@ -2325,7 +2408,7 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 
 	// Do not make retained cell data look fresh after slave CAN becomes stale.
 	if (cell_snapshot_complete) {
-		bms->update_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+		bms->update_time = xTaskGetTickCount() - pdMS_TO_TICKS(oldest_cell_age_ms);
 	}
 
 	return ENC_SYM_TRUE;
@@ -2387,8 +2470,7 @@ static lbm_value ext_master_clear_fast_oc(lbm_value *args, lbm_uint argn) {
 	jfbms_fast_oc_get_status(&status);
 	if (!status.latched) return ENC_SYM_TRUE;
 
-	float charger_detect_v = ((main_config_t *)&backup.config)->v_charge_detect;
-	if (!jfbms_fast_oc_clear_allowed(charger_detect_v) ||
+	if (!jfbms_fast_oc_clear_allowed() ||
 			!jfbms_fast_oc_clear_if_unchanged(status.trip_count)) {
 		return ENC_SYM_NIL;
 	}
@@ -2427,6 +2509,16 @@ static lbm_value ext_master_fast_oc_status(lbm_value *args, lbm_uint argn) {
 	result = lbm_cons(status.armed ? ENC_SYM_TRUE : ENC_SYM_NIL, result);
 	result = lbm_cons(status.latched ? ENC_SYM_TRUE : ENC_SYM_NIL, result);
 	return result;
+}
+
+// (master-adc-stall-reset?) -- t once if the last reset came from the ADC
+// stall watchdog. Cleared on read so it is reported a single time.
+static lbm_value ext_master_adc_stall_reset(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	bool detected = m_adc_reset_detected;
+	m_adc_reset_detected = false;
+	return detected ? ENC_SYM_TRUE : ENC_SYM_NIL;
 }
 
 // (master-charger-status) -- (valid detected raw-voltage sample-age-ms)
@@ -2487,21 +2579,18 @@ static lbm_value ext_master_get_vchg(lbm_value *args, lbm_uint argn) {
 	return lbm_enc_float(m_vchg_valid ? m_vchg_filtered : 0.0f);
 }
 
-// (master-probe-vchg-off) -- force the charge path open, then return the raw
-// charger-port voltage. With CHG_EN on, the pack can back-feed the port sense
-// divider and make an unplugged connector look like a connected charger.
-// This probe is deliberately fail-closed: it never re-enables CHG_EN.
-static lbm_value ext_master_probe_vchg_off(lbm_value *args, lbm_uint argn) {
+static lbm_value ext_master_get_current_raw(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
+	float v = isense_read_voltage();
+	return v >= 0.0f && m_current_offset_calibrated ?
+			lbm_enc_float((v - m_current_offset) * ISENSE_SCALE) : ENC_SYM_NIL;
+}
 
-	gpio_set_level(PIN_CHG_EN, 0);
-	vTaskDelay(pdMS_TO_TICKS(25) + 1);
-	float v = adc_get_voltage(HW_ADC_CH3);
-	if (v < 0.0f || !isfinite(v)) {
-		return ENC_SYM_NIL;
-	}
-	return lbm_enc_float(v * VCHG_DIV_SCALE);
+static lbm_value ext_master_config_warning(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	return lbm_enc_u32(m_configuration_warning_flags);
 }
 
 // (master-get-temp-pcb) — returns EMA-filtered PCB NTC temp (°C); updated by master-update-vesc-bms
@@ -2524,7 +2613,7 @@ static lbm_value ext_master_local_sensor_status(lbm_value *args, lbm_uint argn) 
 	(void)argn;
 
 	int status = 0;
-	if (m_current_valid && m_current_offset_calibrated) status |= 0x01;
+	if (m_current_valid) status |= 0x01; // Zero is required for charging, not idle sleep.
 	if (m_vchg_valid) status |= 0x02;
 	if (m_temp_pcb_valid) status |= 0x04;
 	return lbm_enc_i(status);
@@ -2615,7 +2704,9 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 			(double)fast_oc.last_current_a,
 			(long)(fast_oc.trip_time_us / 1000),
 			m_pack_watchdog_ready ? 1 : 0);
-	commands_printf_lisp("ADC: status=0x%02X current_v=%.3f vchg_v=%.3f pcb_v=%.3f pcb_temp=%.1fC",
+	commands_printf_lisp("ADC: stall_restarts=%lu monitor_rebuilds=%lu status=0x%02X current_v=%.3f vchg_v=%.3f pcb_v=%.3f pcb_temp=%.1fC",
+			(unsigned long)m_adc_stall_restarts,
+			(unsigned long)m_adc_monitor_rebuilds,
 			(m_current_valid ? 0x01 : 0) |
 			(m_vchg_valid ? 0x02 : 0) |
 			(m_temp_pcb_valid ? 0x04 : 0),
@@ -2667,7 +2758,7 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 		(unsigned long)can_dbg.rx_bad_len);
 
 #if JFBMS_USE_DEDICATED_SLAVE_TWAI
-	commands_printf_lisp("Slave CAN TWAI%d: tx=%d rx=%d baud=%d running=%d filter_id=0x%03lX filter_mask=0x%03lX rx_total=%lu filtered=%lu malformed=%lu filtered_last=0x%03lX esc_rx=%lu priv_rx=%lu buf_head=%d buf_tail=%d overflow=%lu recovery=%d tx_ok=%lu tx_fail=%lu tx_timeout=%lu last_err=%d",
+	commands_printf_lisp("Slave CAN TWAI%d: tx=%d rx=%d baud=%d running=%d filter_id=0x%03lX filter_mask=0x%03lX rx_total=%lu filtered=%lu malformed=%lu filtered_last=0x%03lX esc_rx=%lu priv_rx=%lu overflow=%lu recovery=%d tx_ok=%lu tx_fail=%lu tx_timeout=%lu last_err=%d",
 		JFBMS_SLAVE_CAN_TWAI_ID, JFBMS_SLAVE_CAN_TX_GPIO_NUM, JFBMS_SLAVE_CAN_RX_GPIO_NUM,
 		JFBMS_SLAVE_CAN_BAUD_KBITS,
 		slave_can_running ? 1 : 0,
@@ -2678,7 +2769,7 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 		(unsigned long)can_rx_filtered_last_id,
 		(unsigned long)can_rx_esc_total,
 		(unsigned long)can_rx_private_total,
-		can_rx_head, can_rx_tail, (unsigned long)can_rx_overflow,
+		(unsigned long)can_rx_overflow,
 		comm_can2_get_rx_recovery_cnt(),
 		(unsigned long)slave_can_tx_ok_cnt,
 		(unsigned long)slave_can_tx_fail_cnt,
@@ -2695,7 +2786,7 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 		(unsigned long)can2_dbg.last_tx_sid,
 		(int)can2_dbg.last_error);
 #else
-	commands_printf_lisp("Slave CAN primary TWAI0: tx=%d rx=%d baud_cfg=%d one_bus=1 twai1_disabled_pin_collision=%d rx_total=%lu malformed=%lu primary_rx=%lu dedicated_rx=%lu buf_head=%d buf_tail=%d overflow=%lu tx_ok=%lu tx_fail=%lu tx_timeout=%lu last_err=%d",
+	commands_printf_lisp("Slave CAN primary TWAI0: tx=%d rx=%d baud_cfg=%d one_bus=1 twai1_disabled_pin_collision=%d rx_total=%lu malformed=%lu primary_rx=%lu dedicated_rx=%lu overflow=%lu tx_ok=%lu tx_fail=%lu tx_timeout=%lu last_err=%d",
 		CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM,
 		(int)backup.config.can_baud_rate,
 		JFBMS_DEDICATED_SLAVE_TWAI_PIN_COLLISION,
@@ -2703,7 +2794,7 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 		(unsigned long)can_rx_malformed_total,
 		(unsigned long)can_rx_esc_total,
 		(unsigned long)can_rx_private_total,
-		can_rx_head, can_rx_tail, (unsigned long)can_rx_overflow,
+		(unsigned long)can_rx_overflow,
 		(unsigned long)slave_can_tx_ok_cnt,
 		(unsigned long)slave_can_tx_fail_cnt,
 		(unsigned long)slave_can_tx_timeout_cnt,
@@ -2829,13 +2920,14 @@ static void shutdown_warning_beep(void) {
 		return;
 	}
 
-	for (int i = 0; i < 30; i++) {
+	// Same loud 15 x 0.2 s warning as JFBMS32.
+	for (int i = 0; i < 15; i++) {
 		ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 512);
 		ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-		vTaskDelay(pdMS_TO_TICKS(100));
+		vTaskDelay(pdMS_TO_TICKS(200));
 		ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
 		ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-		vTaskDelay(pdMS_TO_TICKS(100));
+		vTaskDelay(pdMS_TO_TICKS(200));
 	}
 
 	ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
@@ -2926,13 +3018,16 @@ static void load_extensions(bool main_found) {
 	lbm_add_extension("master-sleep-disarm-fast-oc", ext_master_sleep_disarm_fast_oc);
 	lbm_add_extension("master-sleep-rearm-fast-oc", ext_master_sleep_rearm_fast_oc);
 	lbm_add_extension("master-fast-oc-status", ext_master_fast_oc_status);
+	lbm_add_extension("master-adc-stall-reset?", ext_master_adc_stall_reset);
 	lbm_add_extension("master-charger-status", ext_master_charger_status);
+	lbm_add_extension("master-chg-block-reason", ext_master_chg_block_reason);
 	lbm_add_extension("master-set-chg", ext_master_set_chg);
 	lbm_add_extension("master-config-generation", ext_master_config_generation);
 	lbm_add_extension("master-config-ack", ext_master_config_ack);
 	lbm_add_extension("master-get-current", ext_master_get_current);
+	lbm_add_extension("master-get-current-raw", ext_master_get_current_raw);
+	lbm_add_extension("master-config-warning", ext_master_config_warning);
 	lbm_add_extension("master-get-vchg", ext_master_get_vchg);
-	lbm_add_extension("master-probe-vchg-off", ext_master_probe_vchg_off);
 	lbm_add_extension("master-get-temp-pcb", ext_master_get_temp_pcb);
 	lbm_add_extension("master-local-sensors-valid?", ext_master_local_sensors_valid);
 	lbm_add_extension("master-local-sensor-status", ext_master_local_sensor_status);
@@ -3032,13 +3127,14 @@ void hw_init(void) {
 	// safe midpoint internally but displays 0 A until the first charge captures
 	// and stores its actual zero. The manual VESC Tool command can replace it.
 	{
-		bool adc_ok = jfbms_fast_adc_init();
+		// The stored zero lives in NVS, so it is known before the ADC starts and
+		// lets the fast-OC monitor be created without a stream restart.
+		float startup_offset = ISENSE_DEFAULT_OFFSET_V;
+		bool stored_offset = isense_load_stored_offset(&startup_offset);
+		bool adc_ok = jfbms_fast_adc_init(startup_offset);
 		if (!adc_ok) {
 			commands_printf("JFBMS continuous ADC failed; CHG_EN locked off");
 		}
-
-		float startup_offset = ISENSE_DEFAULT_OFFSET_V;
-		bool stored_offset = isense_load_stored_offset(&startup_offset);
 		bool protection_armed = false;
 		if (adc_ok) {
 			// COM_EN powers 3V3COM and the RC-filtered 1.65 V current

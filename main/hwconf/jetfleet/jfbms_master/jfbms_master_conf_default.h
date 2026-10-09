@@ -183,11 +183,6 @@
 #define CONF_MIN_CURRENT_SLEEP 0.3
 #endif
 
-// Charger Detection Voltage
-#ifndef CONF_V_CHARGE_DETECT
-#define CONF_V_CHARGE_DETECT 5
-#endif
-
 // Charge Temp Max
 #ifndef CONF_T_CHARGE_MAX
 #define CONF_T_CHARGE_MAX 45
@@ -228,10 +223,6 @@
 #define CONF_NUM_SLAVES 1
 #endif
 
-// Charge Temp Monitoring
-#ifndef CONF_T_CHARGE_MON_EN
-#define CONF_T_CHARGE_MON_EN 1
-#endif
 
 // Shutdown Time
 #ifndef CONF_SHUTDOWN

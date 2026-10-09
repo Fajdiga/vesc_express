@@ -1,0 +1,6 @@
+# ESP-IDF 6.0.1 leaves the monitor-disable function in flash. Our trip ISR
+# calls it to stop the level-sensitive interrupt after the first fault.
+[mapping:jfbms_adc_monitor]
+archive: libesp_adc.a
+entries:
+    adc_monitor:adc_continuous_monitor_disable (noflash)

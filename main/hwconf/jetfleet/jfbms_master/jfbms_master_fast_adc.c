@@ -23,6 +23,10 @@
 #include <math.h>
 #include <string.h>
 
+#if !CONFIG_ADC_CONTINUOUS_ISR_IRAM_SAFE
+#error "JFBMS master requires CONFIG_ADC_CONTINUOUS_ISR_IRAM_SAFE=y"
+#endif
+
 #define JFBMS_ADC_FRAME_BYTES       256
 #define JFBMS_ADC_STORE_BYTES       2048
 #define JFBMS_ADC_PATTERN_LEN       8
@@ -32,11 +36,20 @@
 #define JFBMS_ADC_CACHE_MAX_AGE_MS  300
 #define JFBMS_ADC_MAX_FRAMES_WAKE   8
 #define JFBMS_ADC_TASK_PRIORITY     7
+// The C6 continuous ADC has been seen to stop delivering frames after boot.
+// Restart the stream if no frame arrives for this long (fails closed meanwhile).
+#define JFBMS_ADC_STALL_RESTART_MS  500U
+// Restarting the stream did not help this many times in a row: reset the chip,
+// the only recovery that reliably reinitialises a wedged SAR ADC/DMA.
+#define JFBMS_ADC_STALL_MAX_RESTARTS 3U
 #define JFBMS_ADC_RECONFIG_TIMEOUT_MS 100U
 #define JFBMS_FAST_OC_RTC_MAGIC     0x4A464F43U
 #define JFBMS_CHARGER_CONNECT_DEBOUNCE_MS 75U
 #define JFBMS_CHARGER_DISCONNECT_DEBOUNCE_MS 250U
 #define JFBMS_CHARGER_HYSTERESIS_V  0.5f
+// Fixed charger presence level, as on JFBMS32. Lisp separately requires
+// pack + 0.7 V before CHG_EN may rise.
+#define JFBMS_CHARGER_PRESENT_V     5.0f
 
 static const adc_channel_t m_adc_pattern_channels[JFBMS_ADC_PATTERN_LEN] = {
 	HW_ADC_CH2, HW_ADC_CH3, HW_ADC_CH2, HW_ADC_CH2,
@@ -74,9 +87,15 @@ static volatile uint32_t m_charger_candidate_since_ms;
 static volatile float m_charger_latest_v;
 
 static volatile float m_adc_voltage[5];
+static volatile uint32_t m_adc_stall_restarts;
+static volatile uint32_t m_adc_monitor_rebuilds;
 static volatile uint32_t m_adc_voltage_time_ms[5];
 
 RTC_NOINIT_ATTR static uint32_t m_fast_oc_rtc_magic;
+// Set just before the ADC stall watchdog resets the chip; reported once at boot.
+#define JFBMS_ADC_RESET_RTC_MAGIC   0x4A414443U
+RTC_NOINIT_ATTR static uint32_t m_adc_reset_rtc_magic;
+static bool m_adc_reset_detected;
 
 static uint32_t adc_now_ms(void) {
 	return xTaskGetTickCount() * portTICK_PERIOD_MS;
@@ -120,10 +139,10 @@ static bool IRAM_ATTR fast_oc_trip(adc_monitor_handle_t monitor,
 		return false;
 	}
 	m_fast_oc_armed = false;
+	GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
 	if (adc_continuous_monitor_disable(monitor) == ESP_OK) {
 		m_adc_monitor_enabled = false;
 	}
-	GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
 	m_fast_oc_rtc_magic = JFBMS_FAST_OC_RTC_MAGIC;
 	m_fast_oc_diag_seq++;
 	m_fast_oc_latch = true;
@@ -152,9 +171,8 @@ static bool IRAM_ATTR fast_oc_above_threshold_cb(adc_monitor_handle_t monitor,
 }
 
 static void charger_detector_update(float voltage_v, uint32_t now_ms) {
-	main_config_t *cfg = (main_config_t *)&backup.config;
-	float threshold = cfg->v_charge_detect;
-	if (!isfinite(voltage_v) || !isfinite(threshold) || threshold <= 0.0f) {
+	const float threshold = JFBMS_CHARGER_PRESENT_V;
+	if (!isfinite(voltage_v)) {
 		m_charger_valid = false;
 		m_charger_candidate_since_ms = 0;
 		return;
@@ -244,9 +262,17 @@ static void adc_process_frame(const uint8_t *data, uint32_t length) {
 static void adc_reader_task(void *arg) {
 	(void)arg;
 	uint8_t frame[JFBMS_ADC_FRAME_BYTES];
+	uint32_t last_frame_ms = adc_now_ms();
+	uint32_t stalled_restarts = 0;
 
 	while (true) {
 		(void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+		if (!m_adc_reconfiguring && !m_adc_started &&
+				(adc_now_ms() - last_frame_ms) >= 1000U) {
+			GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
+			m_adc_reset_rtc_magic = JFBMS_ADC_RESET_RTC_MAGIC;
+			esp_restart();
+		}
 		if (m_adc_reconfiguring || !m_adc_started) continue;
 		if (!m_adc_mutex || xSemaphoreTake(m_adc_mutex, portMAX_DELAY) != pdTRUE) continue;
 		if (m_adc_reconfiguring || !m_adc_started) {
@@ -262,6 +288,24 @@ static void adc_reader_task(void *arg) {
 			if (res == ESP_ERR_TIMEOUT || res != ESP_OK || length == 0) break;
 			adc_process_frame(frame, length);
 			frames_processed++;
+		}
+		uint32_t now_ms = adc_now_ms();
+		if (frames_processed > 0) {
+			last_frame_ms = now_ms;
+			stalled_restarts = 0;
+		} else if (!m_adc_reconfiguring &&
+				(now_ms - last_frame_ms) >= JFBMS_ADC_STALL_RESTART_MS) {
+			// Charge must not run on a dead current/voltage stream. Restarting
+			// re-applies the fast-OC monitor (adc_continuous_start does that).
+			GPIO.out_w1tc.val = BIT(PIN_CHG_EN);
+			if (++stalled_restarts > JFBMS_ADC_STALL_MAX_RESTARTS) {
+				m_adc_reset_rtc_magic = JFBMS_ADC_RESET_RTC_MAGIC;
+				esp_restart();
+			}
+			(void)adc_continuous_stop(m_adc_handle);
+			(void)adc_continuous_start(m_adc_handle);
+			m_adc_stall_restarts++;
+			last_frame_ms = now_ms;
 		}
 		xSemaphoreGive(m_adc_mutex);
 		if (frames_processed == JFBMS_ADC_MAX_FRAMES_WAKE) vTaskDelay(1);
@@ -347,6 +391,8 @@ static bool adc_install_current_monitor(float offset_v) {
 		.h_threshold = adc_voltage_to_raw(HW_ADC_CH2, high_voltage),
 		.l_threshold = adc_voltage_to_raw(HW_ADC_CH2, low_voltage),
 	};
+	if (monitor_cfg.h_threshold >= 4095 || monitor_cfg.l_threshold <= 0 ||
+			monitor_cfg.h_threshold <= monitor_cfg.l_threshold) return false;
 	adc_monitor_evt_cbs_t monitor_callbacks = {
 		.on_below_low_thresh = fast_oc_below_threshold_cb,
 		.on_over_high_thresh = fast_oc_above_threshold_cb,
@@ -367,7 +413,13 @@ static bool adc_install_current_monitor(float offset_v) {
 	return true;
 }
 
-bool jfbms_fast_adc_init(void) {
+bool jfbms_fast_adc_init(float initial_offset_v) {
+	// RTC no-init RAM is random after power-up; trust it only after a SW reset.
+	if (m_adc_reset_rtc_magic == JFBMS_ADC_RESET_RTC_MAGIC &&
+			esp_reset_reason() == ESP_RST_SW) {
+		m_adc_reset_detected = true;
+	}
+	m_adc_reset_rtc_magic = 0;
 	if (m_adc_handle && m_adc_started) return true;
 	if (m_adc_handle) adc_init_cleanup();
 	if (m_fast_oc_rtc_magic == JFBMS_FAST_OC_RTC_MAGIC) m_fast_oc_latch = true;
@@ -429,6 +481,14 @@ bool jfbms_fast_adc_init(void) {
 		adc_init_cleanup();
 		return false;
 	}
+	// Create the fast-OC monitor before the first start, disabled until the
+	// current reference settles. With a stored zero, hw_init then only enables
+	// it in place: the stream is never stopped/restarted at boot, which is the
+	// step that has left the C6 continuous ADC without DMA frames. Without a
+	// stored zero the measured offset differs and one rebuild still follows.
+	if (isfinite(initial_offset_v) && adc_install_current_monitor(initial_offset_v)) {
+		(void)adc_set_current_monitor_enabled(false);
+	}
 	if (adc_continuous_start(m_adc_handle) != ESP_OK) {
 		adc_init_cleanup();
 		return false;
@@ -472,6 +532,7 @@ static bool adc_rebuild_current_monitor(float offset_v) {
 		m_adc_reconfiguring = false;
 		return false;
 	}
+	m_adc_monitor_rebuilds++;
 	m_adc_started = false;
 
 	bool configured = adc_remove_current_monitor();
@@ -524,7 +585,8 @@ static bool adc_reconfigure_current_monitor(float offset_v, bool arm_protection)
 			fabsf(offset_v - m_adc_monitor_offset_v) <= 0.001f &&
 			fabsf(cfg->fast_charge_oc_a - m_adc_monitor_trip_a) <= 0.001f;
 	if (monitor_matches) {
-		if (!m_adc_monitor_enabled &&
+		// Keep a pre-installed monitor physically off when protection is disabled.
+		if (cfg->fast_charge_oc_en && !m_adc_monitor_enabled &&
 				!adc_set_current_monitor_enabled(true)) {
 			return false;
 		}
@@ -555,7 +617,7 @@ void jfbms_fast_adc_set_software_offset(float offset_v) {
 bool jfbms_fast_adc_ready(void) {
 	main_config_t *cfg = (main_config_t *)&backup.config;
 	return m_adc_started && m_fast_oc_armed &&
-			(!cfg->fast_charge_oc_en || m_adc_monitor_enabled);
+			cfg->fast_charge_oc_en && m_adc_monitor_enabled;
 }
 
 bool jfbms_fast_oc_sleep_disarm(void) {
@@ -592,12 +654,12 @@ bool jfbms_fast_oc_latched(void) {
 	return m_fast_oc_latch;
 }
 
-bool jfbms_fast_oc_clear_allowed(float charger_detect_v) {
+bool jfbms_fast_oc_clear_allowed(void) {
 	float vchg = hw_adc_get_voltage(HW_ADC_CH3);
 	float current_v = hw_adc_get_voltage(HW_ADC_CH2);
 	uint32_t now_ms = adc_now_ms();
 	if (vchg < 0.0f || current_v < 0.0f ||
-			(vchg * VCHG_DIV_SCALE) >= charger_detect_v) {
+			(vchg * VCHG_DIV_SCALE) >= JFBMS_CHARGER_PRESENT_V) {
 		m_charger_absent_since_ms = 0;
 		return false;
 	}

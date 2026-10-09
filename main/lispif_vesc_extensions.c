@@ -684,7 +684,9 @@ static lbm_value get_set_bms_val(bool set, lbm_value *args, lbm_uint argn) {
 	}
 
 	if (res != ENC_SYM_EERROR && set) {
+#ifndef HW_BMS_NATIVE_REFRESH_TIME
 		val->update_time = xTaskGetTickCount();
+#endif
 	}
 
 	return res;

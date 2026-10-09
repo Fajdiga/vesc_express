@@ -78,7 +78,6 @@ int32_t jfbms_master_confparser_serialize_main_config_t(uint8_t *buffer, size_t 
 	WRITE_VALUE(4, buffer_append_float32_auto(buffer, conf->balance_max_current, &ind));
 	WRITE_VALUE(4, buffer_append_float32_auto(buffer, conf->min_current_ah_wh_cnt, &ind));
 	WRITE_VALUE(4, buffer_append_float32_auto(buffer, conf->min_current_sleep, &ind));
-	WRITE_VALUE(2, buffer_append_float16(buffer, conf->v_charge_detect, 10, &ind));
 	WRITE_VALUE(2, buffer_append_float16(buffer, conf->t_charge_max, 10, &ind));
 	WRITE_VALUE(2, buffer_append_float16(buffer, conf->t_charge_max_mos, 10, &ind));
 	WRITE_VALUE(4, buffer_append_float32_auto(buffer, conf->min_charge_current, &ind));
@@ -87,7 +86,6 @@ int32_t jfbms_master_confparser_serialize_main_config_t(uint8_t *buffer, size_t 
 	WRITE_VALUE(4, buffer_append_float32_auto(buffer, conf->soc_filter_const, &ind));
 	WRITE_VALUE(2, buffer_append_float16(buffer, conf->t_charge_min, 10, &ind));
 	WRITE_VALUE(1, buffer[ind++] = (uint8_t)conf->num_slaves);
-	WRITE_VALUE(1, buffer[ind++] = conf->t_charge_mon_en);
 	WRITE_VALUE(2, buffer_append_int16(buffer, conf->shutdown, &ind));
 	WRITE_VALUE(1, buffer[ind++] = conf->fast_charge_oc_en);
 	WRITE_VALUE(4, buffer_append_float32_auto(buffer, conf->fast_charge_oc_a, &ind));
@@ -147,7 +145,6 @@ bool jfbms_master_confparser_deserialize_main_config_t(const uint8_t *buffer, si
 	READ_VALUE(4, candidate.balance_max_current = buffer_get_float32_auto(buffer, &ind));
 	READ_VALUE(4, candidate.min_current_ah_wh_cnt = buffer_get_float32_auto(buffer, &ind));
 	READ_VALUE(4, candidate.min_current_sleep = buffer_get_float32_auto(buffer, &ind));
-	READ_VALUE(2, candidate.v_charge_detect = buffer_get_float16(buffer, 10, &ind));
 	READ_VALUE(2, candidate.t_charge_max = buffer_get_float16(buffer, 10, &ind));
 	READ_VALUE(2, candidate.t_charge_max_mos = buffer_get_float16(buffer, 10, &ind));
 	READ_VALUE(4, candidate.min_charge_current = buffer_get_float32_auto(buffer, &ind));
@@ -156,7 +153,6 @@ bool jfbms_master_confparser_deserialize_main_config_t(const uint8_t *buffer, si
 	READ_VALUE(4, candidate.soc_filter_const = buffer_get_float32_auto(buffer, &ind));
 	READ_VALUE(2, candidate.t_charge_min = buffer_get_float16(buffer, 10, &ind));
 	READ_VALUE(1, candidate.num_slaves = buffer[ind++]);
-	READ_VALUE(1, candidate.t_charge_mon_en = buffer[ind++]);
 	READ_VALUE(2, candidate.shutdown = buffer_get_int16(buffer, &ind));
 	READ_VALUE(1, candidate.fast_charge_oc_en = buffer[ind++]);
 	READ_VALUE(4, candidate.fast_charge_oc_a = buffer_get_float32_auto(buffer, &ind));
@@ -213,7 +209,6 @@ void jfbms_master_confparser_set_defaults_main_config_t(main_config_t *conf) {
 	conf->balance_max_current = CONF_BALANCE_MAX_CURRENT;
 	conf->min_current_ah_wh_cnt = CONF_MIN_CURRENT_AH_WH_CNT;
 	conf->min_current_sleep = CONF_MIN_CURRENT_SLEEP;
-	conf->v_charge_detect = CONF_V_CHARGE_DETECT;
 	conf->t_charge_max = CONF_T_CHARGE_MAX;
 	conf->t_charge_max_mos = CONF_T_CHARGE_MAX_MOS;
 	conf->min_charge_current = CONF_MIN_CHARGE_CURRENT;
@@ -222,7 +217,6 @@ void jfbms_master_confparser_set_defaults_main_config_t(main_config_t *conf) {
 	conf->soc_filter_const = CONF_SOC_FILTER_CONST;
 	conf->t_charge_min = CONF_T_CHARGE_MIN;
 	conf->num_slaves = CONF_NUM_SLAVES;
-	conf->t_charge_mon_en = CONF_T_CHARGE_MON_EN;
 	conf->shutdown = CONF_SHUTDOWN;
 	conf->fast_charge_oc_en = CONF_FAST_CHARGE_OC_EN;
 	conf->fast_charge_oc_a = CONF_FAST_CHARGE_OC_A;

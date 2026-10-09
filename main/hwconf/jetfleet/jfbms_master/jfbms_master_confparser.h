@@ -9,8 +9,8 @@
 #include <stdbool.h>
 
 // Constants
-#define MAIN_CONFIG_T_SIGNATURE		3634203971
-#define SERIALIZED_CONFIG_LENGTH	335
+#define MAIN_CONFIG_T_SIGNATURE		2975187090
+#define SERIALIZED_CONFIG_LENGTH	332
 
 // Functions
 int32_t jfbms_master_confparser_serialize_main_config_t(uint8_t *buffer, size_t capacity, const main_config_t *conf);

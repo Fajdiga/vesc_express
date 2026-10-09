@@ -83,13 +83,21 @@ static bool cell_counts_valid(unsigned int cells_ic1, unsigned int cells_ic2) {
 			(cells_ic2 == 0 || (cells_ic2 >= 3 && cells_ic2 <= 16));
 }
 
+static const char *m_config_error;
+const char *jfbms_slave_config_error(void) { return m_config_error; }
+
 bool jfbms_slave_validate_config(const main_config_t *conf) {
-	return conf && conf->slave_id >= 1 && conf->slave_id <= 8 &&
-			cell_counts_valid(conf->cells_ic1, conf->cells_ic2) &&
-			conf->can_baud_rate >= CAN_BAUD_125K && conf->can_baud_rate <= CAN_BAUD_100K &&
-			conf->temp_res >= NTC_RES_4_7K && conf->temp_res <= NTC_RES_200K &&
-			(!(conf->temp_bq1_en || (conf->cells_ic2 > 0 && conf->temp_bq2_en)) ||
-			conf->temp_beta > 0);
+	m_config_error = NULL;
+#define CHECK(rule, reason) do { if (!(rule)) { m_config_error = reason; return false; } } while (0)
+	CHECK(conf, "Missing configuration");
+	CHECK(conf->slave_id >= 1 && conf->slave_id <= 8, "slave_id must be 1-8");
+	CHECK(cell_counts_valid(conf->cells_ic1, conf->cells_ic2), "cells_ic1/ic2: use 3-16 cells, or 0 for IC2");
+	CHECK(conf->can_baud_rate >= CAN_BAUD_125K && conf->can_baud_rate <= CAN_BAUD_100K, "Invalid CAN baud rate");
+	CHECK(conf->temp_res >= NTC_RES_4_7K && conf->temp_res <= NTC_RES_200K, "Invalid NTC resistance");
+	CHECK(!(conf->temp_bq1_en || (conf->cells_ic2 > 0 && conf->temp_bq2_en)) ||
+			conf->temp_beta > 0, "temp_beta must be positive when an NTC is enabled");
+#undef CHECK
+	return true;
 }
 
 static int balance_channel_count(uint16_t mask) {
@@ -162,6 +170,24 @@ bool hw_can_get_filter_config(twai_mask_filter_config_t *cfg) {
 
 // Forward declarations (functions defined later in file)
 static bool subcommands_write16(uint8_t dev_addr, uint16_t command, uint16_t data);
+static bool subcommands_read16(uint8_t dev_addr, uint16_t command, uint16_t *result);
+
+// Called under bq_mutex. An ACK alone does not prove the balance FETs changed.
+static bool balance_write_verified(uint8_t addr, uint16_t mask) {
+	uint16_t actual = 0;
+	return subcommands_write16(addr, CB_ACTIVE_CELLS, mask) &&
+			subcommands_read16(addr, CB_ACTIVE_CELLS, &actual) && actual == mask;
+}
+
+// The BQ may refuse some/all enables at its thermal limit. Publish the actual
+// subset; only an I/O failure or an unexpected enabled cell is a fault.
+static bool balance_start(uint8_t addr, uint16_t *mask) {
+	uint16_t actual;
+	if (!subcommands_write16(addr, CB_ACTIVE_CELLS, *mask) ||
+			!subcommands_read16(addr, CB_ACTIVE_CELLS, &actual) || (actual & ~*mask)) return false;
+	*mask = actual;
+	return true;
+}
 
 static uint16_t configured_cell_mask(unsigned int cell_count) {
 	if (cell_count >= 16) {
@@ -183,13 +209,23 @@ static bool balance_mask_has_adjacent_cells(uint16_t mask) {
 // CAN Protocol TX Functions
 // ============================================================================
 
+// Per-frame budget on the shared slave bus. Eight slaves bursting together are
+// about 80 frames (~22 ms at 500 kbit/s); the plain 5 ms async path silently
+// drops frames under that contention, which makes the master discard the whole
+// broadcast. A failed frame aborts the burst: the master would discard it.
+#define SLAVE_TX_TIMEOUT_MS 25
+
+static bool slave_tx(uint32_t id, const uint8_t *buf) {
+	return comm_can_transmit_sid_sync(id, buf, 8, SLAVE_TX_TIMEOUT_MS) == ESP_OK;
+}
+
 /**
  * Send cell voltages (only messages needed for configured cell count)
  * Optimization: 12 cells sends 3 messages instead of 8, reducing CAN bus load
  * @param slave_id  Slave ID (1-8)
  * @param cells_mv  Array of cell voltages in mV (0 = not populated, 0xFFFF = error)
  */
-static void can_send_cell_msg(uint8_t slave_id, uint8_t msg_type, uint16_t *cells_mv) {
+static bool can_send_cell_msg(uint8_t slave_id, uint8_t msg_type, uint16_t *cells_mv) {
 	uint8_t buf[8];
 	uint8_t base_cell = msg_type * 4;
 
@@ -199,15 +235,15 @@ static void can_send_cell_msg(uint8_t slave_id, uint8_t msg_type, uint16_t *cell
 		buf[i * 2 + 1] = (v >> 8) & 0xFF;
 	}
 
-	comm_can_transmit_sid(CAN_ID_CELLS(msg_type, slave_id), buf, 8);
+	return slave_tx(CAN_ID_CELLS(msg_type, slave_id), buf);
 }
 
-static void can_send_all_cells(uint8_t slave_id, uint16_t *cells_mv) {
+static bool can_send_all_cells(uint8_t slave_id, uint16_t *cells_mv) {
 	uint8_t ic1_msgs = (m_cells_ic1 + 3) / 4;
 	if (ic1_msgs > 4) ic1_msgs = 4;
 
 	for (uint8_t msg_type = 0; msg_type < ic1_msgs; msg_type++) {
-		can_send_cell_msg(slave_id, msg_type, cells_mv);
+		if (!can_send_cell_msg(slave_id, msg_type, cells_mv)) return false;
 	}
 
 	if (m_cells_ic2 > 0) {
@@ -215,9 +251,10 @@ static void can_send_all_cells(uint8_t slave_id, uint16_t *cells_mv) {
 		if (ic2_msgs > 4) ic2_msgs = 4;
 
 		for (uint8_t i = 0; i < ic2_msgs; i++) {
-			can_send_cell_msg(slave_id, 4 + i, cells_mv);
+			if (!can_send_cell_msg(slave_id, 4 + i, cells_mv)) return false;
 		}
 	}
+	return true;
 }
 
 /**
@@ -225,7 +262,7 @@ static void can_send_all_cells(uint8_t slave_id, uint16_t *cells_mv) {
  * @param slave_id  Slave ID (1-8)
  * @param temps     Array of 4 temperatures in 0.1°C (0x7FFF = invalid)
  */
-static void can_send_temps(uint8_t slave_id, int16_t *temps) {
+static bool can_send_temps(uint8_t slave_id, int16_t *temps) {
 	uint8_t buf[8];
 
 	// Pack 4 temps, little-endian (T_BQ1_IC, T_BQ1_TS1, T_BQ2_IC, T_BQ2_TS1)
@@ -234,7 +271,7 @@ static void can_send_temps(uint8_t slave_id, int16_t *temps) {
 		buf[i * 2 + 1] = (temps[i] >> 8) & 0xFF;  // High byte
 	}
 
-	comm_can_transmit_sid(CAN_ID_TEMPS(slave_id), buf, 8);
+	return slave_tx(CAN_ID_TEMPS(slave_id), buf);
 }
 
 /**
@@ -246,7 +283,7 @@ static void can_send_temps(uint8_t slave_id, int16_t *temps) {
  * @param cells_ic2  Number of cells on BQ2 (0-16)
  * @param temp_sensor_flags External NTC enable bits for BQ1/BQ2
  */
-static void can_send_status(uint8_t slave_id, uint32_t bal_mask, uint8_t faults,
+static bool can_send_status(uint8_t slave_id, uint32_t bal_mask, uint8_t faults,
 		uint8_t cells_ic1, uint8_t cells_ic2, uint8_t temp_sensor_flags) {
 	uint8_t buf[8];
 
@@ -261,7 +298,7 @@ static void can_send_status(uint8_t slave_id, uint32_t bal_mask, uint8_t faults,
 	buf[7] = temp_sensor_flags &
 			(STATUS_TEMP_BQ1_ENABLED | STATUS_TEMP_BQ2_ENABLED);
 
-	comm_can_transmit_sid(CAN_ID_STATUS(slave_id), buf, 8);
+	return slave_tx(CAN_ID_STATUS(slave_id), buf);
 }
 
 // Get current balancing bitmap from both ICs
@@ -287,33 +324,35 @@ static bool apply_bal_bitmap(uint32_t bitmap) {
 		new_bal_ic1 = 0;
 		new_bal_ic2 = 0;
 	}
+	// A topology change can leave BQ2 active even when it is now unconfigured.
+	if (m_balance_cleanup_ic2 && balance_write_verified(BQ_ADDR_2, 0)) {
+		m_balance_cleanup_ic2 = false;
+	}
 
 	// Every toggle write is checked. Any failure triggers a best-effort clear on
 	// both ICs and reports zero state; stale requested masks are never published
 	// as though they were still safely active.
-	bool clear1 = subcommands_write16(BQ_ADDR_1, CB_ACTIVE_CELLS, 0);
-	bool set1 = clear1 && subcommands_write16(BQ_ADDR_1,
-			CB_ACTIVE_CELLS, new_bal_ic1);
-	bool io_ok = clear1 && set1;
+	bool clear1 = balance_write_verified(BQ_ADDR_1, 0);
+	bool set1 = clear1 && (new_bal_ic1 == 0 || balance_start(BQ_ADDR_1, &new_bal_ic1));
+	bool io_ok = clear1 && set1 && !m_balance_cleanup_ic2;
 
 	// BQ2: Toggle if present
 	if (m_cells_ic2 > 0) {
-		bool clear2 = subcommands_write16(BQ_ADDR_2, CB_ACTIVE_CELLS, 0);
-		bool set2 = clear2 && subcommands_write16(BQ_ADDR_2,
-				CB_ACTIVE_CELLS, new_bal_ic2);
+		bool clear2 = balance_write_verified(BQ_ADDR_2, 0);
+		bool set2 = clear2 && (new_bal_ic2 == 0 || balance_start(BQ_ADDR_2, &new_bal_ic2));
 		io_ok = io_ok && clear2 && set2;
 	}
 
 	if (!io_ok || invalid_mask) {
-		bool cleanup_ok = subcommands_write16(BQ_ADDR_1, CB_ACTIVE_CELLS, 0);
+		bool cleanup_ok = balance_write_verified(BQ_ADDR_1, 0);
 		if (m_cells_ic2 > 0) {
-			bool cleanup2 = subcommands_write16(BQ_ADDR_2, CB_ACTIVE_CELLS, 0);
+			bool cleanup2 = balance_write_verified(BQ_ADDR_2, 0);
 			cleanup_ok = cleanup_ok && cleanup2;
 		}
 		m_bal_state_ic1 = 0;
 		m_bal_state_ic2 = 0;
 		m_bal_last_command_ms = 0;
-		m_balance_stop_pending = !cleanup_ok;
+		m_balance_stop_pending = !cleanup_ok || m_balance_cleanup_ic2;
 		if (!io_ok || !cleanup_ok) m_balance_fault = true;
 		return false;
 	}
@@ -367,11 +406,17 @@ static void balance_watchdog_task(void *arg) {
 				(last_ms != 0 && (now_ms - last_ms) > BALANCE_WATCHDOG_TIMEOUT_MS)) {
 			bool stopped = stop_all_balancing();
 			if (!stopped) m_balance_fault = true;
-			commands_printf("Balance hardware watchdog stopped outputs (ok=%d)",
-					stopped ? 1 : 0);
 		}
 		xSemaphoreGive(bq_mutex);
 	}
+}
+
+// Count bus/CRC errors without printing from protection tasks or under locks.
+static uint32_t m_i2c_error_count;
+static lbm_value ext_i2c_errors(lbm_value *args, lbm_uint argn) {
+    (void)args;
+    if (argn != 0) return ENC_SYM_EERROR;
+    return lbm_enc_u32(__atomic_load_n(&m_i2c_error_count, __ATOMIC_RELAXED));
 }
 
 static esp_err_t i2c_tx_rx(
@@ -380,6 +425,7 @@ static esp_err_t i2c_tx_rx(
 ) {
 
 	if (xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+		__atomic_fetch_add(&m_i2c_error_count, 1, __ATOMIC_RELAXED);
 		return ESP_ERR_TIMEOUT;
 	}
 
@@ -400,6 +446,7 @@ static esp_err_t i2c_tx_rx(
 	}
 	xSemaphoreGive(i2c_mutex);
 
+	if (res != ESP_OK) __atomic_fetch_add(&m_i2c_error_count, 1, __ATOMIC_RELAXED);
 	return res;
 }
 
@@ -434,7 +481,6 @@ static bool bq_read_block(
 	uint8_t *read_data_ptr = read_data;
 
 	if (res != ESP_OK) {
-		commands_printf_lisp("I2C Error: %d", res);
 		return false;
 	}
 
@@ -447,7 +493,7 @@ static bool bq_read_block(
 
 	read_data_ptr++;
 	if (crc != *read_data_ptr) {
-		commands_printf_lisp("Bad CRC1");
+		__atomic_fetch_add(&m_i2c_error_count, 1, __ATOMIC_RELAXED);
 		return false;
 	} else {
 		*buf = *(read_data_ptr - 1);
@@ -460,7 +506,7 @@ static bool bq_read_block(
 		buf++;
 
 		if (crc != *read_data_ptr) {
-			commands_printf_lisp("Bad CRC2");
+			__atomic_fetch_add(&m_i2c_error_count, 1, __ATOMIC_RELAXED);
 			return false;
 		} else {
 			*buf = *(read_data_ptr - 1);
@@ -579,7 +625,7 @@ static bool command_subcommands(uint8_t dev_addr, uint16_t command) {
 	return res;
 }
 
-static bool __attribute__((unused)) subcommands_read16(
+static bool subcommands_read16(
 	uint8_t dev_addr, uint16_t command, uint16_t *result
 ) {
 	uint8_t TX_Reg[2] = {0x00, 0x00};
@@ -765,10 +811,10 @@ static bool bq_init(uint8_t dev_addr, const main_config_t *cfg_bq) {
 		default:            ntcPinConfig = 0b00111011; break;
 	}
 	if (!bq_set_verified(dev_addr, TS1Config, ntcPinConfig, 1)) goto failed;
-	if (!bq_set_verified(dev_addr, TS3Config, ntcPinConfig, 1)) goto failed;
-	if (!bq_set_verified(dev_addr, ALERTPinConfig, ntcPinConfig, 1)) goto failed;
-	if (!bq_set_verified(dev_addr, DCHGPinConfig, ntcPinConfig, 1)) goto failed;
-	if (!bq_set_verified(dev_addr, HDQPinConfig, 0b00111011, 1)) goto failed;
+	if (!bq_set_verified(dev_addr, TS3Config, 0x00, 1)) goto failed;
+	if (!bq_set_verified(dev_addr, ALERTPinConfig, 0x00, 1)) goto failed;
+	if (!bq_set_verified(dev_addr, DCHGPinConfig, 0x00, 1)) goto failed;
+	if (!bq_set_verified(dev_addr, HDQPinConfig, 0x00, 1)) goto failed;
 
 	// Disabled
 	if (!bq_set_verified(dev_addr, DDSGPinConfig, 0x00, 1)) goto failed;
@@ -870,6 +916,15 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 
 	xSemaphoreGive(i2c_mutex);
 
+	// BQ2 may still balance after an ESP reset. Clear it in isolation before
+	// any BQ1 initialization/address change can fail or take a long time.
+	gpio_set_level(PIN_BQ1_EN, 1);
+	gpio_set_level(PIN_BQ2_EN, 0);
+	vTaskDelay(1);
+	bool early_clear2 = balance_write_verified(BQ_ADDR_2, 0);
+	m_balance_cleanup_ic2 |= cells_ic2 > 0 && !early_clear2;
+	gpio_set_level(PIN_BQ2_EN, 1);
+	gpio_set_level(PIN_BQ1_EN, 0);
 	vTaskDelay(50);
 
 	// Wake BQ1 if it was left in BQ-level DEEPSLEEP. In that mode its
@@ -909,6 +964,13 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 	gpio_set_level(PIN_BQ1_EN, 0);  // Enable BQ1 (at 0x10)
 	gpio_set_level(PIN_BQ2_EN, 0);  // Enable BQ2 (at 0x08)
 	vTaskDelay(50);
+	// Clear both physical chips before any further init can fail. Also try BQ2
+	// when its old topology is unknown after an ESP reboot.
+	bool clear1 = balance_write_verified(BQ_ADDR_1, 0);
+	bool clear2 = balance_write_verified(BQ_ADDR_2, 0);
+	m_balance_cleanup_ic2 |= cells_ic2 > 0 && !clear2;
+	m_balance_stop_pending = !clear1 || m_balance_cleanup_ic2;
+	configured &= clear1 && (cells_ic2 == 0 || clear2);
 
 	// Initialize BQ2 at default address (0x08) if present
 	if (cells_ic2 > 0) {
@@ -928,11 +990,12 @@ static lbm_value ext_bms_init(lbm_value *args, lbm_uint argn) {
 	}
 
 	if (m_balance_cleanup_ic2) {
-		bool stopped = subcommands_write16(BQ_ADDR_2, CB_ACTIVE_CELLS, 0);
+		bool stopped = balance_write_verified(BQ_ADDR_2, 0);
 		if (stopped) m_balance_cleanup_ic2 = false;
 		configured &= stopped;
 	}
-	res = res && configured && stop_all_balancing();
+	bool stopped = stop_all_balancing();
+	res = res && configured && stopped;
 	m_hw_config = config;
 	res = res && hardware_config_matches((const main_config_t *)&backup.config) &&
 			cells_ic1 == (unsigned int)config.cells_ic1 && cells_ic2 == (unsigned int)config.cells_ic2;
@@ -1043,29 +1106,16 @@ static lbm_value ext_get_vcells(lbm_value *args, lbm_uint argn) {
 
 	lbm_value vc_list = ENC_SYM_NIL;
 
-	// Read BQ1 cells (at address 0x10)
-	for (int i = 0; i < m_cells_ic1; i++) {
-		bool ok = false;
-		int res = command_read(BQ_ADDR_1, Cell1Voltage + i * 2, &ok);
-		if (ok) {
-			vc_list = lbm_cons(lbm_enc_float((float)res / 1000.0), vc_list);
-		} else {
-			lbm_set_error_reason(error_comm_bq1);
-			return ENC_SYM_EERROR;
-		}
-	}
-
-	// Read BQ2 cells if present (at address 0x08)
-	if (m_cells_ic2 > 0) {
-		for (int i = 0; i < m_cells_ic2; i++) {
-			bool ok = false;
-			int res = command_read(BQ_ADDR_2, Cell1Voltage + i * 2, &ok);
-			if (ok) {
-				vc_list = lbm_cons(lbm_enc_float((float)res / 1000.0), vc_list);
-			} else {
-				lbm_set_error_reason(error_comm_bq2);
-				return ENC_SYM_EERROR;
-			}
+	// Keep all configured positions. A failure on one IC must neither hide its
+	// cells nor mark the other IC as failed. Fail fast within a wedged IC.
+	for (int ic = 0; ic < 2; ic++) {
+		unsigned count = ic == 0 ? m_cells_ic1 : m_cells_ic2;
+		bool readable = true;
+		for (unsigned i = 0; i < count; i++) {
+			int mv = readable ? command_read(ic == 0 ? BQ_ADDR_1 : BQ_ADDR_2,
+					Cell1Voltage + i * 2, &readable) : -1;
+			vc_list = lbm_cons(lbm_enc_float(readable && mv >= 0 ?
+					(float)mv / 1000.0f : -1.0f), vc_list);
 		}
 	}
 
@@ -1081,7 +1131,7 @@ static float ntc_temperature(float volts, float pullup, float nominal, float bet
     float resistance = pullup / (1.8f / volts - 1.0f) - 500.0f;
     if (resistance <= 0.0f) return NTC_INVALID_MARKER;
     float temp = 1.0f / (logf(resistance / nominal) / beta + 1.0f / 298.15f) - 273.15f;
-    return isfinite(temp) && temp >= -40.0f && temp <= 120.0f ? temp : NTC_INVALID_MARKER;
+    return isfinite(temp) ? temp : NTC_INVALID_MARKER;
 }
 
 static lbm_value ext_hw_ready(lbm_value *args, lbm_uint argn) {
@@ -1305,7 +1355,10 @@ static lbm_value ext_subcmd_cmdonly(lbm_value *args, lbm_uint argn) {
 		addr = BQ_ADDR_2;
 	}
 
-	return lbm_enc_i(command_subcommands(addr, lbm_dec_as_u32(args[1])));
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) return ENC_SYM_EERROR;
+	bool ok = command_subcommands(addr, lbm_dec_as_u32(args[1]));
+	xSemaphoreGive(bq_mutex);
+	return lbm_enc_i(ok);
 }
 
 static lbm_value ext_read_reg(lbm_value *args, lbm_uint argn) {
@@ -1318,9 +1371,12 @@ static lbm_value ext_read_reg(lbm_value *args, lbm_uint argn) {
 
 	int reg = lbm_dec_as_i32(args[1]);
 	int len = lbm_dec_as_i32(args[2]);
+	if (len < 1 || len > 4) return ENC_SYM_EERROR;
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) return ENC_SYM_EERROR;
 
 	uint32_t reg_data = 0;
 	bool ok           = bq_read_reg(addr, reg, &reg_data, len);
+	xSemaphoreGive(bq_mutex);
 
 	if (ok) {
 		return lbm_enc_u32(reg_data);
@@ -1343,8 +1399,11 @@ static lbm_value ext_write_reg(lbm_value *args, lbm_uint argn) {
 	int reg       = lbm_dec_as_i32(args[1]);
 	uint32_t data = lbm_dec_as_u32(args[2]);
 	int len       = lbm_dec_as_i32(args[3]);
+	if (len != 1 && len != 2 && len != 4) return ENC_SYM_EERROR;
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) return ENC_SYM_EERROR;
 
 	bool ok = bq_set_reg(addr, reg, data, len);
+	xSemaphoreGive(bq_mutex);
 
 	if (ok) {
 		return ENC_SYM_TRUE;
@@ -1488,7 +1547,10 @@ static lbm_value ext_bms_set_param(lbm_value *args, lbm_uint argn) {
 static lbm_value ext_bms_store_cfg(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
-	if (!jfbms_slave_validate_config((const main_config_t *)&backup.config)) return ENC_SYM_EERROR;
+	if (!jfbms_slave_validate_config((const main_config_t *)&backup.config)) {
+		lbm_set_error_reason((char *)jfbms_slave_config_error());
+		return ENC_SYM_EERROR;
+	}
 	main_store_backup_data();
 	return ENC_SYM_TRUE;
 }
@@ -1553,7 +1615,10 @@ static lbm_value ext_i2c_tx_rx(lbm_value *args, lbm_uint argn) {
 		rxlen                     = array->size;
 	}
 
-	return lbm_enc_i(i2c_tx_rx(addr, txbuf, txlen, rxbuf, rxlen));
+	if (xSemaphoreTake(bq_mutex, pdMS_TO_TICKS(I2C_MUTEX_TIMEOUT_MS)) != pdTRUE) return ENC_SYM_EERROR;
+	esp_err_t res = i2c_tx_rx(addr, txbuf, txlen, rxbuf, rxlen);
+	xSemaphoreGive(bq_mutex);
+	return lbm_enc_i(res);
 }
 
 static lbm_value ext_i2c_detect_addr(lbm_value *args, lbm_uint argn) {
@@ -1592,6 +1657,14 @@ static lbm_value ext_set_buzzer(lbm_value *args, lbm_uint argn) {
 
 // Track fault state for status messages
 static volatile uint8_t m_fault_flags = 0;
+static volatile uint32_t m_broadcast_fail_count = 0;
+
+// (slave-broadcast-fails) -- broadcasts aborted by a CAN transmit failure.
+static lbm_value ext_slave_broadcast_fails(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	(void)argn;
+	return lbm_enc_u32(m_broadcast_fail_count);
+}
 // Voltage-settled flag: 1 = both ICs have had balance FETs off long enough
 // for accurate readings. Both ICs are synchronized within one slave.
 static volatile uint8_t m_settled_flag = 1;  // Start settled (no balancing at boot)
@@ -1655,23 +1728,25 @@ static lbm_value ext_broadcast_all(lbm_value *args, lbm_uint argn) {
 	// Extract cell voltages into 32-element array
 	// 0 = not populated, 0xFFFF = read error
 	uint16_t cells_mv[32] = {0};
+	for (unsigned i = 0; i < m_cells_ic1; i++) cells_mv[i] = 0xFFFF;
+	for (unsigned i = 0; i < m_cells_ic2; i++) cells_mv[16 + i] = 0xFFFF;
 	uint8_t num_cells = 0;
 	lbm_value curr = args[1];
 
-	while (lbm_is_cons(curr) && num_cells < M_CELLS && num_cells < 32) {
+	while (lbm_is_cons(curr) && num_cells < m_cells_ic1 + m_cells_ic2 && num_cells < 32) {
 		lbm_value cell = lbm_car(curr);
-		if (lbm_is_number(cell)) {
+		{
 			uint8_t cell_index = num_cells;
 			uint8_t wire_index = cell_index;
 			if (cell_index >= m_cells_ic1) {
 				wire_index = 16 + (cell_index - m_cells_ic1);
 			}
 
-			float v = lbm_dec_as_float(cell);
-			if (!isfinite(v) || v < 0.0f || v > 5.0f) {
+			float v = lbm_is_number(cell) ? lbm_dec_as_float(cell) : -1.0f;
+			if (!isfinite(v) || v < 0.0f || v > 65.534f) {
 				cells_mv[wire_index] = 0xFFFF;  // Error marker
 			} else {
-				cells_mv[wire_index] = (uint16_t)(v * 1000.0f);  // Convert V to mV
+				cells_mv[wire_index] = (uint16_t)roundf(v * 1000.0f);  // Convert V to mV
 			}
 			num_cells++;
 		}
@@ -1688,13 +1763,13 @@ static lbm_value ext_broadcast_all(lbm_value *args, lbm_uint argn) {
 		lbm_value temp = lbm_car(curr);
 		if (lbm_is_number(temp)) {
 			float t = lbm_dec_as_float(temp);
-			if (!isfinite(t) || t < -40.0f || t > 120.0f) {
+			if (!isfinite(t) || t == NTC_INVALID_MARKER || t <= -200.0f || t > 3276.6f) {
 				temps[num_temps] = 0x7FFF;  // Invalid marker
 			} else {
 				temps[num_temps] = (int16_t)(t * 10.0f);  // Convert to 0.1°C
 			}
-			num_temps++;
 		}
+		num_temps++;
 		curr = lbm_cdr(curr);
 	}
 
@@ -1726,17 +1801,8 @@ static lbm_value ext_broadcast_all(lbm_value *args, lbm_uint argn) {
 		if (!bq1_ok) faults |= 0x01;
 		if (!bq2_ok) faults |= 0x02;
 
-		if (!bq1_ok) {
-			for (uint8_t i = 0; i < m_cells_ic1 && i < 16; i++) {
-				cells_mv[i] = 0xFFFF;
-			}
-		}
-
-		if (!bq2_ok && m_cells_ic2 > 0) {
-			for (uint8_t i = 0; i < m_cells_ic2 && i < 16; i++) {
-				cells_mv[16 + i] = 0xFFFF;
-			}
-		}
+		// Per-channel read markers already identify failed values. A separate
+		// IC/temperature fault must not overwrite successfully measured cells.
 	}
 	if (!m_hw_ready || !hardware_config_matches(cfg)) faults |= 0x01;
 	if (m_balance_fault || !m_balance_watchdog_task_handle) faults |= 0x08;
@@ -1751,14 +1817,14 @@ static lbm_value ext_broadcast_all(lbm_value *args, lbm_uint argn) {
 		temp_sensor_flags |= STATUS_TEMP_BQ2_ENABLED;
 	}
 
-	// Send all messages per protocol
-	// TX queue is 20 messages, we send 10, so no delays needed
-	can_send_all_cells(slave_id, cells_mv);
-	can_send_temps(slave_id, temps);
-	can_send_status(slave_id, get_bal_bitmap(), faults,
-			(uint8_t)m_cells_ic1, (uint8_t)m_cells_ic2, temp_sensor_flags);
+	// Status is last: it commits the broadcast on the master.
+	bool sent = can_send_all_cells(slave_id, cells_mv) &&
+			can_send_temps(slave_id, temps) &&
+			can_send_status(slave_id, get_bal_bitmap(), faults,
+				(uint8_t)m_cells_ic1, (uint8_t)m_cells_ic2, temp_sensor_flags);
+	if (!sent) m_broadcast_fail_count++;
 
-	return ENC_SYM_TRUE;
+	return sent ? ENC_SYM_TRUE : ENC_SYM_NIL;
 }
 
 // (bms-set-bal-bitmap ic1-mask ic2-mask)
@@ -1805,23 +1871,10 @@ static lbm_value ext_stop_balancing(lbm_value *args, lbm_uint argn) {
 	return res ? ENC_SYM_TRUE : ENC_SYM_EERROR;
 }
 
-// (bms-set-bal-bitmap-demo ic1-mask ic2-mask)
-// Set balance mask directly without writing to BQ chips (for demo/testing)
-// Takes two 16-bit masks to avoid LispBM 28-bit integer overflow
-static lbm_value ext_set_bal_bitmap_demo(lbm_value *args, lbm_uint argn) {
-	LBM_CHECK_ARGN_NUMBER(2);
-	main_config_t *cfg = (main_config_t *)&backup.config;
-	if (!cell_counts_valid((unsigned int)cfg->cells_ic1, (unsigned int)cfg->cells_ic2)) {
-		lbm_set_error_reason("Invalid configured demo cell combination");
-		return ENC_SYM_TERROR;
-	}
-
-	m_bal_state_ic1 = (lbm_dec_as_u32(args[0]) & 0xFFFF) &
-			configured_cell_mask((unsigned int)cfg->cells_ic1);
-	m_bal_state_ic2 = (lbm_dec_as_u32(args[1]) & 0xFFFF) &
-			configured_cell_mask((unsigned int)cfg->cells_ic2);
-
-	return ENC_SYM_TRUE;
+static lbm_value ext_watchdog_stack(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	if (argn != 0 || !m_balance_watchdog_task_handle) return ENC_SYM_EERROR;
+	return lbm_enc_u(uxTaskGetStackHighWaterMark(m_balance_watchdog_task_handle));
 }
 
 // (bms-get-slave-id)
@@ -2142,12 +2195,13 @@ static void load_extensions(bool main_found) {
 
 	// CAN protocol for master-slave communication (11-bit IDs)
 	lbm_add_extension("bms-broadcast-all", ext_broadcast_all);
+	lbm_add_extension("slave-broadcast-fails", ext_slave_broadcast_fails);
 	lbm_add_extension("bms-set-fault-flags", ext_set_fault_flags);
 	lbm_add_extension("bms-set-settled-flag", ext_set_settled_flag);
 	lbm_add_extension("bms-set-bal-bitmap", ext_set_bal_bitmap);
 	lbm_add_extension("bms-get-bal-bitmap", ext_get_bal_bitmap);
 	lbm_add_extension("bms-stop-balancing", ext_stop_balancing);
-	lbm_add_extension("bms-set-bal-bitmap-demo", ext_set_bal_bitmap_demo);
+	lbm_add_extension("bms-watchdog-stack", ext_watchdog_stack);
 	lbm_add_extension("bms-get-slave-id", ext_get_slave_id);
 
 	// Direct CAN buffer extensions for the slave protocol
@@ -2171,6 +2225,7 @@ static void load_extensions(bool main_found) {
 
 	// Replace existing I2C-extensions
 	lbm_add_extension("i2c-start", ext_i2c_start);
+	lbm_add_extension("bms-i2c-errors", ext_i2c_errors);
 	lbm_add_extension("i2c-tx-rx", ext_i2c_tx_rx);
 	lbm_add_extension("i2c-detect-addr", ext_i2c_detect_addr);
 
@@ -2211,7 +2266,7 @@ void hw_init(void) {
 
 	// Create buzzer beep task
 	xTaskCreate(buzzer_task, "buzzer", 1024, NULL, 5, &buzzer_task_handle);
-	if (xTaskCreate(balance_watchdog_task, "bal-watchdog", 2048, NULL, 8,
+	if (xTaskCreate(balance_watchdog_task, "bal-watchdog", 4096, NULL, 8,
 			&m_balance_watchdog_task_handle) != pdPASS) {
 		m_balance_watchdog_task_handle = NULL;
 		m_balance_fault = true;

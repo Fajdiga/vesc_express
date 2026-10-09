@@ -351,12 +351,17 @@ map
         ; Process incoming CAN messages (balance commands from master)
         (process-can-messages)
 
-        ; Read cell voltages from both BQ chips
+        ; C keeps every configured position, with -1 for a failed read.
         (var cells (trap-value '(bms-get-vcells) nil))
-        (if (eq cells nil) {
-            (setq bq1-ok false)
-            (setq cells '())
-        } (setq bq1-ok true))
+        (setq bq1-ok (= (length cells) total-cells))
+        (setq bq2-ok (or (= cells-ic2 0) bq1-ok))
+        (if bq1-ok {
+            (looprange i 0 total-cells {
+                (var v (ix cells i))
+                (if (not (and (number? v) (>= v 0.0)))
+                    (if (< i cells-ic1) (setq bq1-ok false) (setq bq2-ok false)))
+            })
+        })
 
         ; Check CAN again after slow I2C reads so balance commands aren't delayed
         (process-can-messages)
@@ -385,9 +390,7 @@ map
         ; Check BQ2 status from its mandatory IC die temperature. Index 3 is
         ; the optional external sensor and is intentionally invalid when off.
         (if (> cells-ic2 0) {
-            (if (and (>= (length temps) 4) (> (ix temps 2) -200.0))
-                (setq bq2-ok true)
-                (setq bq2-ok false))
+            (setq bq2-ok (and bq2-ok (>= (length temps) 4) (> (ix temps 2) -200.0)))
         } {
             ; Single-chip slaves report CellsIC2 = 0, not a BQ2 fault.
             (setq bq2-ok true)
@@ -474,6 +477,17 @@ map
 })
 
 (defun main () {
+    (loopwhile-thd ("io-diag" 100) t {
+        (var previous nil)
+        (loopwhile t {
+            (sleep 5.0)
+            (var counts (list (bms-i2c-errors) (slave-broadcast-fails)))
+            (if (and (not-eq counts previous) (> (apply + counts) 0)) {
+                (print "I2C/CRC errors / CAN broadcast failures:" counts)
+                (setq previous counts)
+            })
+        })
+    })
     (print "JFBMS Slave starting...")
     (loopwhile (!= (bms-fw-version) 7) {
         (trap-value '(bms-stop-balancing) false)

@@ -23,6 +23,8 @@
 #define OVR_CONF_DEFAULT			"jfbms32_conf_default.h"
 #define OVR_CONF_SERIALIZE_BOUNDED	jfbms32_confparser_serialize_main_config_t
 #define OVR_CONF_DESERIALIZE_BOUNDED	jfbms32_confparser_deserialize_main_config_t
+#define OVR_CONF_VALIDATE(config) jfbms32_config_valid(config)
+#define OVR_CONF_ERROR() jfbms32_config_error()
 #define OVR_CONF_SET_DEFAULTS		jfbms32_confparser_set_defaults_main_config_t
 #define OVR_CONF_MAIN_CONFIG
 #define VAR_INIT_CODE				259763459
@@ -148,14 +150,17 @@ typedef struct {
 	// Only allow charging when the cell temperature is above this value
 	float t_charge_min;
 
-	// Enable temperature monitoring during charging
-	bool t_charge_mon_en;
-
 	// Independent BQ current-protection thresholds.
 	float hw_occ_current;
 	float hw_ocd_current;
 	int psw_scd_tres;
 } main_config_t;
+
+// main_config_t is stored raw in NVS. A layout change must also change its
+// size (or schema signature) so old settings reset to defaults instead of
+// loading into the wrong fields. Update this value deliberately.
+_Static_assert(sizeof(main_config_t) == 388,
+		"JFBMS32 config layout changed; confirm stored settings reset safely");
 
 // Default setting Overrides
 #define HW_DEFAULT_ID				3

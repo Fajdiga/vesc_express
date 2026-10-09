@@ -476,6 +476,9 @@ volatile bms_values *bms_get_values(void) {
 }
 
 void bms_send_status_can(void) {
+#ifdef HW_BMS_DATA_VALID
+	if (!HW_BMS_DATA_VALID()) return;
+#endif
 #ifdef HW_BMS_STATUS_CAN_REQUIRES_LISTENER
 	if (!comm_can_has_listener()) {
 		return;
@@ -577,7 +580,8 @@ void bms_send_status_can(void) {
 	buffer_append_float16(buffer, (float_t)m_values.v_cell_max, 1e3, &send_index);
 	buffer[send_index++] = (uint8_t)(m_values.soc * 255.0);
 	buffer[send_index++] = (uint8_t)(m_values.soh * 255.0);
-	buffer[send_index++] = (int8_t)m_values.temp_max_cell;
+	// The summary has only a signed byte; do not wrap a hot/fault value cold.
+	buffer[send_index++] = (int8_t)fmaxf(-128.0f, fminf(127.0f, m_values.temp_max_cell));
 	buffer[send_index++] =
 			((m_values.is_charging ? 1 : 0) << 0) |
 			((m_values.is_balancing ? 1 : 0) << 1) |
