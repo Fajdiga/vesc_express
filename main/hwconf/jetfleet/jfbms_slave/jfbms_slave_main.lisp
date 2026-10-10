@@ -106,6 +106,9 @@ map
             (trap-value `(bms-broadcast-all ,slave-id () () 0 ,(if (> cells-ic2 0) 0 1)) false)
             (if (or (= attempts 1) (= (mod attempts 5) 0))
                 (print "BQ initialization pending, retry" attempts))
+            ; The master only sees missing data, so the slave reports its own
+            ; BQ communication failure once per init cycle.
+            (if (= attempts 1) (handle-beep 0x14))
             (sleep (if (< attempts 5) 1.0 3.0))
         })
     })
@@ -222,7 +225,7 @@ map
 (defun handle-beep (code)
     (cond
         ((= code 0x01) (buzzer-beep 2 100))    ; POWER_ON: 2 short beeps
-        ((= code 0x02) (buzzer-beep 1 500))    ; POWER_OFF: 1 long beep
+        ((= code 0x02) (buzzer-beep 1 500))    ; POWER_OFF: 1 long beep (spare, not sent yet)
         ((= code 0x03) (buzzer-beep 3 100))    ; CHARGE_COMPLETE: 3 short beeps
         ((= code 0x04) (buzzer-beep 4 60))     ; SHUTDOWN: 4 fast beeps
         ((= code 0x10) (buzzer-beep 1 200))    ; ERR_OVER_TEMP: 1 beep

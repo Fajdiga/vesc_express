@@ -1258,6 +1258,8 @@ static void check_connection_changes(void) {
 	for (int i = 0;i < cfg_num_slaves();i++) {
 		if (active[i] && !m_prev_active[i]) {
 			commands_printf("Slave %d connected", i + 1);
+			// Only the slave that came online plays power-on (0x01).
+			send_balance_cmd(i + 1, m_cached_bal_masks[i], 0x01);
 		} else if (!active[i] && m_prev_active[i]) {
 			commands_printf("Slave %d disconnected", i + 1);
 			stop_all_balancing();

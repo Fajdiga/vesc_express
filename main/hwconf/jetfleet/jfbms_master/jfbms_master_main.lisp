@@ -479,9 +479,11 @@ loopforeach
 (defun charge-block-beep () (user-tones '((4800 0.2) (3600 0.2) (2700 0.6))))
 
 ; Beep table, identical on JFBMS32 and JFBMS Master. Minimum beep 0.2 s.
-; High tone = OK/info, low tone = needs attention. One result per plug-in.
-; Quiet (user-beep / user-beep-low, can be disabled):
+; High tone (4 kHz) = OK/info, low tone (2.7 kHz) = needs attention.
+; One result per plug-in.
+; Quiet (user-beep / user-beep-low, off when user-beeps-en is false):
 ;   2 short high       init, settings applied, manual zero captured
+;   1 long low         current zero calibration failed (Master only)
 ;   rising 3 notes     charging started (2.7 -> 3.6 -> 4.8 kHz)
 ;   3 short high       charge complete
 ;   4 short high       sleep unblocked
@@ -493,6 +495,11 @@ loopforeach
 ;   1 long + N short  monitor not responding (JFBMS32: BQ wake stage N,
 ;                     Master: slave N lost)
 ;   5 x 0.4 s         ADC stall reset (Master only)
+; Slave buzzer codes sent by the Master (patterns in jfbms_slave handle-beep):
+;   0x01 to a slave that comes online, 0x03 charge complete, 0x10-0x13 charge
+;   block/fault (over-temp, cell high, cell low, over-current); these follow
+;   user-beeps-en. 0x04 on shutdown and when a slave is lost (always).
+;   The slave plays 0x14 itself when its BQ fails to start.
 
 (def sleep-fail-alarm-ts nil)
 
@@ -554,6 +561,18 @@ loopforeach
 })
 
 (defun send-slave-beep (code) (send-cached-balance-masks code))
+
+; Informational slave beeps follow user-beeps-en, like the master's quiet beeps.
+(defun user-slave-beep (code) (if user-beeps-en (send-slave-beep code)))
+
+; Slave error code for a charge block, 0 = none (codes: jfbms_slave handle-beep).
+(defun block-reason-slave-code (reason) (cond
+    ((or (eq reason "CHG_CELL_HOT") (eq reason "CHG_MOS_HOT")) 0x10)
+    ((eq reason "CHG_CELL_HIGH") 0x11)
+    ((eq reason "CHG_CELL_LOW") 0x12)
+    ((or (eq reason "FLT_SHORT_LOCK") (eq reason "FLT_FAST_OC_REV")
+        (eq reason "FLT_FAST_OC_CHG") (eq reason "FLT_CHG_OC")) 0x13)
+    (true 0)))
 
 ;;;;;;;;;; Slave data aggregation ;;;;;;;;;;
 
@@ -990,6 +1009,7 @@ loopforeach
             (if (>= count 3) (setassoc rtc-val 'short-service true))
             (save-rtc-val)
             (spawn (fn () (user-beep-low 2 0.6))) ; charge fault
+            (user-slave-beep 0x13)
         })
     })
 })
@@ -1007,6 +1027,7 @@ loopforeach
         (setq bal-auto-retry-ts (systime))
         ; Master buzzer only, same 3 short high beeps as JFBMS32.
         (spawn (fn () (user-beep 3 0.2)))
+        (user-slave-beep 0x03)
         (print (str-merge "CHG complete: " reason))
     })
 })
@@ -1149,6 +1170,7 @@ loopforeach
             (setassoc rtc-val 'charge-fault true)
             (save-rtc-val)
             (spawn (fn () (user-beep-low 2 0.6))) ; charge fault
+            (user-slave-beep 0x13)
         })
         (set-chg false)
     })
@@ -1196,6 +1218,8 @@ loopforeach
                 (> (secs-since charge-ts) 3.0)) {
             (setq charge-block-beeped true)
             (spawn charge-block-beep)
+            (var code (block-reason-slave-code block-reason))
+            (if (> code 0) (user-slave-beep code))
         })
         ; Log every reason change, not only the first, with the values behind it.
         (if (not-eq block-reason charge-block-printed)
@@ -1670,7 +1694,11 @@ loopforeach
                 (stop-all-balancing)
                 (send-slave-beep 0x04)
                 (spawn (fn () (slave-lost-alarm sid)))
-            })
+            }
+                ; Only the slave that came online plays power-on (0x01).
+                (if user-beeps-en
+                    (master-send-balance sid (ix slave-bal-mask-ic1 (- sid 1))
+                        (ix slave-bal-mask-ic2 (- sid 1)) 0x01 balance-cache-generation)))
             (setix prev-active (- sid 1) active)
         })
     })

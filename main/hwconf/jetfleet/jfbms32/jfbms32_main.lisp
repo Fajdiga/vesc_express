@@ -171,20 +171,27 @@ loopwhile-thd
 (defun charge-block-beep () (user-tones '((4800 0.2) (3600 0.2) (2700 0.6))))
 
 ; Beep table, identical on JFBMS32 and JFBMS Master. Minimum beep 0.2 s.
-; High tone = OK/info, low tone = needs attention. One result per plug-in.
-; Quiet (user-beep / user-beep-low, can be disabled):
+; High tone (4 kHz) = OK/info, low tone (2.7 kHz) = needs attention.
+; One result per plug-in.
+; Quiet (user-beep / user-beep-low, off when user-beeps-en is false):
 ;   2 short high       init, settings applied, manual zero captured
+;   1 long low         current zero calibration failed (Master only)
 ;   rising 3 notes     charging started (2.7 -> 3.6 -> 4.8 kHz)
 ;   3 short high       charge complete
 ;   4 short high       sleep unblocked
 ;   falling 3 notes    charge blocked (4.8 -> 3.6 -> 2.7 kHz, still blocked 3 s after plug-in)
 ;   2 long low         charge fault latched
 ; Loud (beep, always on):
-;   15 short shutdown warning             5 short  shutdown failed (then reboot)
+;   15 short shutdown warning             5 short  shutdown failed (repeats)
 ;   3 long   sleep failed (max every 30 s)
 ;   1 long + N short  monitor not responding (JFBMS32: BQ wake stage N,
 ;                     Master: slave N lost)
 ;   5 x 0.4 s         ADC stall reset (Master only)
+; Slave buzzer codes sent by the Master (patterns in jfbms_slave handle-beep):
+;   0x01 to a slave that comes online, 0x03 charge complete, 0x10-0x13 charge
+;   block/fault (over-temp, cell high, cell low, over-current); these follow
+;   user-beeps-en. 0x04 on shutdown and when a slave is lost (always).
+;   The slave plays 0x14 itself when its BQ fails to start.
 
 (def sleep-fail-alarm-ts nil)
 
@@ -333,7 +340,7 @@ loopwhile-thd
     (true "unknown")))
 
 (defun shutdown-reason-beep (reason) {
-    ; Final local warning before power-off; same 30 x 0.1 s alarm as the master.
+    ; Final local warning before power-off; same 15 x 0.2 s alarm as the master.
     (beep 15 0.2)
 })
 

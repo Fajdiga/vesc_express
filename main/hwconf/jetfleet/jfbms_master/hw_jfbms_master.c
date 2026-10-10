@@ -2361,22 +2361,21 @@ static lbm_value ext_master_update_vesc_bms(lbm_value *args, lbm_uint argn) {
 	}
 
 	{
+		// Compute into locals and publish once: the 1 ms charge watchdog preempts
+		// this task, and a transient "invalid" between two writes cut CHG_EN.
 		float v = adc_get_voltage(HW_ADC_CH4);
-		m_temp_pcb_valid = false;
+		bool valid = false;
 		if (v > 0.01f && v < (NTC_VREF - 0.01f) && isfinite(v)) {
 			float r_ntc = (v * NTC_R_PULL) / (NTC_VREF - v);
 			float temp_c = (1.0f / ((logf(r_ntc / NTC_R25) / NTC_BETA) + NTC_T0_INV)) - 273.15f;
 			if (isfinite(temp_c) && bms_temp_valid(temp_c)) {
-				m_temp_pcb_valid = true;
-				if (!m_temp_pcb_filter_init) {
-					m_temp_pcb = temp_c;
-					m_temp_pcb_filter_init = true;
-				} else {
-					m_temp_pcb = NTC_EMA_ALPHA * m_temp_pcb
-						+ (1.0f - NTC_EMA_ALPHA) * temp_c;
-				}
+				valid = true;
+				m_temp_pcb = m_temp_pcb_filter_init ?
+						NTC_EMA_ALPHA * m_temp_pcb + (1.0f - NTC_EMA_ALPHA) * temp_c : temp_c;
+				m_temp_pcb_filter_init = true;
 			}
 		}
+		m_temp_pcb_valid = valid;
 	}
 
 	// VESC 6.06 temperature sensor convention (indices 0-4)
@@ -3068,15 +3067,17 @@ void hw_init(void) {
 	gpconf.pull_up_en   = GPIO_PULLUP_DISABLE;
 	gpio_config(&gpconf);
 
-	// High-Z idle is intentional: a reset or partially initialized firmware must
-	// not actively drive the board's shutdown input. hw_shutdown() is the only
-	// path that changes GPIO19 to push-pull output and asserts it high.
+	// Never actively driven while idle: a reset or partially initialized
+	// firmware must not drive the board's shutdown input. hw_shutdown() is the
+	// only path that changes GPIO19 to push-pull output and asserts it high.
+	// The weak pull-down keeps Q6's base from floating: without it, charger
+	// switching noise turned Q6 on for a few ms and dropped the high-side switch.
 	// GPIO8 (buzzer) is driven by the PWM peripheral — not configured here
 
 	gpconf.pin_bit_mask = BIT(PIN_SHUTDOWN);
 	gpconf.intr_type    = GPIO_FLOATING;
 	gpconf.mode         = GPIO_MODE_DISABLE;
-	gpconf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+	gpconf.pull_down_en = GPIO_PULLDOWN_ENABLE;
 	gpconf.pull_up_en   = GPIO_PULLUP_DISABLE;
 	gpio_config(&gpconf);
 

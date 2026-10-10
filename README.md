@@ -53,6 +53,30 @@ installation and startup on erased devices. Existing uploaded applications are
 preserved. JF Link starts its native controller automatically. Pack settings
 and slave IDs must match the installed hardware.
 
+JetFleet BMS charge gates do not isolate pack discharge. The ESC must enforce
+cell-voltage and temperature discharge limits using BMS CAN data, and reduce or
+stop discharge when that data becomes stale or disappears. The JFBMS32 shunt
+measures the charge port; ESC input current is added for pack-current reporting.
+Slaves use TS1 only on each BQ, with the configured NTC resistance and beta
+matching the fitted sensor (10 kOhm by default). Removing their 5 V supply
+asserts hardware shutdown. Installers must set unique slave IDs, cell counts
+and the master's slave count; unexpected IDs and repeated frames produce
+warnings without changing that responsibility.
+
+The standard VESC CAN protocol is preserved. Fresh complete master snapshots
+include unsafe measured voltages and temperatures; stale/incomplete snapshots
+stop transmitting. [Stock VESC](https://github.com/vedderb/bldc/blob/master/bms.c)
+removes BMS-derived limits after two seconds without status data. It therefore
+does not provide the missing-data discharge cutoff required above by itself.
+
+Protection updates require both the firmware and the matching board
+`*_main.lisp` application. Updating firmware preserves an existing uploaded
+Lisp application, so replace it through VESC Tool as part of the update.
+The master requires `CONFIG_ADC_CONTINUOUS_ISR_IRAM_SAFE=y`; its hardware
+defaults enable this for new builds, and compilation rejects an older
+sdkconfig with it disabled. On JFBMS32 and slaves, `(bms-watchdog-stack)` reports
+the watchdog's minimum free stack in bytes for hardware testing.
+
 ### Custom Hardware Targets
 
 If you wish to build the project with custom hardware config files you should add the hardware config files to the "**main/hwconf**" directory and use the HW_NAME build flag
