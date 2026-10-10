@@ -25,11 +25,9 @@
 #include <stdlib.h>
 #include "sdkconfig.h"
 
-// The stub branch is for targets without a usable BT controller (P4 has no
-// BT). Every other target — Bluedroid OR NimBLE — gets the full API, which
-// both custom_ble.c and custom_ble_nimble.c implement. Do NOT key this on
-// !CONFIG_BT_BLUEDROID_ENABLED: that sends NimBLE builds into the stub.
-#if CONFIG_IDF_TARGET_ESP32P4
+// Stub API when no BLE host is built. Bluedroid (including P4 over a hosted
+// co-processor) and NimBLE both provide the full API.
+#if !CONFIG_BT_BLUEDROID_ENABLED && !CONFIG_BT_NIMBLE_ENABLED
 
 typedef enum {
 	CUSTOM_BLE_DISABLED = 0,

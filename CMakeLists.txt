@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 
+# You can set a HW here when e.g. building with the eclipse plugin
+# set(HW_NAME "Wcore")
+
 # Default build target Logic
 if(NOT DEFINED HW_NAME OR "${HW_NAME}" STREQUAL "")
     if(DEFINED IDF_TARGET)
@@ -21,7 +24,7 @@ if(NOT DEFINED HW_NAME OR "${HW_NAME}" STREQUAL "")
     endif()
 
     if(NOT DEFINED HW_NAME OR "${HW_NAME}" STREQUAL "")
-        set(HW_NAME "JFBMS32v2")
+        set(HW_NAME "VESC Express T")
     endif()
 endif()
 
@@ -68,6 +71,8 @@ foreach(HW_HEADER_PATH ${HW_HEADER_PATHS})
                     set(FILE_HW_ENABLE_TOUCH ${DEF_VAL})
                 elseif(DEF_KEY STREQUAL "HW_ENABLE_STORAGE")
                     set(FILE_HW_ENABLE_STORAGE ${DEF_VAL})
+                elseif(DEF_KEY STREQUAL "HW_IDF6_LOWRAM")
+                    set(FILE_HW_IDF6_LOWRAM ${DEF_VAL})
                 endif()
             endif()
         endif()
@@ -148,13 +153,15 @@ if(DEFINED HW_NAME AND DEFINED HW_TARGET AND DEFINED HW_FILE_NAME)
         message(STATUS "Using hardware sdkconfig overrides ${HW_SDKCONFIG_DEFAULTS_FILE} for ${HW_NAME}")
     endif()
 
+    # Low-RAM overlay (NimBLE, picolibc, trimmed WiFi/TLS). Opt-in per board
+    # with HW_IDF6_LOWRAM 1 in its hw header; other boards keep their defaults.
     set(COMMON_LOW_RAM_DEFAULTS_FILE "sdkconfig.defaults.idf6_lowram")
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${COMMON_LOW_RAM_DEFAULTS_FILE}")
+    if(FILE_HW_IDF6_LOWRAM STREQUAL "1" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${COMMON_LOW_RAM_DEFAULTS_FILE}")
         list(APPEND SDKCONFIG_DEFAULTS_FILES "${COMMON_LOW_RAM_DEFAULTS_FILE}")
     endif()
 
     set(TARGET_LOW_RAM_DEFAULTS_FILE "sdkconfig.defaults.idf6_lowram.${HW_IDF_TARGET}")
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${TARGET_LOW_RAM_DEFAULTS_FILE}")
+    if(FILE_HW_IDF6_LOWRAM STREQUAL "1" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${TARGET_LOW_RAM_DEFAULTS_FILE}")
         list(APPEND SDKCONFIG_DEFAULTS_FILES "${TARGET_LOW_RAM_DEFAULTS_FILE}")
     endif()
 
@@ -165,27 +172,14 @@ if(DEFINED HW_NAME AND DEFINED HW_TARGET AND DEFINED HW_FILE_NAME)
         endif()
     endif()
 
-    if(HW_NAME STREQUAL "JFBMS_MASTER" AND HW_IDF_TARGET STREQUAL "esp32c6")
-        set(VESC_ENABLE_WIFI 1)
-        set(VESC_ENABLE_BLE 1)
-        set(VESC_ENABLE_GNSS 0)
-        set(VESC_ENABLE_DISPLAY 0)
-        set(VESC_ENABLE_TOUCH 0)
-        set(VESC_ENABLE_STORAGE 0)
-    elseif(HW_IDF_TARGET STREQUAL "esp32p4")
+    # Everything on by default. P4 has no radio of its own; the *c6 variants
+    # reach WiFi/BLE through an ESP32-C6 co-processor (esp_hosted).
+    foreach(_feat WIFI BLE GNSS DISPLAY TOUCH STORAGE)
+        set(VESC_ENABLE_${_feat} 1)
+    endforeach()
+    if(HW_IDF_TARGET STREQUAL "esp32p4" AND NOT HW_TARGET MATCHES "c6$")
         set(VESC_ENABLE_WIFI 0)
         set(VESC_ENABLE_BLE 0)
-        set(VESC_ENABLE_GNSS 0)
-        set(VESC_ENABLE_DISPLAY 1)
-        set(VESC_ENABLE_TOUCH 1)
-        set(VESC_ENABLE_STORAGE 1)
-    else()
-        set(VESC_ENABLE_WIFI 1)
-        set(VESC_ENABLE_BLE 1)
-        set(VESC_ENABLE_GNSS 1)
-        set(VESC_ENABLE_DISPLAY 1)
-        set(VESC_ENABLE_TOUCH 1)
-        set(VESC_ENABLE_STORAGE 1)
     endif()
 
     # Board-header overrides: a board declares HW_ENABLE_<FEAT> in its hw header

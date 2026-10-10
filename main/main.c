@@ -172,10 +172,6 @@ esp_err_t main_task_wdt_configure(bool is_enabled, uint32_t timeout_s) {
 }
 
 esp_err_t main_task_wdt_enable(void) {
-	return main_task_wdt_enable_task(NULL);
-}
-
-esp_err_t main_task_wdt_enable_task(TaskHandle_t task) {
 #if CONFIG_ESP_TASK_WDT_EN
 	esp_err_t res = main_task_wdt_init();
 	if (res != ESP_OK) {
@@ -184,9 +180,9 @@ esp_err_t main_task_wdt_enable_task(TaskHandle_t task) {
 
 	xSemaphoreTake(app_wdt_mutex, portMAX_DELAY);
 
-	res = esp_task_wdt_status(task);
+	res = esp_task_wdt_status(NULL);
 	if (res != ESP_OK) {
-		res = esp_task_wdt_add(task);
+		res = esp_task_wdt_add(NULL);
 	}
 
 	xSemaphoreGive(app_wdt_mutex);
@@ -253,18 +249,6 @@ esp_err_t main_task_wdt_set_timeout(uint32_t timeout_s) {
 #else
 	return ESP_ERR_NOT_SUPPORTED;
 #endif
-}
-
-bool main_task_wdt_is_enabled(void) {
-#if CONFIG_ESP_TASK_WDT_EN
-	return app_wdt_initialized && esp_task_wdt_status(NULL) == ESP_OK;
-#else
-	return false;
-#endif
-}
-
-uint32_t main_task_wdt_get_timeout(void) {
-	return app_wdt_timeout_s;
 }
 
 void app_main(void) {
@@ -371,7 +355,7 @@ void app_main(void) {
 
 	vTaskDelay(1);
 
-#if VESC_ENABLE_BLE && !CONFIG_IDF_TARGET_ESP32P4
+#if VESC_ENABLE_BLE && (CONFIG_BT_BLUEDROID_ENABLED || CONFIG_BT_NIMBLE_ENABLED)
 	switch (backup.config.ble_mode) {
 		case BLE_MODE_DISABLED: {
 			break;

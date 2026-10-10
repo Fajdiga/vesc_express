@@ -2,3 +2,5 @@
 # another for the connection. One activity can keep NimBLE from appearing.
 CONFIG_BT_CTRL_BLE_MAX_ACT=2
 CONFIG_BT_CTRL_BLE_MAX_ACT_EFF=2
+# JetFleet C3 boards manage the task watchdog in main.c (HW_APP_WDT_*).
+# CONFIG_ESP_TASK_WDT_INIT is not set

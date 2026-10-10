@@ -34,7 +34,7 @@
 // esp_ip4_addr_t / esp_event_base_t are needed by both the full and stub
 // declaration blocks below. Real headers when the WiFi stack is present;
 // minimal fallback typedefs for slave/P4/no-wifi builds.
-#if VESC_ENABLE_WIFI && !CONFIG_IDF_TARGET_ESP32P4 && (CONFIG_ESP_WIFI_ENABLED || CONFIG_ESP_WIFI_REMOTE_ENABLED)
+#if VESC_ENABLE_WIFI && (CONFIG_ESP_WIFI_ENABLED || CONFIG_ESP_WIFI_REMOTE_ENABLED)
 #include "esp_netif.h"
 #include "esp_event_base.h"
 #include "lwip/sockets.h"
@@ -46,7 +46,7 @@ typedef struct {
 } esp_ip4_addr_t;
 #endif
 
-#if VESC_ENABLE_WIFI && !CONFIG_IDF_TARGET_ESP32P4
+#if VESC_ENABLE_WIFI && (CONFIG_ESP_WIFI_ENABLED || CONFIG_ESP_WIFI_REMOTE_ENABLED)
 
 /**
  * A event listener callback function used in the comm_wifi module.
@@ -165,7 +165,7 @@ bool comm_wifi_get_auto_reconnect();
  * to disable the existing event listener.
 */
 void comm_wifi_set_event_listener(comm_wifi_event_cb_t handler);
-#if VESC_ENABLE_WIFI && !CONFIG_IDF_TARGET_ESP32P4
+#if VESC_ENABLE_WIFI && (CONFIG_ESP_WIFI_ENABLED || CONFIG_ESP_WIFI_REMOTE_ENABLED)
 void comm_wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data);
 #endif
 
@@ -189,7 +189,7 @@ void comm_wifi_send_raw_hub(unsigned char *buffer, unsigned int len);
  * example come from the netconn_gethostbyname function.
  * @param port The port to connect to. Is in host byte order.
 */
-#if VESC_ENABLE_WIFI && !CONFIG_IDF_TARGET_ESP32P4
+#if VESC_ENABLE_WIFI && (CONFIG_ESP_WIFI_ENABLED || CONFIG_ESP_WIFI_REMOTE_ENABLED)
 struct sockaddr_in create_sockaddr_in(ip_addr_t addr, uint16_t port);
 #endif
 
