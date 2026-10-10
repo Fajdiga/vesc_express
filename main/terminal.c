@@ -269,6 +269,7 @@ void terminal_process_string(char *str) {
 		commands_printf(" ");
 	} else if (strcmp(argv[0], "can_scan") == 0) {
 		bool found = false;
+#if HW_CAN_PING_SCAN_ENABLED
 		#ifdef CAN_TX_GPIO_NUM
 		comm_can_start(CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM);
 		#endif
@@ -286,6 +287,15 @@ void terminal_process_string(char *str) {
 		if (!found) {
 			comm_can_stop();
 		}
+#else
+		for (int i = 0;i < 254;i++) {
+			HW_TYPE hw_type;
+			if (comm_can_ping(i, &hw_type)) {
+				commands_printf("Found %s with ID: %d", utils_hw_type_to_string(hw_type), i);
+				found = true;
+			}
+		}
+#endif
 
 		if (found) {
 			commands_printf("Done\n");

@@ -213,12 +213,9 @@ void lispif_prepare(void) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
 	heap_size = (4096 + 512);
 	int memory_kb = 48;
-#elif CONFIG_IDF_TARGET_ESP32C3
+#elif CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C6
 	heap_size = (2048 + 512);
 	int memory_kb = 32;
-#elif CONFIG_IDF_TARGET_ESP32C6
-	heap_size = (4096 + 512);
-	int memory_kb = 48;
 #elif CONFIG_IDF_TARGET_ESP32P4
 	heap_size = (4096 + 512);
 	int memory_kb = 32;
@@ -905,6 +902,8 @@ void lispif_stop(void) {
 	if (!lisp_thd_running) {
 		return;
 	}
+
+	lispif_stop_lib();
 
 	TaskHandle_t task = eval_task;
 	if (task) {
