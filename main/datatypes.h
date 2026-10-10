@@ -24,7 +24,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define BMS_MAX_CELLS	255
+// Set per build in main/CMakeLists.txt so every file sees the same struct.
+#ifndef BMS_MAX_CELLS
+#define BMS_MAX_CELLS	50
+#endif
 #define BMS_MAX_TEMPS	50
 #define BMS_STATUS_LEN	41
 

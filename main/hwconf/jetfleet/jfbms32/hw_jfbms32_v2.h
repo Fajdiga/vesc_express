@@ -5,6 +5,7 @@
 
 #define HW_NAME						"JFBMS32v2"
 #define HW_TARGET					"esp32c3"
+#define HW_IDF6_LOWRAM				1
 
 #define SHUTDOWN_SUPPORT
 

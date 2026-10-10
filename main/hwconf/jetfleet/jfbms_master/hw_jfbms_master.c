@@ -908,10 +908,7 @@ static bool __attribute__((unused)) slave_can_start(void) {
 
 	slave_can_running = comm_can2_is_running();
 	if (!slave_can_running) {
-		comm_can2_debug_info_t can2_dbg;
-		comm_can2_get_debug_info(&can2_dbg);
-		slave_can_last_error = (can2_dbg.last_error != ESP_OK) ?
-				can2_dbg.last_error : ESP_FAIL;
+		slave_can_last_error = ESP_FAIL;
 		return false;
 	}
 
@@ -2727,11 +2724,7 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 			(unsigned long)ui_balance_low,
 			(double)UTILS_AGE_S(ui_bms->update_time));
 
-	comm_can_debug_info_t can_dbg;
-	comm_can_get_debug_info(&can_dbg);
 #if JFBMS_USE_DEDICATED_SLAVE_TWAI
-	comm_can2_debug_info_t can2_dbg;
-	comm_can2_get_debug_info(&can2_dbg);
 	uint32_t filter_id = 0;
 	uint32_t filter_mask = 0;
 	configured_slave_filter(&filter_id, &filter_mask);
@@ -2740,22 +2733,8 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 	uint32_t rate_elapsed_ms = debug_rate_last_ms != 0 ?
 			(now_ms - debug_rate_last_ms) : now_ms;
 
-	commands_printf_lisp(
-		"Primary CAN TWAI0: tx=%d rx=%d recovery=%d tx_retry_eid=%lu tx_drain=%lu tx_fail_eid=%lu tx_fail_sid=%lu fwd_fail=%lu drain_fail=%lu",
-		CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM,
-		comm_can_get_rx_recovery_cnt(),
-		(unsigned long)can_dbg.tx_eid_retry,
-		(unsigned long)can_dbg.tx_drain_retry,
-		(unsigned long)can_dbg.tx_eid_fail,
-		(unsigned long)can_dbg.tx_sid_fail,
-		(unsigned long)can_dbg.tx_send_buffer_fail,
-		(unsigned long)can_dbg.tx_drain_fail);
-	commands_printf_lisp(
-		"Primary CAN rx err: overflow=%lu no-buf=%lu crc=%lu bad-len=%lu",
-		(unsigned long)can_dbg.rx_overflow,
-		(unsigned long)can_dbg.rx_no_buffer,
-		(unsigned long)can_dbg.rx_crc_fail,
-		(unsigned long)can_dbg.rx_bad_len);
+	commands_printf_lisp("Primary CAN TWAI0: tx=%d rx=%d recovery=%d",
+		CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM, comm_can_get_rx_recovery_cnt());
 
 #if JFBMS_USE_DEDICATED_SLAVE_TWAI
 	commands_printf_lisp("Slave CAN TWAI%d: tx=%d rx=%d baud=%d running=%d filter_id=0x%03lX filter_mask=0x%03lX rx_total=%lu filtered=%lu malformed=%lu filtered_last=0x%03lX esc_rx=%lu priv_rx=%lu overflow=%lu recovery=%d tx_ok=%lu tx_fail=%lu tx_timeout=%lu last_err=%d",
@@ -2775,16 +2754,6 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 		(unsigned long)slave_can_tx_fail_cnt,
 		(unsigned long)slave_can_tx_timeout_cnt,
 		(int)slave_can_last_error);
-	commands_printf_lisp("Slave CAN TWAI%d driver: rx_total=%lu rx_overflow=%lu tx_sid_ok=%lu tx_sid_fail=%lu tx_sid_timeout=%lu last_rx=0x%lX last_tx=0x%lX last_err=%d",
-		JFBMS_SLAVE_CAN_TWAI_ID,
-		(unsigned long)can2_dbg.rx_total,
-		(unsigned long)can2_dbg.rx_overflow,
-		(unsigned long)can2_dbg.tx_sid_ok,
-		(unsigned long)can2_dbg.tx_sid_fail,
-		(unsigned long)can2_dbg.tx_sid_timeout,
-		(unsigned long)can2_dbg.last_rx_id,
-		(unsigned long)can2_dbg.last_tx_sid,
-		(int)can2_dbg.last_error);
 #else
 	commands_printf_lisp("Slave CAN primary TWAI0: tx=%d rx=%d baud_cfg=%d one_bus=1 twai1_disabled_pin_collision=%d rx_total=%lu malformed=%lu primary_rx=%lu dedicated_rx=%lu overflow=%lu tx_ok=%lu tx_fail=%lu tx_timeout=%lu last_err=%d",
 		CAN_TX_GPIO_NUM, CAN_RX_GPIO_NUM,
@@ -2861,7 +2830,6 @@ static lbm_value ext_can_debug_reset(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 
-	comm_can_reset_debug_info();
 	can_rx_overflow = 0;
 	can_rx_total = 0;
 	can_rx_esc_total = 0;
@@ -2884,9 +2852,6 @@ static lbm_value ext_can_debug_reset(lbm_value *args, lbm_uint argn) {
 	slave_can_tx_fail_cnt = 0;
 	slave_can_tx_timeout_cnt = 0;
 	slave_can_last_error = ESP_OK;
-#ifdef CONFIG_IDF_TARGET_ESP32C6
-	comm_can2_reset_debug_info();
-#endif
 
 	return ENC_SYM_TRUE;
 }

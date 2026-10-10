@@ -169,6 +169,9 @@ _Static_assert(sizeof(main_config_t) == 388,
 #define CAN_TX_GPIO_NUM				7
 #define CAN_RX_GPIO_NUM				6
 #define HW_CAN_PING_SCAN_ENABLED	1
+#define HW_CAN_RXBUF_LEN			200
+#define HW_WIFI_SINGLE_MODE
+#define WIFI_TCP_TASK_STACK_SIZE	3072
 
 // Other pins
 #define PIN_SDA						21

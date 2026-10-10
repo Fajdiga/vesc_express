@@ -34,6 +34,11 @@
 
 #define HW_NAME						"JFBMS_MASTER"
 #define HW_TARGET					"esp32c6_fh4"
+#define HW_IDF6_LOWRAM				1
+#define HW_ENABLE_GNSS				0
+#define HW_ENABLE_DISPLAY			0
+#define HW_ENABLE_TOUCH				0
+#define HW_ENABLE_STORAGE			0
 
 #define PCB_VERSION					1
 
@@ -57,7 +62,9 @@
 #define HW_BLE_ADV_WATCHDOG_MS		1000U
 
 // CAN: Normal ACK mode for reliable master-slave communication
-#define HW_CAN_NO_ACK_MODE			0
+#define HW_CAN_RXBUF_LEN			200
+#define HW_WIFI_SINGLE_MODE
+#define WIFI_TCP_TASK_STACK_SIZE	3072
 
 // Keep the primary CAN transport on the normal VESC defaults. TWAI1 has its
 // own retry policy and receive-priority path in comm_can.c.

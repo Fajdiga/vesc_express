@@ -790,8 +790,6 @@ loopforeach
 
 (defun bms-shutdown-low-soc-timer () (bms-shutdown-impl shutdown-reason-low-soc-timer))
 (defun bms-shutdown-app () (bms-shutdown-impl shutdown-reason-app))
-(defun shutdown-master () (bms-shutdown-app))
-
 (defun low-soc-timer-wake () (and
     (valid-pack-reading)
     (< soc 0.05)

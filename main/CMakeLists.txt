@@ -1,53 +1,17 @@
 set(COMPONENT_REQUIRES )
 set(COMPONENT_PRIV_REQUIRES )
 
-if(NOT DEFINED VESC_ENABLE_WIFI AND DEFINED ENV{VESC_ENABLE_WIFI})
-    set(VESC_ENABLE_WIFI $ENV{VESC_ENABLE_WIFI})
-endif()
-
-if(NOT DEFINED VESC_ENABLE_BLE AND DEFINED ENV{VESC_ENABLE_BLE})
-    set(VESC_ENABLE_BLE $ENV{VESC_ENABLE_BLE})
-endif()
-
-if(NOT DEFINED VESC_ENABLE_GNSS AND DEFINED ENV{VESC_ENABLE_GNSS})
-    set(VESC_ENABLE_GNSS $ENV{VESC_ENABLE_GNSS})
-endif()
-
-if(NOT DEFINED VESC_ENABLE_DISPLAY AND DEFINED ENV{VESC_ENABLE_DISPLAY})
-    set(VESC_ENABLE_DISPLAY $ENV{VESC_ENABLE_DISPLAY})
-endif()
-
-if(NOT DEFINED VESC_ENABLE_TOUCH AND DEFINED ENV{VESC_ENABLE_TOUCH})
-    set(VESC_ENABLE_TOUCH $ENV{VESC_ENABLE_TOUCH})
-endif()
-
-if(NOT DEFINED VESC_ENABLE_STORAGE AND DEFINED ENV{VESC_ENABLE_STORAGE})
-    set(VESC_ENABLE_STORAGE $ENV{VESC_ENABLE_STORAGE})
-endif()
-
-if(NOT DEFINED VESC_ENABLE_WIFI)
-    set(VESC_ENABLE_WIFI 1)
-endif()
-
-if(NOT DEFINED VESC_ENABLE_BLE)
-    set(VESC_ENABLE_BLE 1)
-endif()
-
-if(NOT DEFINED VESC_ENABLE_GNSS)
-    set(VESC_ENABLE_GNSS 1)
-endif()
-
-if(NOT DEFINED VESC_ENABLE_DISPLAY)
-    set(VESC_ENABLE_DISPLAY 1)
-endif()
-
-if(NOT DEFINED VESC_ENABLE_TOUCH)
-    set(VESC_ENABLE_TOUCH 1)
-endif()
-
-if(NOT DEFINED VESC_ENABLE_STORAGE)
-    set(VESC_ENABLE_STORAGE 1)
-endif()
+# Feature gates come from the top-level CMakeLists (via the environment for
+# the component pass); default to everything enabled.
+foreach(_feat WIFI BLE GNSS DISPLAY TOUCH STORAGE)
+    if(NOT DEFINED VESC_ENABLE_${_feat})
+        if(DEFINED ENV{VESC_ENABLE_${_feat}})
+            set(VESC_ENABLE_${_feat} $ENV{VESC_ENABLE_${_feat}})
+        else()
+            set(VESC_ENABLE_${_feat} 1)
+        endif()
+    endif()
+endforeach()
 
 set(COMPONENT_SRCS
 "main.c"
@@ -324,6 +288,12 @@ elseif(HW_NAME STREQUAL "JFBMS_MASTER")
     set(HW_DEFAULT_LISP "hwconf/jetfleet/jfbms_master/jfbms_master_main.lisp")
 elseif(HW_NAME STREQUAL "JFBMS_SLAVE")
     set(HW_DEFAULT_LISP "hwconf/jetfleet/jfbms_slave/jfbms_slave_main.lisp")
+endif()
+
+# The pack master aggregates up to 255 cells from its slaves, and JF Link
+# shows the master's pack. Every other board keeps the upstream limit.
+if(HW_NAME STREQUAL "JFBMS_MASTER" OR HW_NAME STREQUAL "JF Link")
+    target_compile_definitions(${COMPONENT_LIB} PUBLIC BMS_MAX_CELLS=255)
 endif()
 
 if(DEFINED HW_DEFAULT_LISP)

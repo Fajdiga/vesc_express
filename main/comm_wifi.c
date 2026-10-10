@@ -62,7 +62,7 @@
 #endif
 
 #ifndef WIFI_TCP_TASK_STACK_SIZE
-#define WIFI_TCP_TASK_STACK_SIZE 3072
+#define WIFI_TCP_TASK_STACK_SIZE 3500
 #endif
 
 static EventGroupHandle_t s_wifi_event_group;
@@ -518,14 +518,13 @@ void comm_wifi_init(void) {
 			NULL,
 			&instance_got_ip);
 
-	wifi_mode_t idf_wifi_mode = WIFI_MODE_STA;
-	if (wifi_mode == WIFI_MODE_ACCESS_POINT) {
-		idf_wifi_mode = WIFI_MODE_AP;
-	}
-#ifdef HW_WIFI_FORCE_APSTA
-	idf_wifi_mode = WIFI_MODE_APSTA;
+#ifdef HW_WIFI_SINGLE_MODE
+	// Run only the interface that is configured. Saves RAM, but ESP-NOW
+	// peers on the AP interface and FTM are unavailable in station mode.
+	esp_wifi_set_mode(wifi_mode == WIFI_MODE_ACCESS_POINT ? WIFI_MODE_AP : WIFI_MODE_STA);
+#else
+	esp_wifi_set_mode(WIFI_MODE_APSTA);
 #endif
-	esp_wifi_set_mode(idf_wifi_mode);
 
 	if (wifi_mode == WIFI_MODE_ACCESS_POINT) {
 		wifi_config = (wifi_config_t){
@@ -539,7 +538,7 @@ void comm_wifi_init(void) {
 				.pmf_cfg = {
 					.required = false,
 				},
-#ifdef VESC_ENABLE_WIFI_FTM
+#if CONFIG_ESP_WIFI_FTM_ENABLE
 				.ftm_responder = true,
 #endif
 			},
@@ -562,7 +561,7 @@ void comm_wifi_init(void) {
 		strcpy((char*)wifi_config.sta.password, (char*)backup.config.wifi_sta_key);
 
 		esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
-#ifdef VESC_ENABLE_WIFI_FTM
+#if CONFIG_ESP_WIFI_FTM_ENABLE
 		wifi_config_t ap_wifi_config;
 		esp_wifi_get_config(WIFI_IF_AP, &ap_wifi_config);
 		ap_wifi_config.ap.ftm_responder = true;
@@ -593,9 +592,7 @@ void comm_wifi_init(void) {
 		xTaskCreatePinnedToCore(tcp_task_hub, "tcp_hub", WIFI_TCP_TASK_STACK_SIZE, NULL, 8, NULL, tskNO_AFFINITY);
 	}
 
-	if (backup.config.use_tcp_local) {
-		xTaskCreatePinnedToCore(broadcast_task, "udp_multicast", UDP_MULTICAST_TASK_STACK_SIZE, NULL, 8, NULL, tskNO_AFFINITY);
-	}
+	xTaskCreatePinnedToCore(broadcast_task, "udp_multicast", UDP_MULTICAST_TASK_STACK_SIZE, NULL, 8, NULL, tskNO_AFFINITY);
 }
 
 WIFI_MODE comm_wifi_get_mode(void) {

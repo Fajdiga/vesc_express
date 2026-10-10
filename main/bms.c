@@ -338,7 +338,9 @@ void bms_process_cmd(unsigned char *data, unsigned int len,
 	switch (packet_id) {
 	case COMM_BMS_GET_VALUES: {
 		int32_t ind = 0;
-		static uint8_t send_buffer[1024];
+		// 59 fixed bytes + 3 per cell + 2 per temp + status string. Upstream's
+		// 256 bytes overflowed with 50 cells and 50 temps.
+		static uint8_t send_buffer[64 + 3 * BMS_MAX_CELLS + 2 * BMS_MAX_TEMPS + BMS_STATUS_LEN];
 
 		if (reply_mutex) {
 			xSemaphoreTake(reply_mutex, portMAX_DELAY);

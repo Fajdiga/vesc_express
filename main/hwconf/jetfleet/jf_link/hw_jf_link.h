@@ -25,10 +25,13 @@
 
 #define HW_NAME						"JF Link"
 #define HW_TARGET					"esp32c3"
+#define HW_IDF6_LOWRAM				1
 
 #define HW_INIT_HOOK()				hw_init()
-#define HW_CAN_NO_ACK_MODE			0
 #define HW_CAN_PING_SCAN_ENABLED	1
+#define HW_CAN_RXBUF_LEN			200
+#define HW_WIFI_SINGLE_MODE
+#define WIFI_TCP_TASK_STACK_SIZE	3072
 #define HW_BMS_CAN_VALUES_LOCAL_OWNER
 #define USER_EXTENSION_STORAGE_SIZE	50
 

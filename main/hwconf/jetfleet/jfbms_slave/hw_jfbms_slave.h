@@ -27,6 +27,7 @@
 
 #define HW_NAME						"JFBMS_SLAVE"
 #define HW_TARGET					"esp32c3"
+#define HW_IDF6_LOWRAM				1
 
 #define HW_EARLY_LBM_INIT
 #define HW_NO_UART
@@ -34,7 +35,7 @@
 #define HW_VESC_CAN_ENABLED			0  // Slave uses an 11-bit protocol, not VESC CAN
 #define HW_CAN_PING_SCAN_ENABLED	0  // No VESC CAN ping discovery on this board
 #define HW_OWNS_VESC_CONFIG			0  // Master owns controller_id / can_baud
-#define HW_CAN_NO_ACK_MODE			0  // Normal ACK mode for reliable communication
+#define HW_CAN_RXBUF_LEN			200
 // Feature gates read by CMake to shape the build. All off -> minimal
 // no-wireless build (nowireless sdkconfig overlay + pruned component graph).
 #define HW_ENABLE_WIFI				0

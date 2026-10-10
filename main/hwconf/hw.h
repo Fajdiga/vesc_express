@@ -81,13 +81,6 @@
 #define HW_CAN_PING_SCAN_ENABLED 0
 #endif
 
-// Set to 1 in a hwconf header to bring up TWAI self-test/no-ACK mode instead
-// of normal bus mode. Useful for diagnostic builds that should not generate
-// ACKs on a live bus.
-#ifndef HW_CAN_NO_ACK_MODE
-#define HW_CAN_NO_ACK_MODE 0
-#endif
-
 // Hardware retry limit for failed CAN frames. Keep the legacy infinite retry
 // behavior unless a hardware profile opts into bounded retries.
 #ifndef HW_CAN_FAIL_RETRY_CNT
