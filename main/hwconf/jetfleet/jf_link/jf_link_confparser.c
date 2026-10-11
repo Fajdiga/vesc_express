@@ -43,7 +43,6 @@ int32_t jf_link_confparser_serialize_main_config_t(uint8_t *buffer, size_t capac
 
 	WRITE_VALUE(2, buffer_append_int16(buffer, conf->controller_id, &ind));
 	WRITE_VALUE(1, buffer[ind++] = conf->can_baud_rate);
-	WRITE_VALUE(2, buffer_append_int16(buffer, conf->can_status_rate_hz, &ind));
 	WRITE_VALUE(1, buffer[ind++] = conf->wifi_mode);
 	if (!config_string(buffer, capacity, &ind, conf->wifi_sta_ssid, sizeof(conf->wifi_sta_ssid))) return -1;
 	if (!config_string(buffer, capacity, &ind, conf->wifi_sta_key, sizeof(conf->wifi_sta_key))) return -1;
@@ -61,11 +60,11 @@ int32_t jf_link_confparser_serialize_main_config_t(uint8_t *buffer, size_t capac
 	WRITE_VALUE(4, buffer_append_uint32(buffer, conf->ble_service_capacity, &ind));
 	WRITE_VALUE(4, buffer_append_uint32(buffer, conf->ble_chr_descr_capacity, &ind));
 	WRITE_VALUE(1, buffer[ind++] = (uint8_t)conf->num_slaves);
-	WRITE_VALUE(1, buffer[ind++] = (uint8_t)conf->slave_timeout_s);
 	WRITE_VALUE(4, buffer_append_float32_auto(buffer, conf->vc_balance_start, &ind));
 	WRITE_VALUE(4, buffer_append_float32_auto(buffer, conf->vc_balance_end, &ind));
 	WRITE_VALUE(4, buffer_append_float32_auto(buffer, conf->vc_balance_min, &ind));
 	WRITE_VALUE(1, buffer[ind++] = (uint8_t)conf->max_bal_ch);
+	WRITE_VALUE(1, buffer[ind++] = (uint8_t)conf->num_parallel);
 
 #undef WRITE_VALUE
 	return ind;
@@ -88,7 +87,6 @@ bool jf_link_confparser_deserialize_main_config_t(const uint8_t *buffer, size_t 
 
 	READ_VALUE(2, candidate.controller_id = buffer_get_int16(buffer, &ind));
 	READ_VALUE(1, candidate.can_baud_rate = buffer[ind++]);
-	READ_VALUE(2, candidate.can_status_rate_hz = buffer_get_int16(buffer, &ind));
 	READ_VALUE(1, candidate.wifi_mode = buffer[ind++]);
 	if (!config_read_string(buffer, length, &ind, candidate.wifi_sta_ssid, sizeof(candidate.wifi_sta_ssid))) return false;
 	if (!config_read_string(buffer, length, &ind, candidate.wifi_sta_key, sizeof(candidate.wifi_sta_key))) return false;
@@ -106,11 +104,11 @@ bool jf_link_confparser_deserialize_main_config_t(const uint8_t *buffer, size_t 
 	READ_VALUE(4, candidate.ble_service_capacity = buffer_get_uint32(buffer, &ind));
 	READ_VALUE(4, candidate.ble_chr_descr_capacity = buffer_get_uint32(buffer, &ind));
 	READ_VALUE(1, candidate.num_slaves = buffer[ind++]);
-	READ_VALUE(1, candidate.slave_timeout_s = buffer[ind++]);
 	READ_VALUE(4, candidate.vc_balance_start = buffer_get_float32_auto(buffer, &ind));
 	READ_VALUE(4, candidate.vc_balance_end = buffer_get_float32_auto(buffer, &ind));
 	READ_VALUE(4, candidate.vc_balance_min = buffer_get_float32_auto(buffer, &ind));
 	READ_VALUE(1, candidate.max_bal_ch = buffer[ind++]);
+	READ_VALUE(1, candidate.num_parallel = buffer[ind++]);
 
 #undef READ_VALUE
 	if ((size_t)ind != length || !jf_link_validate_config(&candidate)) return false;
@@ -147,9 +145,9 @@ void jf_link_confparser_set_defaults_main_config_t(main_config_t *conf) {
 	conf->ble_service_capacity = CONF_BLE_SERVICE_CAPACITY;
 	conf->ble_chr_descr_capacity = CONF_BLE_CHR_DESCR_CAPACITY;
 	conf->num_slaves = CONF_NUM_SLAVES;
-	conf->slave_timeout_s = CONF_SLAVE_TIMEOUT_S;
 	conf->vc_balance_start = CONF_BALANCE_START;
 	conf->vc_balance_end = CONF_BALANCE_END;
 	conf->vc_balance_min = CONF_BALANCE_MIN;
 	conf->max_bal_ch = CONF_MAX_BAL_CH;
+	conf->num_parallel = CONF_NUM_PARALLEL;
 }

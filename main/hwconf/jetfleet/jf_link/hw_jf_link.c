@@ -44,8 +44,11 @@
 #define JFBMS_BAL_SETTLE_MIN_MS		2000
 #define JFBMS_BAL_SETTLE_TIMEOUT_MS	5000
 #define JFBMS_BAL_HOLD_MS			30000
-#define JFBMS_SNAPSHOT_FRESH_MS	1000U
 #define JFBMS_ASSEMBLY_TIMEOUT_MS	75U
+// Same limits as JFBMS Master: balancing stops on data older than 1 s, and a
+// slave is reported lost (and beeped) after 3 s of silence.
+#define JFBMS_SNAPSHOT_FRESH_MS	1000U
+#define JFBMS_SLAVE_TIMEOUT_MS		3000U
 
 #define CAN_ID_TEMPS(slave_id)		(0x400 | (slave_id))
 #define CAN_ID_STATUS(slave_id)		(0x480 | (slave_id))
@@ -89,12 +92,11 @@ typedef struct {
 
 typedef struct {
 	lbm_uint num_slaves;
-	lbm_uint slave_timeout_s;
+	lbm_uint num_parallel;
 	lbm_uint max_bal_ch;
 	lbm_uint vc_balance_start;
 	lbm_uint vc_balance_end;
 	lbm_uint vc_balance_min;
-	lbm_uint can_status_rate_hz;
 } config_syms_t;
 
 typedef struct {
@@ -151,10 +153,8 @@ static void stop_all_balancing(void);
 bool jf_link_validate_config(const main_config_t *conf) {
 	return conf && conf->controller_id >= 0 && conf->controller_id <= 254 &&
 			conf->can_baud_rate >= CAN_BAUD_125K && conf->can_baud_rate <= CAN_BAUD_100K &&
-			conf->can_status_rate_hz >= 0 && conf->can_status_rate_hz <= 500 &&
 			conf->num_slaves >= 1 && conf->num_slaves <= JFBMS_MAX_SLAVES &&
-			isfinite(conf->slave_timeout_s) && conf->slave_timeout_s >= 1.0f &&
-			conf->slave_timeout_s <= 255.0f &&
+			conf->num_parallel >= 1 && conf->num_slaves % conf->num_parallel == 0 &&
 			conf->max_bal_ch >= 0 && conf->max_bal_ch <= 8 &&
 			isfinite(conf->vc_balance_start) && conf->vc_balance_start >= 0.0f &&
 			conf->vc_balance_start <= 0.5f &&
@@ -167,7 +167,7 @@ bool jf_link_validate_config(const main_config_t *conf) {
 static bool control_config_changed(void) {
 	const main_config_t *cfg = (const main_config_t *)&backup.config;
 #define CHANGED(field) (cfg->field != m_applied_config.field)
-	return CHANGED(num_slaves) || CHANGED(slave_timeout_s) || CHANGED(max_bal_ch) ||
+	return CHANGED(num_slaves) || CHANGED(num_parallel) || CHANGED(max_bal_ch) ||
 			CHANGED(vc_balance_start) || CHANGED(vc_balance_end) ||
 			CHANGED(vc_balance_min) || CHANGED(can_baud_rate);
 #undef CHANGED
@@ -187,6 +187,11 @@ static int cfg_num_slaves(void) {
 	return num;
 }
 
+static int cfg_num_parallel(void) {
+	int num = backup.config.num_parallel;
+	return (num >= 1 && cfg_num_slaves() % num == 0) ? num : 1;
+}
+
 static int slave_cell_count(const jfbms_slave_t *s) {
 	int cells = s->cells_ic1 + s->cells_ic2;
 
@@ -199,6 +204,24 @@ static int slave_cell_count(const jfbms_slave_t *s) {
 	}
 
 	return cells;
+}
+
+// Slave IDs form consecutive blocks per parallel string: with 4 slaves in
+// 2P, slaves 1-2 are string 0 and slaves 3-4 are string 1.
+static int slave_string(int slave_index) {
+	return slave_index / (cfg_num_slaves() / cfg_num_parallel());
+}
+
+// Parallel strings must have identical cell counts. Call with m_data_mutex held.
+static bool strings_cell_counts_match(void) {
+	int cells[JFBMS_MAX_SLAVES] = {0};
+	for (int i = 0; i < cfg_num_slaves(); i++) {
+		cells[slave_string(i)] += slave_cell_count(&m_slaves[i]);
+	}
+	for (int p = 1; p < cfg_num_parallel(); p++) {
+		if (cells[p] != cells[0]) return false;
+	}
+	return true;
 }
 
 static bool cell_valid(uint16_t mv) {
@@ -220,6 +243,7 @@ static bool pack_snapshots_ready(uint32_t now) {
 	for (int i = 0; ready && i < cfg_num_slaves(); i++) {
 		ready = slave_snapshot_ready(&m_slaves[i], now);
 	}
+	ready = ready && strings_cell_counts_match();
 	xSemaphoreGive(m_data_mutex);
 	return ready;
 }
@@ -439,8 +463,8 @@ static bool compare_symbol(lbm_uint sym, lbm_uint *comp) {
 	if (*comp == 0) {
 		if (comp == &m_syms_cfg.num_slaves) {
 			lbm_add_symbol_const("num_slaves", comp);
-		} else if (comp == &m_syms_cfg.slave_timeout_s) {
-			lbm_add_symbol_const("slave_timeout_s", comp);
+		} else if (comp == &m_syms_cfg.num_parallel) {
+			lbm_add_symbol_const("num_parallel", comp);
 		} else if (comp == &m_syms_cfg.max_bal_ch) {
 			lbm_add_symbol_const("max_bal_ch", comp);
 		} else if (comp == &m_syms_cfg.vc_balance_start) {
@@ -449,8 +473,6 @@ static bool compare_symbol(lbm_uint sym, lbm_uint *comp) {
 			lbm_add_symbol_const("vc_balance_end", comp);
 		} else if (comp == &m_syms_cfg.vc_balance_min) {
 			lbm_add_symbol_const("vc_balance_min", comp);
-		} else if (comp == &m_syms_cfg.can_status_rate_hz) {
-			lbm_add_symbol_const("can_status_rate_hz", comp);
 		}
 	}
 
@@ -500,8 +522,8 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 
 	if (compare_symbol(name, &m_syms_cfg.num_slaves)) {
 		res = get_or_set_i(set, &cfg->num_slaves, &set_arg);
-	} else if (compare_symbol(name, &m_syms_cfg.slave_timeout_s)) {
-		res = get_or_set_float(set, &cfg->slave_timeout_s, &set_arg);
+	} else if (compare_symbol(name, &m_syms_cfg.num_parallel)) {
+		res = get_or_set_i(set, &cfg->num_parallel, &set_arg);
 	} else if (compare_symbol(name, &m_syms_cfg.max_bal_ch)) {
 		res = get_or_set_i(set, &cfg->max_bal_ch, &set_arg);
 	} else if (compare_symbol(name, &m_syms_cfg.vc_balance_start)) {
@@ -510,8 +532,6 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 		res = get_or_set_float(set, &cfg->vc_balance_end, &set_arg);
 	} else if (compare_symbol(name, &m_syms_cfg.vc_balance_min)) {
 		res = get_or_set_float(set, &cfg->vc_balance_min, &set_arg);
-	} else if (compare_symbol(name, &m_syms_cfg.can_status_rate_hz)) {
-		res = get_or_set_i(set, &cfg->can_status_rate_hz, &set_arg);
 	}
 
 	if (set && res == ENC_SYM_TRUE) {
@@ -1246,6 +1266,18 @@ static void run_balance_state(uint32_t now) {
 	}
 }
 
+// Called every JFBMS_STATUS_PERIOD_MS (10 Hz). The full status pauses during
+// large forwarded transfers, but the summary frame carries everything a VESC
+// motor controller uses for its BMS current limits and the ESC drops those
+// limits after 2 s without it, so the summary is never skipped.
+static void send_bms_can(void) {
+	if (!comm_can_send_buffer_recent(JFBMS_CAN_STATUS_QUIET_AFTER_FWD_MS)) {
+		bms_send_status_can();
+	} else {
+		bms_send_limits_can();
+	}
+}
+
 static void check_connection_changes(void) {
 	bool active[JFBMS_MAX_SLAVES] = {0};
 
@@ -1303,16 +1335,13 @@ static void jf_link_task(void *arg) {
 
 		uint32_t now = xTaskGetTickCount();
 		xSemaphoreTake(m_control_mutex, portMAX_DELAY);
-		check_slave_timeouts(backup.config.slave_timeout_s);
+		check_slave_timeouts(JFBMS_SLAVE_TIMEOUT_MS / 1000.0f);
 		process_pending_balance_commands(now);
 		run_balance_state(now);
 
 		if (ticks_elapsed(now, last_status_ticks, JFBMS_STATUS_PERIOD_MS)) {
 			update_vesc_bms_values();
-			if (backup.config.can_status_rate_hz != 0 &&
-					!comm_can_send_buffer_recent(JFBMS_CAN_STATUS_QUIET_AFTER_FWD_MS)) {
-				bms_send_status_can();
-			}
+			send_bms_can();
 			check_connection_changes();
 			last_status_ticks = now;
 		}
@@ -1360,8 +1389,8 @@ static void check_slave_timeouts(float timeout_s) {
 static lbm_value ext_master_check_timeouts(lbm_value *args, lbm_uint argn) {
 	LBM_CHECK_ARGN_NUMBER(1);
 
-	// Preserve legacy Lisp calls expressed in milliseconds. The configured
-	// slave_timeout_s passed by the native task is always in seconds.
+	// Preserve legacy Lisp calls expressed in milliseconds. The native task
+	// converts JFBMS_SLAVE_TIMEOUT_MS to seconds.
 	float timeout_s = lbm_dec_as_float(args[0]);
 	if (timeout_s > 100.0f) timeout_s /= 1000.0f;
 	check_slave_timeouts(timeout_s);
@@ -1394,7 +1423,6 @@ static void update_vesc_bms_values(void) {
 	memset((void*)bms, 0, sizeof(*bms));
 
 	bms->can_id = backup.config.controller_id;
-	bms->is_charge_allowed = pack_snapshots_ready(now) ? 1 : 0;
 	bms->soh = 1.0f;
 	bms->data_version = 1;
 
@@ -1409,8 +1437,11 @@ static void update_vesc_bms_values(void) {
 	bool waiting_settle = false;
 	bool missing_status = false;
 	bool any_balancing = false;
+	bool string_seen[JFBMS_MAX_SLAVES] = {0};
+	int strings_seen = 0;
 
 	xSemaphoreTake(m_data_mutex, portMAX_DELAY);
+	bool topo_ok = strings_cell_counts_match();
 
 	for (int s_ind = 0;s_ind < cfg_num_slaves() && bms->cell_num < BMS_MAX_CELLS;s_ind++) {
 		jfbms_slave_t *s = &m_slaves[s_ind];
@@ -1419,6 +1450,10 @@ static void update_vesc_bms_values(void) {
 		}
 
 		active++;
+		if (!string_seen[slave_string(s_ind)]) {
+			string_seen[slave_string(s_ind)] = true;
+			strings_seen++;
+		}
 		bool status_fresh = false;
 		if (s->last_status_ticks != 0) {
 			uint32_t status_age_ms = (now - s->last_status_ticks) * portTICK_PERIOD_MS;
@@ -1521,6 +1556,10 @@ static void update_vesc_bms_values(void) {
 
 	xSemaphoreGive(m_data_mutex);
 
+	// Parallel strings share the pack terminals: report the average string voltage.
+	if (strings_seen > 1) {
+		v_tot /= (float)strings_seen;
+	}
 	bms->v_tot = v_tot;
 	bms->v_charge = v_tot;
 	bms->v_cell_min = bms->cell_num > 0 ? v_min : 0.0f;
@@ -1543,10 +1582,17 @@ static void update_vesc_bms_values(void) {
 		state_txt = " settle";
 	}
 
-	snprintf((char*)bms->status, BMS_STATUS_LEN, "JFLink %d/%d f%02X%s%s",
-			active, cfg_num_slaves(), faults,
-			state_txt,
-			missing_status ? " nostat" : "");
+	const char *link_txt = "";
+	if (missing_status) {
+		link_txt = " nostat";
+	} else if (!topo_ok && active == cfg_num_slaves()) {
+		link_txt = " topo";
+	}
+
+	snprintf((char*)bms->status, BMS_STATUS_LEN, "JFLink %hhu/%hhu %hhuP f%02hhX%s%s",
+			(unsigned char)active, (unsigned char)cfg_num_slaves(),
+			(unsigned char)cfg_num_parallel(), (unsigned char)faults,
+			state_txt, link_txt);
 
 	bms->update_time = now;
 }
@@ -1563,9 +1609,7 @@ static lbm_value ext_send_bms_status_can(lbm_value *args, lbm_uint argn) {
 	(void)args;
 	(void)argn;
 
-	if (backup.config.can_status_rate_hz != 0) {
-		bms_send_status_can();
-	}
+	send_bms_can();
 
 	return ENC_SYM_TRUE;
 }
@@ -1579,11 +1623,10 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 	commands_printf_lisp("JF Link CAN buf: head=%d tail=%d overflow=%lu",
 			m_can_rx_head, m_can_rx_tail, (unsigned long)m_can_rx_overflow);
 
-	commands_printf_lisp("JF Link cfg: id=%d baud=%d status-hz=%d slaves=%d",
+	commands_printf_lisp("JF Link cfg: id=%d baud=%d slaves=%d parallel=%d",
 			backup.config.controller_id,
 			backup.config.can_baud_rate,
-			backup.config.can_status_rate_hz,
-			cfg_num_slaves());
+			cfg_num_slaves(), cfg_num_parallel());
 	commands_printf_lisp("CAN core: rx_recovery=%d", comm_can_get_rx_recovery_cnt());
 
 	uint32_t settle_age_ms = m_bal_settle_start_ticks == 0 ? 0 :
@@ -1668,7 +1711,6 @@ static void load_extensions(bool main_found) {
 }
 
 void hw_init(void) {
-	bms_get_values()->is_charge_allowed = 0;
 	m_data_mutex = xSemaphoreCreateMutexStatic(&m_data_mutex_storage);
 	m_control_mutex = xSemaphoreCreateMutexStatic(&m_control_mutex_storage);
 	m_rx_mutex = xSemaphoreCreateMutexStatic(&m_rx_mutex_storage);
@@ -1698,7 +1740,6 @@ void hw_init(void) {
 		if (xTaskCreatePinnedToCore(jf_link_task, "jf_link", 4096, NULL, 7,
 				&m_jf_link_task_handle, tskNO_AFFINITY) != pdPASS) {
 			m_jf_link_task_handle = NULL;
-			bms_get_values()->is_charge_allowed = 0;
 			LED_RED_ON();
 			commands_printf("JF Link: native controller task could not start");
 		}

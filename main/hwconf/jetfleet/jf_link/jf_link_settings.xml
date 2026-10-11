@@ -33,22 +33,6 @@
             <suffix></suffix>
             <vTx>4</vTx>
         </controller_id>
-        <can_status_rate_hz>
-            <longName>Status Message Rate</longName>
-            <type>2</type>
-            <transmittable>1</transmittable>
-            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Frequency of the standard CAN status messages, in messages per second (Hz). Higher rates provide more frequent updates but use more CAN bandwidth.&lt;/p&gt;&lt;p&gt;Set 0 to disable these periodic messages; CAN commands still work. This does not set the JFBMS Slave telemetry rate or the battery-control loop rate.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
-            <cDefine>CONF_CAN_STATUS_RATE_HZ</cDefine>
-            <editorScale>1</editorScale>
-            <editAsPercentage>0</editAsPercentage>
-            <maxInt>200</maxInt>
-            <minInt>0</minInt>
-            <showDisplay>0</showDisplay>
-            <stepInt>1</stepInt>
-            <valInt>20</valInt>
-            <suffix> Hz</suffix>
-            <vTx>4</vTx>
-        </can_status_rate_hz>
         <can_baud_rate>
             <longName>CAN Baud Rate</longName>
             <type>4</type>
@@ -257,22 +241,22 @@
             <suffix></suffix>
             <vTx>1</vTx>
         </num_slaves>
-        <slave_timeout_s>
-            <longName>Slave Timeout</longName>
+        <num_parallel>
+            <longName>Parallel Strings</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Time without slave updates before that slave is marked disconnected, in seconds. The default is 1 second.&lt;/p&gt;&lt;p&gt;This controls connection/status retention, not the balancing safety deadline: balancing already requires a complete, healthy snapshot no older than 1 second, regardless of a longer timeout. The full setting range of 1 to 255 is interpreted in seconds.&lt;/p&gt;&lt;p&gt;Changes apply when written.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
-            <cDefine>CONF_SLAVE_TIMEOUT_S</cDefine>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Number of identical series strings connected in parallel. 1 means all slaves form one series string.&lt;/p&gt;&lt;p&gt;Number of Slaves must be divisible by this value. Slave IDs are assigned in consecutive blocks per string: with 4 slaves and 2 parallel strings, IDs 1-2 form string A and IDs 3-4 form string B.&lt;/p&gt;&lt;p&gt;All strings must have the same cell count; otherwise balancing is blocked and the status shows topo. Pack voltage is reported as the average string voltage. Balancing is unchanged.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_NUM_PARALLEL</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
-            <maxInt>255</maxInt>
+            <maxInt>8</maxInt>
             <minInt>1</minInt>
             <showDisplay>0</showDisplay>
             <stepInt>1</stepInt>
             <valInt>1</valInt>
-            <suffix>s</suffix>
+            <suffix></suffix>
             <vTx>1</vTx>
-        </slave_timeout_s>
+        </num_parallel>
         <vc_balance_start>
             <longName>Balance Start Difference</longName>
             <type>1</type>
@@ -347,7 +331,6 @@
     <SerOrder>
         <ser>controller_id</ser>
         <ser>can_baud_rate</ser>
-        <ser>can_status_rate_hz</ser>
         <ser>wifi_mode</ser>
         <ser>wifi_sta_ssid</ser>
         <ser>wifi_sta_key</ser>
@@ -365,11 +348,11 @@
         <ser>ble_service_capacity</ser>
         <ser>ble_chr_descr_capacity</ser>
         <ser>num_slaves</ser>
-        <ser>slave_timeout_s</ser>
         <ser>vc_balance_start</ser>
         <ser>vc_balance_end</ser>
         <ser>vc_balance_min</ser>
         <ser>max_bal_ch</ser>
+        <ser>num_parallel</ser>
     </SerOrder>
     <Grouping>
         <group>
@@ -379,7 +362,6 @@
                 <subgroupParams>
                     <param>controller_id</param>
                     <param>can_baud_rate</param>
-                    <param>can_status_rate_hz</param>
                 </subgroupParams>
             </subgroup>
             <subgroup>
@@ -417,7 +399,7 @@
                 <subgroupName>JFBMS Slaves</subgroupName>
                 <subgroupParams>
                     <param>num_slaves</param>
-                    <param>slave_timeout_s</param>
+                    <param>num_parallel</param>
                 </subgroupParams>
             </subgroup>
             <subgroup>

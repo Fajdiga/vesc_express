@@ -13,9 +13,9 @@
 #define CONF_CAN_BAUD_RATE 2
 #endif
 
-// Status Message Rate
+// Not configurable on JF Link (no GNSS for the shared status task to send)
 #ifndef CONF_CAN_STATUS_RATE_HZ
-#define CONF_CAN_STATUS_RATE_HZ 20
+#define CONF_CAN_STATUS_RATE_HZ 0
 #endif
 
 // WiFi Mode
@@ -103,11 +103,6 @@
 #define CONF_NUM_SLAVES 1
 #endif
 
-// Slave Timeout
-#ifndef CONF_SLAVE_TIMEOUT_S
-#define CONF_SLAVE_TIMEOUT_S 1
-#endif
-
 // Balance Start Delta
 #ifndef CONF_BALANCE_START
 #define CONF_BALANCE_START 0.015
@@ -126,6 +121,11 @@
 // Max Balance Cells per BQ
 #ifndef CONF_MAX_BAL_CH
 #define CONF_MAX_BAL_CH 8
+#endif
+
+// Parallel Strings
+#ifndef CONF_NUM_PARALLEL
+#define CONF_NUM_PARALLEL 1
 #endif
 
 // JF_LINK_CONF_DEFAULT_H_

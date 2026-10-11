@@ -477,15 +477,54 @@ volatile bms_values *bms_get_values(void) {
 	return &m_values;
 }
 
-void bms_send_status_can(void) {
+static bool status_can_allowed(void) {
 #ifdef HW_BMS_DATA_VALID
-	if (!HW_BMS_DATA_VALID()) return;
+	if (!HW_BMS_DATA_VALID()) return false;
 #endif
 #ifdef HW_BMS_STATUS_CAN_REQUIRES_LISTENER
-	if (!comm_can_has_listener()) {
-		return;
-	}
+	if (!comm_can_has_listener()) return false;
 #endif
+	return true;
+}
+
+static void send_limits_frame(void) {
+	int32_t send_index = 0;
+	uint8_t buffer[8];
+	uint8_t id = backup.config.controller_id;
+
+	/*
+	 * CAN_PACKET_BMS_SOC_SOH_TEMP_STAT
+	 *
+	 * b[0] - b[1]: V_CELL_MIN (mV)
+	 * b[2] - b[3]: V_CELL_MAX (mV)
+	 * b[4]: SoC (0 - 255)
+	 * b[5]: SoH (0 - 255)
+	 * b[6]: T_CELL_MAX (-128 to +127 degC)
+	 * b[7]: State bitfield:
+	 * [B7      B6      B5      B4      B3      B2      B1      B0      ]
+	 * [DV3     DV2     DV1     DV0     RSV     CHG_OK  IS_BAL  IS_CHG  ]
+	 */
+	buffer_append_float16(buffer, (float_t)m_values.v_cell_min, 1e3, &send_index);
+	buffer_append_float16(buffer, (float_t)m_values.v_cell_max, 1e3, &send_index);
+	buffer[send_index++] = (uint8_t)(m_values.soc * 255.0);
+	buffer[send_index++] = (uint8_t)(m_values.soh * 255.0);
+	// The summary has only a signed byte; do not wrap a hot/fault value cold.
+	buffer[send_index++] = (int8_t)fmaxf(-128.0f, fminf(127.0f, m_values.temp_max_cell));
+	buffer[send_index++] =
+			((m_values.is_charging ? 1 : 0) << 0) |
+			((m_values.is_balancing ? 1 : 0) << 1) |
+			((m_values.is_charge_allowed ? 1 : 0) << 2) |
+			(m_values.data_version << 4);
+	comm_can_transmit_eid(id | ((uint32_t)CAN_PACKET_BMS_SOC_SOH_TEMP_STAT << 8), buffer, send_index);
+}
+
+// Only the summary frame motor controllers use for their BMS current limits.
+void bms_send_limits_can(void) {
+	if (status_can_allowed()) send_limits_frame();
+}
+
+void bms_send_status_can(void) {
+	if (!status_can_allowed()) return;
 
 	int32_t send_index = 0;
 	uint8_t buffer[8];
@@ -565,31 +604,7 @@ void bms_send_status_can(void) {
 	buffer_append_float16(buffer, m_values.temp_ic, 1e2, &send_index); // Put IC temp here instead of adding a new message
 	comm_can_transmit_eid(id | ((uint32_t)CAN_PACKET_BMS_HUM << 8), buffer, send_index);
 
-	/*
-	 * CAN_PACKET_BMS_SOC_SOH_TEMP_STAT
-	 *
-	 * b[0] - b[1]: V_CELL_MIN (mV)
-	 * b[2] - b[3]: V_CELL_MAX (mV)
-	 * b[4]: SoC (0 - 255)
-	 * b[5]: SoH (0 - 255)
-	 * b[6]: T_CELL_MAX (-128 to +127 degC)
-	 * b[7]: State bitfield:
-	 * [B7      B6      B5      B4      B3      B2      B1      B0      ]
-	 * [DV3     DV2     DV1     DV0     RSV     CHG_OK  IS_BAL  IS_CHG  ]
-	 */
-	send_index = 0;
-	buffer_append_float16(buffer, (float_t)m_values.v_cell_min, 1e3, &send_index);
-	buffer_append_float16(buffer, (float_t)m_values.v_cell_max, 1e3, &send_index);
-	buffer[send_index++] = (uint8_t)(m_values.soc * 255.0);
-	buffer[send_index++] = (uint8_t)(m_values.soh * 255.0);
-	// The summary has only a signed byte; do not wrap a hot/fault value cold.
-	buffer[send_index++] = (int8_t)fmaxf(-128.0f, fminf(127.0f, m_values.temp_max_cell));
-	buffer[send_index++] =
-			((m_values.is_charging ? 1 : 0) << 0) |
-			((m_values.is_balancing ? 1 : 0) << 1) |
-			((m_values.is_charge_allowed ? 1 : 0) << 2) |
-			(m_values.data_version << 4);
-	comm_can_transmit_eid(id | ((uint32_t)CAN_PACKET_BMS_SOC_SOH_TEMP_STAT << 8), buffer, send_index);
+	send_limits_frame();
 
 	send_index = 0;
 	buffer_append_float32_auto(buffer, m_values.ah_cnt_chg_total, &send_index);

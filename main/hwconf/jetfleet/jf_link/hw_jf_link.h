@@ -52,6 +52,7 @@
 typedef struct {
 	int controller_id;
 	CAN_BAUD can_baud_rate;
+	// Not a setting on JF Link: only the shared GNSS status task reads it.
 	int can_status_rate_hz;
 	WIFI_MODE wifi_mode;
 	char wifi_sta_ssid[36];
@@ -71,7 +72,7 @@ typedef struct {
 	uint32_t ble_chr_descr_capacity;
 
 	int num_slaves;
-	float slave_timeout_s;
+	int num_parallel;
 	int max_bal_ch;
 	float vc_balance_start;
 	float vc_balance_end;
