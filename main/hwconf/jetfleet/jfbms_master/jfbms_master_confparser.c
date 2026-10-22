@@ -89,6 +89,7 @@ int32_t jfbms_master_confparser_serialize_main_config_t(uint8_t *buffer, size_t 
 	WRITE_VALUE(2, buffer_append_int16(buffer, conf->shutdown, &ind));
 	WRITE_VALUE(1, buffer[ind++] = conf->fast_charge_oc_en);
 	WRITE_VALUE(4, buffer_append_float32_auto(buffer, conf->fast_charge_oc_a, &ind));
+	WRITE_VALUE(4, buffer_append_float32_auto(buffer, conf->vc_shutdown, &ind));
 
 #undef WRITE_VALUE
 	return ind;
@@ -156,6 +157,7 @@ bool jfbms_master_confparser_deserialize_main_config_t(const uint8_t *buffer, si
 	READ_VALUE(2, candidate.shutdown = buffer_get_int16(buffer, &ind));
 	READ_VALUE(1, candidate.fast_charge_oc_en = buffer[ind++]);
 	READ_VALUE(4, candidate.fast_charge_oc_a = buffer_get_float32_auto(buffer, &ind));
+	READ_VALUE(4, candidate.vc_shutdown = buffer_get_float32_auto(buffer, &ind));
 
 #undef READ_VALUE
 	if ((size_t)ind != length) return false;
@@ -220,4 +222,5 @@ void jfbms_master_confparser_set_defaults_main_config_t(main_config_t *conf) {
 	conf->shutdown = CONF_SHUTDOWN;
 	conf->fast_charge_oc_en = CONF_FAST_CHARGE_OC_EN;
 	conf->fast_charge_oc_a = CONF_FAST_CHARGE_OC_A;
+	conf->vc_shutdown = CONF_VC_SHUTDOWN;
 }

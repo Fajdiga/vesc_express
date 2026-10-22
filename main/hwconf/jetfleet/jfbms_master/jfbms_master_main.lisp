@@ -31,6 +31,7 @@
 (def chg-allowed true)
 (def charge-ok false)
 (def is-charging false)
+(def charge-paused false) ; CHG_EN refused natively mid-session; resume keeps the session.
 (def charge-session-valid false)
 (def charger-detected-prev false)
 (def charge-block-beeped false)
@@ -62,7 +63,7 @@
 (def t-ic 24.0)
 (def t-mos 24.0)
 (def soc -1.0)
-(def low-soc-timer-wake-pending false)
+(def low-voltage-timer-wake-pending false)
 (def cell-num 0)
 (def temp-data-ok false)
 (def cell-temp-mon-en false)
@@ -120,7 +121,7 @@
 (def slave-bal-mask-ic2 (list 0 0 0 0 0 0 0 0))
 
 (def shutdown-reason-timer 1)
-(def shutdown-reason-low-soc-timer 2)
+(def shutdown-reason-low-voltage-timer 2)
 (def shutdown-reason-app 4)
 
 (def loop-cnt 0)
@@ -532,30 +533,43 @@ loopforeach
 
     (var ok (and allowed (trap-value (list 'master-set-chg (bool-int requested)) false)))
 
-    (if (and requested ok) {
-        (setq is-charging true)
-        (if (not was-charging) {
-            (setq charge-session-valid false)
-            (setq charge-ts (systime))
-            (if (not charge-enable-beeped) {
-                (setq charge-enable-beeped true)
-                (spawn charge-start-beep)
+    (cond
+        ((and requested ok) {
+            (setq is-charging true)
+            ; Resuming after a native refusal continues the same session.
+            (if (and (not was-charging) (not charge-paused)) {
+                (setq charge-session-valid false)
+                (setq charge-ts (systime))
+                (if (not charge-enable-beeped) {
+                    (setq charge-enable-beeped true)
+                    (spawn charge-start-beep)
+                })
             })
+            (setq charge-paused false)
         })
-    } {
-        (if requested (trap (master-set-chg 0)))
-        ; As on JFBMS32, a real fault-free charge session triggers balancing
-        ; when it ends for any reason. Voltage alone must not arm balancing.
-        (if (and was-charging charge-session-valid pack-data-ok
-                (not (assoc rtc-val 'charge-fault))
-                (not (assoc rtc-val 'short-service))
-                (not (fast-oc-latched))) {
-            (setq trigger-bal-after-charge true)
-            (setq bal-auto-retry-ts (systime))
+        ; The script allowed charging but C refused CHG_EN (lease, ADC, PCB
+        ; temperature or slave freshness). Pause: keep the session and grace
+        ; timer so a brief refusal cannot end the charge or skip balancing.
+        ((and requested allowed (or was-charging charge-paused)) {
+            (trap (master-set-chg 0))
+            (setq charge-paused true)
+            (setq is-charging false)
         })
-        (setq charge-session-valid false)
-        (setq is-charging false)
-    })
+        (true {
+            (if requested (trap (master-set-chg 0)))
+            ; As on JFBMS32, a real fault-free charge session triggers balancing
+            ; when it ends for any reason. Voltage alone must not arm balancing.
+            (if (and (or was-charging charge-paused) charge-session-valid pack-data-ok
+                    (not (assoc rtc-val 'charge-fault))
+                    (not (assoc rtc-val 'short-service))
+                    (not (fast-oc-latched))) {
+                (setq trigger-bal-after-charge true)
+                (setq bal-auto-retry-ts (systime))
+            })
+            (setq charge-session-valid false)
+            (setq charge-paused false)
+            (setq is-charging false)
+        }))
 
     ok
 })
@@ -716,7 +730,7 @@ loopforeach
 (defun shutdown-reason-name (reason)
     (cond
         ((= reason shutdown-reason-timer) "timer")
-        ((= reason shutdown-reason-low-soc-timer) "low-soc-timer")
+        ((= reason shutdown-reason-low-voltage-timer) "low-voltage-timer")
         ((= reason shutdown-reason-app) "app")
         (true "unknown")))
 
@@ -727,6 +741,7 @@ loopforeach
         (_ (match (trap (gpio-write 5 0)) ((exit-ok _) (setq local-ok true)) (_ nil))))
 
     (setq is-charging false)
+    (setq charge-paused false)
     (setq charge-ok false)
     (if clear-bal-trigger (setq trigger-bal-after-charge false))
     (var bal-close-ok (stop-all-balancing))
@@ -807,12 +822,11 @@ loopforeach
     })
 })
 
-(defun bms-shutdown-low-soc-timer () (bms-shutdown-impl shutdown-reason-low-soc-timer))
+(defun bms-shutdown-low-voltage-timer () (bms-shutdown-impl shutdown-reason-low-voltage-timer))
 (defun bms-shutdown-app () (bms-shutdown-impl shutdown-reason-app))
-(defun low-soc-timer-wake () (and
+(defun low-voltage-timer-wake () (and
     (valid-pack-reading)
-    (< soc 0.05)
-    (<= c-min (bms-get-param 'vc_empty))
+    (<= c-min (bms-get-param 'vc_shutdown))
     (not trigger-bal-after-charge)
     (not (test-chg 1))
     (external-wake-inactive)
@@ -855,7 +869,7 @@ loopforeach
     (not is-charging)
     (not trigger-bal-after-charge)
     (balance-state-is bal-state-idle)
-    (not (test-chg 1))
+    ; A plugged-in charger drives ENABLE in hardware (R29/D7), so EN covers it.
     (not (is-connected))
     (not (can-active))))
 
@@ -1036,7 +1050,10 @@ loopforeach
     ; Keep the charge-complete latch set for the whole existing balance cycle:
     ; 30 seconds active, two seconds settled, and repeat until balancing is done.
     ; Only the clean, post-balance voltage can rearm charging.
+    ; The post-charge request waits up to 5 s before balancing starts; without
+    ; the trigger check, relaxed cells could rearm charging in that gap.
     (if (and charge-complete pack-data-ok (not (balance-in-progress))
+            (not trigger-bal-after-charge)
             (< c-max (bms-get-param 'vc_charge_start))) {
         (setq charge-complete false)
         ; The charger can remain connected throughout an overnight balance
@@ -1828,13 +1845,14 @@ loopforeach
             (checkpoint-soc true "EMPTY")
         })
 
-        ; Low SOC shutdown is evaluated once after a deep-sleep timer wake.
+        ; Low-voltage shutdown is evaluated once after a deep-sleep timer wake,
+        ; when the cells have rested.
         ; A charger, external enable, connection or CAN activity makes this a
         ; normal wake and must not trigger the shutdown.
-        (if (and low-soc-timer-wake-pending (valid-pack-reading)) {
-            (var low-soc-shutdown (low-soc-timer-wake))
-            (setq low-soc-timer-wake-pending false)
-            (if low-soc-shutdown (bms-shutdown-low-soc-timer))
+        (if (and low-voltage-timer-wake-pending (valid-pack-reading)) {
+            (var low-voltage-shutdown (low-voltage-timer-wake))
+            (setq low-voltage-timer-wake-pending false)
+            (if low-voltage-shutdown (bms-shutdown-low-voltage-timer))
         })
 
         ; The master has no local BQ to put to sleep; slaves handle their own
@@ -1914,7 +1932,7 @@ loopforeach
     (setq init-done true)
     (load-settings)
     (var wake-source (process-sleep-time))
-    (setq low-soc-timer-wake-pending (= wake-source 2))
+    (setq low-voltage-timer-wake-pending (= wake-source 2))
 
     (if pack-data-ok
         (print (str-merge "Pack ready: slaves=" (str-from-n (cfg-num-slaves) "%d")

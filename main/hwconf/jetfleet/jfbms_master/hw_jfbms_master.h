@@ -207,12 +207,15 @@ typedef struct {
 
 	// Number of expected slave devices (1-8)
 	int num_slaves;
+
+	// Shut down on a timer wake when the rested lowest cell is at or below this voltage
+	float vc_shutdown;
 } main_config_t;
 
 // main_config_t is stored raw in NVS. A layout change must also change its
 // size (or schema signature) so old settings reset to defaults instead of
 // loading into the wrong fields. Update this value deliberately.
-_Static_assert(sizeof(main_config_t) == 380,
+_Static_assert(sizeof(main_config_t) == 384,
 		"JFBMS master config layout changed; confirm stored settings reset safely");
 
 bool jfbms_master_validate_config(const main_config_t *conf);

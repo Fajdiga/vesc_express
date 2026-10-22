@@ -9,7 +9,7 @@
 #include <stdbool.h>
 
 // Constants
-#define MAIN_CONFIG_T_SIGNATURE		2975187090
+#define MAIN_CONFIG_T_SIGNATURE		2967931087
 #define SERIALIZED_CONFIG_LENGTH	332
 
 // Functions

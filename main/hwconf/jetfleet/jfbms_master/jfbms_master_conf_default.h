@@ -140,7 +140,7 @@
 
 // Charge Start Voltage
 #ifndef CONF_CHARGE_START
-#define CONF_CHARGE_START 4.15
+#define CONF_CHARGE_START 4.05
 #endif
 
 // Charge End Voltage
@@ -225,6 +225,10 @@
 
 
 // Shutdown Time
+#ifndef CONF_VC_SHUTDOWN
+#define CONF_VC_SHUTDOWN 3.0
+#endif
+
 #ifndef CONF_SHUTDOWN
 #define CONF_SHUTDOWN 15
 #endif

@@ -281,6 +281,7 @@ bool jfbms_master_validate_config(const main_config_t *conf) {
 	FLOAT_RANGE(batt_ah, 0.01f, 999.0f);
 	FLOAT_RANGE(vc_empty, 1.5f, 4.999f);
 	FLOAT_RANGE(vc_full, 1.5f, 4.999f);
+	FLOAT_RANGE(vc_shutdown, 1.5f, 4.999f);
 	FLOAT_RANGE(vc_charge_min, 1.5f, 4.999f);
 	FLOAT_RANGE(vc_charge_start, 1.5f, 4.999f);
 	FLOAT_RANGE(vc_charge_end, 1.5f, 4.999f);
@@ -301,6 +302,7 @@ bool jfbms_master_validate_config(const main_config_t *conf) {
 	FLOAT_RANGE(fast_charge_oc_a, 0.03f, JFBMS_FAST_OC_MAX_A);
 	FLOAT_RANGE(soc_filter_const, 0.0f, 1.0f);
 	CHECK(conf->vc_empty < conf->vc_full, "vc_empty must be below vc_full");
+	CHECK(conf->vc_shutdown < conf->vc_charge_start, "vc_shutdown must be below vc_charge_start");
 	CHECK(conf->vc_charge_min < conf->vc_charge_start, "vc_charge_min must be below vc_charge_start");
 	CHECK(conf->vc_charge_start <= conf->vc_charge_end, "vc_charge_start must not exceed vc_charge_end");
 	CHECK(conf->vc_charge_end <= conf->vc_full, "vc_charge_end must not exceed vc_full");
@@ -1311,6 +1313,7 @@ typedef struct {
 	lbm_uint fast_charge_oc_a;
 	// Master-specific
 	lbm_uint num_slaves;
+	lbm_uint vc_shutdown;
 } vesc_syms;
 
 static vesc_syms syms_vesc = {0};
@@ -1365,6 +1368,8 @@ static bool compare_symbol(lbm_uint sym, lbm_uint *comp) {
 			lbm_add_symbol_const("sleep", comp);
 		} else if (comp == &syms_vesc.shutdown) {
 			lbm_add_symbol_const("shutdown", comp);
+		} else if (comp == &syms_vesc.vc_shutdown) {
+			lbm_add_symbol_const("vc_shutdown", comp);
 		} else if (comp == &syms_vesc.min_charge_current) {
 			lbm_add_symbol_const("min_charge_current", comp);
 		} else if (comp == &syms_vesc.max_charge_current) {
@@ -1502,6 +1507,8 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 		res = get_or_set_float(set, &cfg->sleep, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.shutdown)) {
 		res = get_or_set_i(set, &cfg->shutdown, &set_arg);
+	} else if (compare_symbol(name, &syms_vesc.vc_shutdown)) {
+		res = get_or_set_float(set, &cfg->vc_shutdown, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.min_charge_current)) {
 		res = get_or_set_float(set, &cfg->min_charge_current, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.max_charge_current)) {
