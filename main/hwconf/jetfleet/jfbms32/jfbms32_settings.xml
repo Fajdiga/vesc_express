@@ -457,7 +457,7 @@
             <minDouble>1.5</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>0.01</stepDouble>
-            <valDouble>4.15</valDouble>
+            <valDouble>4.05</valDouble>
             <vTxDoubleScale>1</vTxDoubleScale>
             <suffix> V</suffix>
             <vTx>9</vTx>

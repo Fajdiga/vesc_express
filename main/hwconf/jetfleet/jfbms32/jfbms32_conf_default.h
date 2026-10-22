@@ -155,7 +155,7 @@
 
 // Charge Start Voltage
 #ifndef CONF_CHARGE_START
-#define CONF_CHARGE_START 4.15
+#define CONF_CHARGE_START 4.05
 #endif
 
 // Charge End Voltage
