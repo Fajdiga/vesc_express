@@ -1458,7 +1458,8 @@ loopwhile-thd
 
     ; Timer shutdown can happen inside start-fun, before the normal main
     ; loop starts. Load counters now so save-settings is always safe.
-    (var stored-version (read-setting 'ver-code))
+    ; A freshly erased EEPROM returns nil, and = raises a type error on nil.
+    (var stored-version (number-or (read-setting 'ver-code) 0i32))
     (def settings-valid (or (= stored-version 242i32) (= stored-version settings-version)))
     (var saved-zero (if (= stored-version settings-version) (read-setting 'current-zero) 0.0))
     (setq current-zero-offset (if (and (number? saved-zero) (>= saved-zero -2.0) (<= saved-zero 2.0)) saved-zero 0.0))
