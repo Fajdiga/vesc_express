@@ -9,7 +9,7 @@
 #include <stddef.h>
 
 // Constants
-#define MAIN_CONFIG_T_SIGNATURE		1594654401
+#define MAIN_CONFIG_T_SIGNATURE		2679707695
 #define SERIALIZED_CONFIG_LENGTH	341
 
 // Functions

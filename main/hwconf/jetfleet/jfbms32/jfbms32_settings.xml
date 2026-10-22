@@ -700,7 +700,7 @@
             <longName>Timed Shutdown After Sleep</longName>
             <type>2</type>
             <transmittable>1</transmittable>
-            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Time accumulated in sleep, in days, before the BMS enters hardware shutdown. Set 0 to disable this timed shutdown.&lt;/p&gt;&lt;p&gt;Hardware shutdown is different from deep sleep: periodic timer waking stops and hardware wake or power-up is required. A low-SOC timer wake may still cause shutdown independently of this setting.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Time accumulated in sleep, in days, before the BMS enters hardware shutdown. Set 0 to disable this timed shutdown.&lt;/p&gt;&lt;p&gt;Hardware shutdown is different from deep sleep: periodic timer waking stops and hardware wake or power-up is required. Low Voltage Shutdown can still shut the BMS down independently of this setting.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_SHUTDOWN</cDefine>
             <editorScale>1</editorScale>
             <editAsPercentage>0</editAsPercentage>
@@ -712,6 +712,24 @@
             <suffix> days</suffix>
             <vTx>4</vTx>
         </shutdown>
+        <vc_shutdown>
+            <longName>Low Voltage Shutdown</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Lowest-cell voltage, in volts per cell, at or below which the BMS enters hardware shutdown to protect the cells from further self-discharge.&lt;/p&gt;&lt;p&gt;Checked only on the periodic sleep timer wake, when the cells have rested without load, and only while EN is low, no charger is detected and VESC Tool, CAN traffic and Block Sleep do not keep the BMS awake. It is not a discharge cutoff while riding; the ESC handles that.&lt;/p&gt;&lt;p&gt;After shutdown, plugging in a charger or another hardware wake is needed. It must be below Charge Start Voltage. Choose it for the cell chemistry, for example about 3.0 V for Li-ion or 2.8 V for LiFePO4.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_VC_SHUTDOWN</cDefine>
+            <editorDecimalsDouble>2</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>4.999</maxDouble>
+            <minDouble>1.5</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.01</stepDouble>
+            <valDouble>3</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> V</suffix>
+            <vTx>9</vTx>
+        </vc_shutdown>
         <soc_filter_const>
             <longName>Voltage SOC Smoothing</longName>
             <type>1</type>
@@ -862,6 +880,7 @@
         <ser>hw_occ_current</ser>
         <ser>hw_ocd_current</ser>
         <ser>psw_scd_tres</ser>
+        <ser>vc_shutdown</ser>
     </SerOrder>
     <Grouping>
         <group>
@@ -961,6 +980,7 @@
                     <param>sleep</param>
                     <param>block_sleep</param>
                     <param>shutdown</param>
+                    <param>vc_shutdown</param>
                 </subgroupParams>
             </subgroup>
         </group>

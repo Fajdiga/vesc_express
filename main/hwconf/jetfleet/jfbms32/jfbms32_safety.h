@@ -9,7 +9,9 @@
 // or a balancing worker. Time is unsigned milliseconds (wrap is intentional).
 #define BMS_CONTROL_TIMEOUT_MS 5000U
 #define BMS_PROTECTION_POLL_MS 20U
-#define BMS_CURRENT_FAULT_MASK 0x62f0U // Current faults, SCDL/OCDL and HWDF
+// Current faults and SCDL/OCDL. HWDF is not latched: it only means the MCU was
+// silent (reset, flashing, hang), and the BQ clears it once I2C resumes.
+#define BMS_CURRENT_FAULT_MASK 0x60f0U
 #define BMS_BQ_HWD_SECONDS 5U
 
 typedef struct {

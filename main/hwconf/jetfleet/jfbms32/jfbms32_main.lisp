@@ -23,6 +23,7 @@
 (def bal-ok false)
 (def is-balancing false)
 (def is-charging false)
+(def charge-paused false) ; Gate refused natively mid-session; resume keeps the session.
 (def charge-ok false)
 (def charge-complete false)
 (def charge-no-current false)
@@ -59,7 +60,7 @@
 
 (def shutdown-reason-unknown 0)
 (def shutdown-reason-timer 1)
-(def shutdown-reason-low-soc-timer 2)
+(def shutdown-reason-low-voltage-timer 2)
 (def shutdown-reason-app 4)
 
 (def last-bq-init-attempts 0)
@@ -335,7 +336,7 @@ loopwhile-thd
 
 (defun shutdown-reason-name (reason) (cond
     ((= reason shutdown-reason-timer) "timer")
-    ((= reason shutdown-reason-low-soc-timer) "low-soc-timer")
+    ((= reason shutdown-reason-low-voltage-timer) "low-voltage-timer")
     ((= reason shutdown-reason-app) "app")
     (true "unknown")))
 
@@ -485,6 +486,7 @@ loopwhile-thd
             (setq close-ok (disable-balancing))
     }))
     (setq is-charging false)
+    (setq charge-paused false)
     (setq charge-ok false)
     (setq charge-session-valid false)
     (if clear-bal-trigger (setq trigger-bal-after-charge false))
@@ -612,20 +614,19 @@ loopwhile-thd
 ; them again before entering hardware shutdown.
 (defun bms-shutdown-timer () (bms-shutdown-impl true shutdown-reason-timer))
 
-(defun bms-shutdown-low-soc-timer () (bms-shutdown-impl true shutdown-reason-low-soc-timer))
+(defun bms-shutdown-low-voltage-timer () (bms-shutdown-impl true shutdown-reason-low-voltage-timer))
 
 (defun bms-shutdown-app () (bms-shutdown-impl true shutdown-reason-app))
 
-; Low SOC is a shutdown decision only after a deep-sleep timer wake. Normal
-; wakes are for charger/button/CAN use and must continue through the normal
-; SOC and charge-control flow. The charger guard is retained as a safety
-; check if a timer wake races with charger detection.
-(defun low-soc-timer-wake (wake-source chg-detected) (and
+; Low voltage is a shutdown decision only after a deep-sleep timer wake, when
+; the cells have rested unloaded. Normal wakes are for charger/button/CAN use
+; and must continue through the normal charge-control flow. The charger guard
+; is retained as a safety check if a timer wake races with charger detection.
+(defun low-voltage-timer-wake (wake-source chg-detected) (and
     (= wake-source 2)
     (not chg-detected)
     (valid-pack-reading)
-    (< soc 0.05)
-    (<= c-min (bms-get-param 'vc_empty))
+    (<= c-min (bms-get-param 'vc_shutdown))
     (not trigger-bal-after-charge)
     (external-wake-inactive)
     ; block_sleep is intentionally honored here so a fresh, unconfigured
@@ -750,10 +751,9 @@ loopwhile-thd
         })
     })
 
-    ; Match VBMS32's low-SOC sleep policy, except that JFBMS32 shuts down
-    ; instead of selecting a longer sleep interval. This is intentionally
-    ; evaluated only after a deep-sleep timer wake.
-    (if (low-soc-timer-wake wake-source chg-detected) (bms-shutdown-low-soc-timer))
+    ; Shut down when the rested lowest cell is at or below vc_shutdown.
+    ; Intentionally evaluated only after a deep-sleep timer wake.
+    (if (low-voltage-timer-wake wake-source chg-detected) (bms-shutdown-low-voltage-timer))
 
     ; Trap bms-sleep failures so a transient mutex
     ; timeout or BQ NAK doesn't put ESP into deep sleep with the BQs
@@ -868,7 +868,9 @@ loopwhile-thd
     (setq bq-safety-flags (bitwise-or
         (bitwise-and (bms-direct-cmd 1 0x03) 0xff)
         (shl (bitwise-and (bms-direct-cmd 1 0x07) 0xff) 8)))
-    (var observed-mask (bitwise-or (bitwise-and bq-safety-flags 0x62f0) native-mask))
+    ; Latch current faults only; a live HWDF still blocks charging through
+    ; bq-current-fault-active but clears itself once I2C resumes.
+    (var observed-mask (bitwise-or (bitwise-and bq-safety-flags 0x60f0) native-mask))
     (if (!= observed-mask 0) {
         (set-chg false)
         (var latched (bitwise-or bq-hard-fault-mask observed-mask))
@@ -887,16 +889,17 @@ loopwhile-thd
     (setq bq-hard-fault-mask mask)
     (setq rtc-val (setassoc rtc-val 'bq-hard-fault-mask mask))
     (save-rtc-val)
-    ; Write only on latch changes. Marker distinguishes an unused EEPROM slot.
-    (write-setting 'bq-hard-fault (bitwise-or 0x4a460000 mask))
+    ; Write only on latch changes. Marker distinguishes an unused EEPROM slot;
+    ; it must fit LispBM's 28-bit integers or it is sign-extended on read.
+    (write-setting 'bq-hard-fault (bitwise-or 0x04a60000 mask))
 })
 
 (defun load-bq-hard-fault () {
     (var stored (number-or (read-setting 'bq-hard-fault) 0))
-    (var flash-mask (if (= (bitwise-and stored 0xffff0000) 0x4a460000)
-        (bitwise-and stored 0x62f0) 0))
+    (var flash-mask (if (= (bitwise-and stored 0x07ff0000) 0x04a60000)
+        (bitwise-and stored 0x60f0) 0))
     (setq bq-hard-fault-mask (bitwise-or flash-mask
-        (bitwise-and (rtc-number 'bq-hard-fault-mask 0) 0x62f0)))
+        (bitwise-and (rtc-number 'bq-hard-fault-mask 0) 0x60f0)))
 })
 
 (defun cancel-bq-reset (message) {
@@ -977,25 +980,29 @@ loopwhile-thd
             ((exit-ok (? value)) value) (_ false)))
         (setq charge-hw-refused (not enabled))
         (if enabled {
-            (if (not is-charging) {
+            ; Resuming after a native refusal continues the same session.
+            (if (and (not is-charging) (not charge-paused)) {
                 (setq charge-ts (systime))
                 (if (not charge-enable-beeped) {
                     (setq charge-enable-beeped true)
                     (spawn charge-start-beep)
                 })
             })
+            (setq charge-paused false)
             (setq is-charging true)
         } {
+            ; Native refusal (e.g. one failed protection read): the gate is
+            ; off, but keep the session, grace timer and current filter.
             (bms-set-chg 0)
+            (setq charge-paused (or is-charging charge-paused))
             (setq is-charging false)
             (setq charge-ok false)
-            (setq charge-session-valid false)
         })
     } {
         ; Trigger balancing only when a real, fault-free charge session
         ; ends. Voltage alone must not arm balancing.
         (if (and
-            is-charging
+            (or is-charging charge-paused)
             charge-session-valid
             temps-valid
             (bms-control-ok)
@@ -1007,6 +1014,7 @@ loopwhile-thd
             (setq balance-request-ts (systime))
         })
         (setq charge-session-valid false)
+        (setq charge-paused false)
         (bms-set-chg 0)
         (setq is-charging false)
     })
@@ -1119,7 +1127,12 @@ loopwhile-thd
         (setq charge-current (- (with-com '(bms-current))))
         ; Same EMA as the master (0.85 per ~100 ms scan) for end-of-charge only;
         ; over-current checks keep the raw value.
-        (setq charge-current-filt (if is-charging (lpf charge-current-filt charge-current 0.15) charge-current))
+        ; Hold the filter through a refusal pause so the gate-off sample
+        ; cannot end the charge on resume.
+        (setq charge-current-filt (cond
+            (charge-paused charge-current-filt)
+            (is-charging (lpf charge-current-filt charge-current 0.15))
+            (true charge-current)))
         (setq iout (+ (- charge-current) (can-sum-current)))
         (if (and is-charging (> charge-current (bms-get-param 'min_charge_current))) {
             (setq charge-session-valid true)
@@ -1257,7 +1270,8 @@ loopwhile-thd
         (if (and trigger-bal-after-charge balance-request-ts
                 (> (secs-since balance-request-ts) 60.0) (not is-balancing))
             (setq trigger-bal-after-charge false))
-        (if (and (external-wake-inactive) (> i-zero-time 1.0) (not is-charging) (not charger-detected) (not trigger-bal-after-charge) (not is-balancing) (not (is-connected)) (not (can-active))) {
+        ; A plugged-in charger drives EN high in hardware, so EN alone covers it.
+        (if (and (external-wake-inactive) (> i-zero-time 1.0) (not is-charging) (not trigger-bal-after-charge) (not is-balancing) (not (is-connected)) (not (can-active))) {
             (sleep 0.1)
             (if (external-wake-inactive) {
                 (setassoc rtc-val 'sleep-enter-time-s (get-time-of-day-s))
@@ -1281,14 +1295,14 @@ loopwhile-thd
         ; Set SOC to 0 below 2.9V and not under load.
         (if (and (> i-zero-time 10.0) (<= c-min (bms-get-param 'vc_empty))) { (setq ah-cnt-soc 0.0) })
 
-        ; Only a completed scan with valid sensors renews the five-second timer.
+        ; Every completed scan renews the five-second timer. Invalid or
+        ; unplugged NTCs already block charging and balancing above, so they
+        ; must not expire the lease and force a BQ re-init.
         ; A late scan cannot clear a timeout; supervised reinitialization is needed.
-        (if temps-valid {
-            (if (not (bms-control-feed)) {
-                (set-bms-val 'bms-status "CTRL_TIMEOUT")
-                (fail-close-outputs true)
-                (exit-error 0)
-            })
+        (if (not (bms-control-feed)) {
+            (set-bms-val 'bms-status "CTRL_TIMEOUT")
+            (fail-close-outputs true)
+            (exit-error 0)
         })
         (if (not shutdown-in-progress) (wdt-reset))
         (sleep 0.1)
@@ -1345,12 +1359,14 @@ loopwhile-thd
             })
         })
         (if (> ch-cnt 0) {
-            (setq trigger-bal-after-charge false)
+            ; Mark balancing before clearing the trigger: charge top-up waits
+            ; for both to be false and must not slip in between.
+            (setq is-balancing true)
             (looprange i 0 vc-len {
                 (if (not (bms-control-ok)) (exit-error 0))
                 (with-com `(bms-set-bal ,i ,(ix bal-chs i)))
             })
-            (setq is-balancing true)
+            (setq trigger-bal-after-charge false)
         } {
             (setq bal-ok false)
             (setq trigger-bal-after-charge false)
@@ -1510,7 +1526,7 @@ loopwhile-thd
             (set-bms-val 'bms-temp-adc-num (+ 5 (truncate (third cfg) 0 4)))
             (com-force false)
         })
-        (if did-crash {
+        (if (and did-crash (not shutdown-in-progress)) {
             (cancel-bq-reset "")
             ; Fail closed immediately. init-hw can loop while recovering
             ; BQ communication, so do not leave the charge gate enabled
@@ -1525,9 +1541,10 @@ loopwhile-thd
         })
         (sleep 0.1)
     })
+    ; After shutdown the BQs are off on purpose; retrying would only flood I2C.
     (loopwhile-thd ("fail-close-retry" 100) t {
-        (if fail-close-failed { (fail-close-outputs true) })
-        (if (and bal-off-failed (not fail-close-failed)) { (disable-balancing) })
+        (if (and fail-close-failed (not shutdown-in-progress)) { (fail-close-outputs true) })
+        (if (and bal-off-failed (not fail-close-failed) (not shutdown-in-progress)) { (disable-balancing) })
         (sleep 0.5)
     })
     (loopwhile-thd ("sleep-unblock" 100) t {

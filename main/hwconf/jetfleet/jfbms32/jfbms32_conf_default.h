@@ -224,6 +224,9 @@
 #ifndef CONF_HW_OCD_CURRENT
 #define CONF_HW_OCD_CURRENT 16
 #endif
+#ifndef CONF_VC_SHUTDOWN
+#define CONF_VC_SHUTDOWN 3.0
+#endif
 #ifndef CONF_PSW_SCD_TRES
 #define CONF_PSW_SCD_TRES 2 // 40 mV = 40 A with the JFBMS32 1 mOhm shunt
 #endif

@@ -154,12 +154,15 @@ typedef struct {
 	float hw_occ_current;
 	float hw_ocd_current;
 	int psw_scd_tres;
+
+	// Shut down on a timer wake when the rested lowest cell is at or below this voltage
+	float vc_shutdown;
 } main_config_t;
 
 // main_config_t is stored raw in NVS. A layout change must also change its
 // size (or schema signature) so old settings reset to defaults instead of
 // loading into the wrong fields. Update this value deliberately.
-_Static_assert(sizeof(main_config_t) == 388,
+_Static_assert(sizeof(main_config_t) == 392,
 		"JFBMS32 config layout changed; confirm stored settings reset safely");
 
 // Default setting Overrides

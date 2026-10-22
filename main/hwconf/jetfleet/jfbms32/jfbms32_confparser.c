@@ -45,6 +45,7 @@ bool jfbms32_config_valid(const main_config_t *conf) {
 	CONFIG_FLOAT_RANGE(batt_ah, 0.0f, 999.0f);
 	CONFIG_FLOAT_RANGE(vc_empty, 1.5f, 4.999f);
 	CONFIG_FLOAT_RANGE(vc_full, 1.5f, 4.999f);
+	CONFIG_FLOAT_RANGE(vc_shutdown, 1.5f, 4.999f);
 	CONFIG_FLOAT_RANGE(vc_charge_min, 1.5f, 4.999f);
 	CONFIG_FLOAT_RANGE(vc_charge_start, 1.5f, 4.999f);
 	CONFIG_FLOAT_RANGE(vc_charge_end, 1.5f, 4.999f);
@@ -68,6 +69,7 @@ bool jfbms32_config_valid(const main_config_t *conf) {
 #undef CONFIG_FLOAT_RANGE
 #undef CONFIG_RANGE
 	if (!(conf->vc_empty < conf->vc_full)) CONFIG_FAIL("vc_empty must be below vc_full");
+	if (!(conf->vc_shutdown < conf->vc_charge_start)) CONFIG_FAIL("vc_shutdown must be below vc_charge_start");
 	if (!(conf->vc_charge_min < conf->vc_charge_start)) CONFIG_FAIL("vc_charge_min must be below vc_charge_start");
 	if (conf->vc_charge_start > conf->vc_charge_end) CONFIG_FAIL("vc_charge_start must not exceed vc_charge_end");
 	if (conf->vc_charge_end > conf->vc_full) CONFIG_FAIL("vc_charge_end must not exceed vc_full");
@@ -175,6 +177,7 @@ int32_t jfbms32_confparser_serialize_main_config_t(uint8_t *buffer, size_t capac
 	WRITE_VALUE(4, buffer_append_float32_auto(buffer, conf->hw_occ_current, &ind));
 	WRITE_VALUE(4, buffer_append_float32_auto(buffer, conf->hw_ocd_current, &ind));
 	WRITE_VALUE(1, buffer[ind++] = (uint8_t)conf->psw_scd_tres);
+	WRITE_VALUE(4, buffer_append_float32_auto(buffer, conf->vc_shutdown, &ind));
 
 #undef WRITE_VALUE
 	return ind;
@@ -253,6 +256,7 @@ bool jfbms32_confparser_deserialize_main_config_t(const uint8_t *buffer, size_t 
 	READ_VALUE(4, candidate.hw_occ_current = buffer_get_float32_auto(buffer, &ind));
 	READ_VALUE(4, candidate.hw_ocd_current = buffer_get_float32_auto(buffer, &ind));
 	READ_VALUE(1, candidate.psw_scd_tres = buffer[ind++]);
+	READ_VALUE(4, candidate.vc_shutdown = buffer_get_float32_auto(buffer, &ind));
 #undef READ_VALUE
 #undef READ_BOOL
 	if ((size_t)ind != length) return false;
@@ -322,4 +326,5 @@ void jfbms32_confparser_set_defaults_main_config_t(main_config_t *conf) {
 	conf->hw_occ_current = CONF_HW_OCC_CURRENT;
 	conf->hw_ocd_current = CONF_HW_OCD_CURRENT;
 	conf->psw_scd_tres = CONF_PSW_SCD_TRES;
+	conf->vc_shutdown = CONF_VC_SHUTDOWN;
 }

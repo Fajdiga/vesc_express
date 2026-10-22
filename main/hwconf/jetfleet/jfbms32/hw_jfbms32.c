@@ -1721,6 +1721,7 @@ typedef struct {
 	lbm_uint temp_beta;
 	lbm_uint temp_res;
 	lbm_uint shutdown;
+	lbm_uint vc_shutdown;
 } vesc_syms;
 
 static vesc_syms syms_vesc = {0};
@@ -1848,6 +1849,8 @@ static lbm_value bms_get_set_param(bool set, lbm_value *args, lbm_uint argn) {
 		res = get_or_set_float(set, &cfg->sleep, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.shutdown, "shutdown")) {
 		res = get_or_set_u16(set, &cfg->shutdown, &set_arg);
+	} else if (compare_symbol(name, &syms_vesc.vc_shutdown, "vc_shutdown")) {
+		res = get_or_set_float(set, &cfg->vc_shutdown, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.min_charge_current, "min_charge_current")) {
 		res = get_or_set_float(set, &cfg->min_charge_current, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.max_charge_current, "max_charge_current")) {
