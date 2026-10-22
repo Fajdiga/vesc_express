@@ -502,7 +502,7 @@
             <longName>Balance Minimum Voltage</longName>
             <type>1</type>
             <transmittable>1</transmittable>
-            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Minimum voltage of the lowest cell, in volts per cell, needed to allow balancing. If any cell is below this value, balancing is blocked for the pack.&lt;/p&gt;&lt;p&gt;This avoids removing charge from a pack that is already low. This is an absolute cell voltage; Balance Start and Stop Difference are separate voltage differences.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Minimum voltage of the lowest cell, in volts per cell, needed to allow balancing. If any cell is below this value, balancing is blocked for the pack.&lt;/p&gt;&lt;p&gt;The BMS top-balances after a completed charge. Balancing at low voltage can unbalance the cells, so keep this close to full: about 3.9 V for Li-ion, 3.3 V for LiFePO4. This is an absolute cell voltage; Balance Start and Stop Difference are separate voltage differences.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
             <cDefine>CONF_BALANCE_MIN</cDefine>
             <editorDecimalsDouble>3</editorDecimalsDouble>
             <editorScale>1</editorScale>
@@ -511,7 +511,7 @@
             <minDouble>1.5</minDouble>
             <showDisplay>0</showDisplay>
             <stepDouble>0.01</stepDouble>
-            <valDouble>3.5</valDouble>
+            <valDouble>3.9</valDouble>
             <vTxDoubleScale>1</vTxDoubleScale>
             <suffix> V</suffix>
             <vTx>9</vTx>

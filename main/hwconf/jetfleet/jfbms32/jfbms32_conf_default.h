@@ -170,7 +170,7 @@
 
 // Balance Minimum Voltage
 #ifndef CONF_BALANCE_MIN
-#define CONF_BALANCE_MIN 3.5
+#define CONF_BALANCE_MIN 3.9
 #endif
 
 // Max Cell Temp Balancing
