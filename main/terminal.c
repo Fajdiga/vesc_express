@@ -209,6 +209,7 @@ void terminal_process_string(char *str) {
 		commands_printf("BLE Connected     : %d", comm_ble_is_connected());
 		commands_printf("Custom BLE Started: %d", custom_ble_started());
 		commands_printf("CAN RX Recoveries : %d", comm_can_get_rx_recovery_cnt());
+		comm_can_print_err_stats();
 
 #if VESC_ENABLE_WIFI
 		esp_ip4_addr_t ip = comm_wifi_get_ip();

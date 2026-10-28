@@ -210,6 +210,13 @@ def build_target(config, output_dir, prev_target=None, idx=0, total=0):
     print_status(f"Dir: {build_dir}")
     print_status(f"========================================")
 
+    # The build dir's sdkconfig overrides the defaults files, so a stale one
+    # (older defaults, or the previous board's) silently wins. The released
+    # master kept the GDB-stub panic handler this way and froze on a panic.
+    sdkconfig = os.path.join(build_dir, "sdkconfig")
+    if os.path.exists(sdkconfig):
+        os.remove(sdkconfig)
+
     cmake_cache = os.path.join(build_dir, "CMakeCache.txt")
     is_fresh = not os.path.exists(cmake_cache)
 

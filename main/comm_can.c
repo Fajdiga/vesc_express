@@ -60,7 +60,11 @@ static psw_status psw_stat[CAN_STATUS_MSGS_TO_STORE];
 #define HW_CAN_RXBUF_LEN			70
 #endif
 #define RXBUF_LEN					HW_CAN_RXBUF_LEN
-#define TXBUF_LEN					20
+#define CAN_TX_QUEUE_DEPTH			20
+// The driver keeps a pointer to each queued frame and can hold the queue plus
+// the one in flight. Two spare slots mean a slot is never rewritten while the
+// driver still references it, so no wait-for-idle is needed when the ring wraps.
+#define TXBUF_LEN					(CAN_TX_QUEUE_DEPTH + 2)
 // CAN2 transmit attempts. Upstream tries once; boards can opt into retries.
 #ifndef HW_CAN2_TX_ATTEMPTS
 #define HW_CAN2_TX_ATTEMPTS			1
@@ -81,6 +85,8 @@ typedef struct {
 	volatile int *rx_write;
 	volatile int *rx_read;
 	int rx_len;
+	// Bus error causes reported by the driver, for hw_status diagnostics.
+	volatile uint32_t err_bit, err_form, err_stuff, err_ack, err_arb, bus_off;
 } can_rx_ctx_t;
 
 typedef struct {
@@ -169,25 +175,9 @@ static esp_err_t transmit_twai_frame(twai_node_handle_t node, can_tx_msg_t *tx_b
 	if (timeout_ms <= 0) {
 		return ESP_ERR_TIMEOUT;
 	}
-	TickType_t start_tick = xTaskGetTickCount();
 	TickType_t timeout_ticks = pdMS_TO_TICKS(timeout_ms);
 	if (timeout_ticks == 0) {
 		timeout_ticks = 1;
-	}
-	if (*tx_write == 0) {
-		esp_err_t wait_res = twai_node_transmit_wait_all_done(node, timeout_ticks);
-		if (wait_res != ESP_OK && wait_res != ESP_ERR_INVALID_STATE) {
-			return wait_res;
-		}
-		int elapsed_ms = (int)((xTaskGetTickCount() - start_tick) * portTICK_PERIOD_MS);
-		timeout_ms -= elapsed_ms;
-		if (timeout_ms <= 0) {
-			return ESP_ERR_TIMEOUT;
-		}
-		timeout_ticks = pdMS_TO_TICKS(timeout_ms);
-		if (timeout_ticks == 0) {
-			timeout_ticks = 1;
-		}
 	}
 
 	can_tx_msg_t *slot = &tx_buf[*tx_write];
@@ -295,6 +285,46 @@ static bool IRAM_ATTR twai_rx_done_callback(twai_node_handle_t handle,
 	return woken == pdTRUE;
 }
 
+static bool IRAM_ATTR twai_error_callback(twai_node_handle_t handle,
+		const twai_error_event_data_t *edata, void *user_ctx) {
+	(void)handle;
+	can_rx_ctx_t *ctx = (can_rx_ctx_t *)user_ctx;
+	ctx->err_bit += edata->err_flags.bit_err;
+	ctx->err_form += edata->err_flags.form_err;
+	ctx->err_stuff += edata->err_flags.stuff_err;
+	ctx->err_ack += edata->err_flags.ack_err;
+	ctx->err_arb += edata->err_flags.arb_lost;
+	return false;
+}
+
+static bool IRAM_ATTR twai_state_callback(twai_node_handle_t handle,
+		const twai_state_change_event_data_t *edata, void *user_ctx) {
+	(void)handle;
+	if (edata->new_sta == TWAI_ERROR_BUS_OFF) {
+		((can_rx_ctx_t *)user_ctx)->bus_off++;
+	}
+	return false;
+}
+
+static void print_err_stats(const char *name, can_rx_ctx_t *ctx) {
+	twai_node_status_t st = {0};
+	if (ctx->node) {
+		twai_node_get_info(ctx->node, &st, NULL);
+	}
+	commands_printf("%s errors    : bit=%lu form=%lu stuff=%lu ack=%lu arb=%lu bus_off=%lu tec=%u rec=%u",
+			name, (unsigned long)ctx->err_bit, (unsigned long)ctx->err_form,
+			(unsigned long)ctx->err_stuff, (unsigned long)ctx->err_ack,
+			(unsigned long)ctx->err_arb, (unsigned long)ctx->bus_off,
+			st.tx_error_count, st.rx_error_count);
+}
+
+void comm_can_print_err_stats(void) {
+	print_err_stats("CAN1", &can_rx_ctx);
+#ifdef CONFIG_IDF_TARGET_ESP32C6
+	print_err_stats("CAN2", &can2_rx_ctx);
+#endif
+}
+
 static uint32_t can_baud_to_bitrate(CAN_BAUD baudrate, uint32_t old_bitrate) {
 	switch (baudrate) {
 	case CAN_BAUD_125K: return 125000;
@@ -345,7 +375,7 @@ static esp_err_t create_twai_node(twai_node_handle_t *node, can_rx_ctx_t *rx_ctx
 			.bitrate = bitrate,
 		},
 		.fail_retry_cnt = fail_retry_cnt,
-		.tx_queue_depth = 20,
+		.tx_queue_depth = CAN_TX_QUEUE_DEPTH,
 		.intr_priority = 1,
 	};
 
@@ -364,6 +394,8 @@ static esp_err_t create_twai_node(twai_node_handle_t *node, can_rx_ctx_t *rx_ctx
 	rx_ctx->node = *node;
 	twai_event_callbacks_t callbacks = {
 		.on_rx_done = twai_rx_done_callback,
+		.on_error = twai_error_callback,
+		.on_state_change = twai_state_callback,
 	};
 	res = twai_node_register_event_callbacks(*node, &callbacks, rx_ctx);
 	if (res != ESP_OK) {
