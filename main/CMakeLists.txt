@@ -116,6 +116,8 @@ set(COMPONENT_ADD_INCLUDEDIRS
 "hwconf"
 "hwconf/devkits"
 "hwconf/jetfleet/jfbms32"
+"hwconf/jetfleet/jfbms_master"
+"hwconf/jetfleet/jfbms_slave"
 "hwconf/trampa"
 "hwconf/trampa/bms_rb"
 "hwconf/vesc"
@@ -151,16 +153,28 @@ set(COMPONENT_ADD_INCLUDEDIRS
 "lowzip"
 )
 
+idf_build_get_property(jetfleet_hw_file VESC_HW_FILE)
+set(HW_LDFRAGMENTS "")
+if(jetfleet_hw_file STREQUAL "hw_jfbms_master")
+    list(REMOVE_ITEM COMPONENT_SRCS "adc.c")
+    list(APPEND HW_LDFRAGMENTS "hwconf/jetfleet/jfbms_master/adc_monitor.lf")
+endif()
+
 idf_component_register(SRCS ${COMPONENT_SRCS}
     INCLUDE_DIRS ${COMPONENT_ADD_INCLUDEDIRS}
+    LDFRAGMENTS ${HW_LDFRAGMENTS}
 )
 
-idf_build_get_property(jetfleet_hw_file VESC_HW_FILE)
 if(jetfleet_hw_file MATCHES "^(hw_jfbms32_v[12]|hw_jfbms_master|hw_jfbms_slave|hw_jf_link)$")
     if(CONFIG_ESP_SYSTEM_GDBSTUB_RUNTIME OR
        (NOT CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT AND NOT CONFIG_ESP_SYSTEM_PANIC_SILENT_REBOOT))
         message(FATAL_ERROR "JetFleet hardware requires reboot on panic with runtime GDBStub disabled. Regenerate sdkconfig from the board defaults.")
     endif()
+endif()
+
+# The one-byte VESC cell count supports up to 255 cells across slave boards.
+if(jetfleet_hw_file STREQUAL "hw_jfbms_master")
+    target_compile_definitions(${COMPONENT_LIB} PUBLIC BMS_MAX_CELLS=255)
 endif()
 
 if(CONFIG_BT_NIMBLE_ENABLED)
