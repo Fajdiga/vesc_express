@@ -152,6 +152,12 @@ def build_target(config, output_dir, idx=0, total=0):
     print_status(f"Dir: {build_dir}")
     print_status(f"========================================")
 
+    # Release builds must use current board defaults. An old sdkconfig can
+    # otherwise retain a debugger-waiting panic handler after defaults change.
+    sdkconfig = os.path.join(build_dir, "sdkconfig")
+    if os.path.exists(sdkconfig):
+        os.remove(sdkconfig)
+
     cmd_base = [
         "idf.py", "-B", build_dir,
         f"-DIDF_TARGET={config['target'].split('_')[0]}",

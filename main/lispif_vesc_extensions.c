@@ -28,6 +28,7 @@
 #include "lbm_memory.h"
 #include "lbm_types.h"
 #include "main.h"
+#include "esp_task_wdt.h"
 #include "lispif.h"
 #include "lispbm.h"
 #include "lispif_events.h"
@@ -675,7 +676,9 @@ static lbm_value get_set_bms_val(bool set, lbm_value *args, lbm_uint argn) {
 	}
 
 	if (res != ENC_SYM_EERROR && set) {
+#ifndef HW_BMS_NATIVE_REFRESH_TIME
 		val->update_time = xTaskGetTickCount();
+#endif
 	}
 
 	return res;
@@ -2135,6 +2138,55 @@ static lbm_value ext_lbm_set_quota(lbm_value *args, lbm_uint argn) {
 #endif
 
 	return ENC_SYM_TRUE;
+}
+
+static lbm_value wdt_result(esp_err_t result) {
+	if (result == ESP_OK) return ENC_SYM_TRUE;
+	lbm_set_error_reason((char *)esp_err_to_name(result));
+	return ENC_SYM_EERROR;
+}
+
+static lbm_value ext_wdt_disable(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	LBM_CHECK_ARGN(0);
+	esp_err_t result = esp_task_wdt_status(NULL);
+	return result == ESP_ERR_NOT_FOUND || result == ESP_ERR_INVALID_STATE ?
+		ENC_SYM_TRUE : wdt_result(esp_task_wdt_delete(NULL));
+}
+
+static lbm_value ext_wdt_configure(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN(2);
+	bool enabled = args[0] == ENC_SYM_TRUE ||
+		(lbm_is_number(args[0]) && lbm_dec_as_i32(args[0]) != 0);
+	if (!enabled && args[0] != ENC_SYM_NIL && !lbm_is_number(args[0])) return ENC_SYM_TERROR;
+	if (!enabled) return ext_wdt_disable(NULL, 0);
+	if (!lbm_is_number(args[1])) return ENC_SYM_TERROR;
+	double seconds = lbm_dec_as_double(args[1]);
+	if (!isfinite(seconds) || seconds < 1 || seconds > UINT32_MAX / 1000U) return ENC_SYM_EERROR;
+	esp_task_wdt_config_t config = {
+		.timeout_ms = (uint32_t)(seconds * 1000.0),
+		.trigger_panic = true,
+	};
+#if CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0
+	config.idle_core_mask |= 1U;
+#endif
+#if CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1
+	config.idle_core_mask |= 2U;
+#endif
+	esp_err_t result = esp_task_wdt_reconfigure(&config);
+	if (result == ESP_ERR_INVALID_STATE) result = esp_task_wdt_init(&config);
+	if (result != ESP_OK) return wdt_result(result);
+	return wdt_result(esp_task_wdt_status(NULL) == ESP_OK ? ESP_OK : esp_task_wdt_add(NULL));
+}
+
+static lbm_value ext_wdt_reset(lbm_value *args, lbm_uint argn) {
+	(void)args;
+	LBM_CHECK_ARGN(0);
+	esp_err_t result = esp_task_wdt_status(NULL);
+	if (result == ESP_ERR_NOT_FOUND || result == ESP_ERR_INVALID_STATE) {
+		return ENC_SYM_TRUE;
+	}
+	return wdt_result(esp_task_wdt_reset());
 }
 
 lbm_value ext_lbm_set_gc_stack_size(lbm_value *args, lbm_uint argn) {
@@ -3610,7 +3662,7 @@ static lbm_value ext_sleep_deep(lbm_value *args, lbm_uint argn) {
 
 	float sleep_time = lbm_dec_as_float(args[0]);
 	if (sleep_time > 0) {
-		esp_sleep_enable_timer_wakeup((uint32_t)(sleep_time * 1.0e6));
+		esp_sleep_enable_timer_wakeup((uint64_t)((double)sleep_time * 1.0e6));
 	}
 
 	esp_deep_sleep_start();
@@ -3627,7 +3679,7 @@ static lbm_value ext_sleep_light(lbm_value *args, lbm_uint argn) {
 
 	float sleep_time = lbm_dec_as_float(args[0]);
 	if (sleep_time > 0) {
-		esp_sleep_enable_timer_wakeup((uint32_t)(sleep_time * 1.0e6));
+		esp_sleep_enable_timer_wakeup((uint64_t)((double)sleep_time * 1.0e6));
 	}
 
 	esp_light_sleep_start();
@@ -7097,6 +7149,9 @@ void lispif_load_vesc_extensions(bool main_found) {
 
 		// Lbm settings
 		lbm_add_extension("lbm-set-quota", ext_lbm_set_quota);
+		lbm_add_extension("wdt-configure", ext_wdt_configure);
+		lbm_add_extension("wdt-disable", ext_wdt_disable);
+		lbm_add_extension("wdt-reset", ext_wdt_reset);
 		lbm_add_extension("lbm-set-gc-stack-size", ext_lbm_set_gc_stack_size);
 
 		// Plot

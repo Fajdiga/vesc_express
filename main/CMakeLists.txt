@@ -154,6 +154,14 @@ idf_component_register(SRCS ${COMPONENT_SRCS}
     INCLUDE_DIRS ${COMPONENT_ADD_INCLUDEDIRS}
 )
 
+idf_build_get_property(jetfleet_hw_file VESC_HW_FILE)
+if(jetfleet_hw_file MATCHES "^(hw_jfbms32_v[12]|hw_jfbms_master|hw_jfbms_slave|hw_jf_link)$")
+    if(CONFIG_ESP_SYSTEM_GDBSTUB_RUNTIME OR
+       (NOT CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT AND NOT CONFIG_ESP_SYSTEM_PANIC_SILENT_REBOOT))
+        message(FATAL_ERROR "JetFleet hardware requires reboot on panic with runtime GDBStub disabled. Regenerate sdkconfig from the board defaults.")
+    endif()
+endif()
+
 if(CONFIG_BT_NIMBLE_ENABLED)
     idf_component_get_property(bt_dir bt COMPONENT_DIR)
     target_include_directories(${COMPONENT_LIB} PRIVATE

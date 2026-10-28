@@ -22,6 +22,7 @@
 
 #include "eval_cps.h"
 #include "main.h"
+#include "esp_task_wdt.h"
 #include "lispif.h"
 #include "commands.h"
 #include "buffer.h"
@@ -39,7 +40,7 @@
 #define GC_STACK_SIZE			160
 #define PRINT_STACK_SIZE		128
 #ifndef EXTENSION_STORAGE_SIZE
-#define EXTENSION_STORAGE_SIZE	397
+#define EXTENSION_STORAGE_SIZE	400
 #endif
 #ifndef USER_EXTENSION_STORAGE_SIZE
 #define USER_EXTENSION_STORAGE_SIZE 0
@@ -265,6 +266,9 @@ void lispif_process_cmd(unsigned char *data, unsigned int len,
 
 		if (!running) {
 			ok = pause_eval(0, 2000);
+			if (ok && eval_task && esp_task_wdt_status(eval_task) == ESP_OK) {
+				(void)esp_task_wdt_delete(eval_task);
+			}
 		} else {
 			ok = lispif_restart(true, true);
 		}
@@ -797,6 +801,9 @@ void lispif_stop(void) {
 	}
 
 	lispif_stop_lib();
+	if (eval_task && esp_task_wdt_status(eval_task) == ESP_OK) {
+		(void)esp_task_wdt_delete(eval_task);
+	}
 
 	lispif_lock_lbm();
 
@@ -813,6 +820,7 @@ void lispif_stop(void) {
 
 	if (lisp_thd_running) {
 		vTaskDelete(eval_task);
+		eval_task = 0;
 		lisp_thd_running = false;
 		commands_printf_lisp("Killed eval task as it didn't stop when asked to");
 	}
@@ -1028,6 +1036,10 @@ static void eval_thread(void *arg) {
 	(void)arg;
 	eval_task = xTaskGetCurrentTaskHandle();
 	lbm_run_eval();
+	if (esp_task_wdt_status(NULL) == ESP_OK) {
+		(void)esp_task_wdt_delete(NULL);
+	}
+	eval_task = 0;
 	lisp_thd_running = false;
 	vTaskDelete(NULL);
 }
