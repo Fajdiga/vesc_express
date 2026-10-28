@@ -118,6 +118,7 @@ set(COMPONENT_ADD_INCLUDEDIRS
 "hwconf/jetfleet/jfbms32"
 "hwconf/jetfleet/jfbms_master"
 "hwconf/jetfleet/jfbms_slave"
+"hwconf/jetfleet/jf_link"
 "hwconf/trampa"
 "hwconf/trampa/bms_rb"
 "hwconf/vesc"
@@ -173,7 +174,7 @@ if(jetfleet_hw_file MATCHES "^(hw_jfbms32_v[12]|hw_jfbms_master|hw_jfbms_slave|h
 endif()
 
 # The one-byte VESC cell count supports up to 255 cells across slave boards.
-if(jetfleet_hw_file STREQUAL "hw_jfbms_master")
+if(jetfleet_hw_file STREQUAL "hw_jfbms_master" OR jetfleet_hw_file STREQUAL "hw_jf_link")
     target_compile_definitions(${COMPONENT_LIB} PUBLIC BMS_MAX_CELLS=255)
 endif()
 
