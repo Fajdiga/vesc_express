@@ -1,0 +1,1032 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ConfigParams>
+    <Params>
+        <config_name>
+            <longName>none</longName>
+            <type>3</type>
+            <transmittable>0</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Internal configuration type used by VESC Tool. This is not a user setting.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine></cDefine>
+            <valString>main_config_t</valString>
+            <maxLen>0</maxLen>
+        </config_name>
+        <hw_name>
+            <longName>JFBMS32</longName>
+            <type>0</type>
+            <transmittable>0</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Identifies the JFBMS32 firmware hardware target. This is not a user setting.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine></cDefine>
+        </hw_name>
+        <controller_id>
+            <longName>CAN ID</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Address used by VESC Tool and other devices on the VESC CAN network. Give each device on this bus a different ID.&lt;/p&gt;&lt;p&gt;This is separate from the numbered JFBMS Slave IDs. Takes effect when the configuration is written.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_CONTROLLER_ID</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>254</maxInt>
+            <minInt>1</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>3</valInt>
+            <suffix></suffix>
+            <vTx>4</vTx>
+        </controller_id>
+        <can_status_rate_hz>
+            <longName>Status Message Rate</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Frequency of the standard CAN status messages, in messages per second (Hz). Higher rates provide more frequent updates but use more CAN bandwidth.&lt;/p&gt;&lt;p&gt;Set 0 to disable these periodic messages; CAN commands still work. This does not set the JFBMS Slave telemetry rate or the battery-control loop rate.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_CAN_STATUS_RATE_HZ</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>200</maxInt>
+            <minInt>0</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>20</valInt>
+            <suffix> Hz</suffix>
+            <vTx>4</vTx>
+        </can_status_rate_hz>
+        <can_baud_rate>
+            <longName>CAN Baud Rate</longName>
+            <type>4</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Communication speed of the CAN bus. Every device on the same physical bus must use the same speed, or communication will fail.&lt;/p&gt;&lt;p&gt;Write the configuration and reconnect at the selected speed.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_CAN_BAUD_RATE</cDefine>
+            <valInt>2</valInt>
+            <enumNames>CAN_BAUD_125K</enumNames>
+            <enumNames>CAN_BAUD_250K</enumNames>
+            <enumNames>CAN_BAUD_500K</enumNames>
+            <enumNames>CAN_BAUD_1M</enumNames>
+            <enumNames>CAN_BAUD_10K</enumNames>
+            <enumNames>CAN_BAUD_20K</enumNames>
+            <enumNames>CAN_BAUD_50K</enumNames>
+            <enumNames>CAN_BAUD_75K</enumNames>
+            <enumNames>CAN_BAUD_100K</enumNames>
+        </can_baud_rate>
+        <wifi_mode>
+            <longName>WiFi Mode</longName>
+            <type>4</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Disabled turns WiFi off. Station mode connects this device to an existing WiFi network using the Station SSID and password.&lt;/p&gt;&lt;p&gt;Access Point mode creates a network that your phone or computer can join using the Access Point SSID and password. Restart the device after changing WiFi settings.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_WIFI_MODE</cDefine>
+            <valInt>2</valInt>
+            <enumNames>WiFi Disabled</enumNames>
+            <enumNames>Station</enumNames>
+            <enumNames>Access Point</enumNames>
+        </wifi_mode>
+        <wifi_sta_ssid>
+            <longName>Station Mode SSID</longName>
+            <type>3</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Name of the existing WiFi network to join in Station mode. It must match the router network name exactly, including capital letters.&lt;/p&gt;&lt;p&gt;Unused in Disabled or Access Point mode. Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_WIFI_STA_SSID</cDefine>
+            <valString></valString>
+            <maxLen>35</maxLen>
+        </wifi_sta_ssid>
+        <wifi_sta_key>
+            <longName>Station Mode Password</longName>
+            <type>3</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Password for the existing WiFi network selected by Station Mode SSID. Leave empty only for an open network.&lt;/p&gt;&lt;p&gt;Unused outside Station mode. Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_WIFI_STA_KEY</cDefine>
+            <valString></valString>
+            <maxLen>25</maxLen>
+        </wifi_sta_key>
+        <wifi_ap_ssid>
+            <longName>Access Point SSID</longName>
+            <type>3</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Name of the WiFi network this device creates in Access Point mode. Choose a recognizable name so users can find it.&lt;/p&gt;&lt;p&gt;Unused outside Access Point mode. Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_WIFI_AP_SSID</cDefine>
+            <valString>VESC WiFi</valString>
+            <maxLen>35</maxLen>
+        </wifi_ap_ssid>
+        <wifi_ap_key>
+            <longName>Access Point Password</longName>
+            <type>3</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Password users enter to join this device in Access Point mode. Leave empty to create an open network; a protected network requires at least 8 characters.&lt;/p&gt;&lt;p&gt;Unused outside Access Point mode. Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_WIFI_AP_KEY</cDefine>
+            <valString>vesc6wifi</valString>
+            <maxLen>25</maxLen>
+        </wifi_ap_key>
+        <use_tcp_local>
+            <longName>Enable Local TCP</longName>
+            <type>5</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Allows VESC Tool to connect to this device over the local WiFi network using TCP port 65102. WiFi must be enabled and the computer or phone must be able to reach the device.&lt;/p&gt;&lt;p&gt;Disabling this closes the local TCP connection option. Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_USE_TCP_LOCAL</cDefine>
+            <valInt>1</valInt>
+        </use_tcp_local>
+        <use_tcp_hub>
+            <longName>Enable TCP Hub</longName>
+            <type>5</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Connects this device to a VESC TCP hub for remote access. WiFi must provide access to the configured hub.&lt;/p&gt;&lt;p&gt;Set the hub hostname, port, ID and password below. Restart after changing network settings.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_USE_TCP_HUB</cDefine>
+            <valInt>0</valInt>
+        </use_tcp_hub>
+        <tcp_hub_url>
+            <longName>TCP Hub Hostname</longName>
+            <type>3</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Hostname or IP address of the VESC TCP hub, for example hub.vesc-project.com. Enter only the hostname or address, without http://, https:// or a path.&lt;/p&gt;&lt;p&gt;Used only when Enable TCP Hub is on. Restart after changing network settings.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_TCP_HUB_URL</cDefine>
+            <valString>veschub.vedder.se</valString>
+            <maxLen>35</maxLen>
+        </tcp_hub_url>
+        <tcp_hub_port>
+            <longName>TCP Hub Port</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;TCP port used by the hub server. It must match the server configuration; use a value from 1 to 65535.&lt;/p&gt;&lt;p&gt;This is separate from the fixed local TCP port 65102. Used only when Enable TCP Hub is on.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_TCP_HUB_PORT</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>65535</maxInt>
+            <minInt>0</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>65101</valInt>
+            <suffix></suffix>
+            <vTx>3</vTx>
+        </tcp_hub_port>
+        <tcp_hub_id>
+            <longName>TCP Hub ID</longName>
+            <type>3</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Identifier that VESC Tool uses to find this device through the TCP hub. Use a unique ID and enter the same ID when connecting from VESC Tool.&lt;/p&gt;&lt;p&gt;Used only when Enable TCP Hub is on.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_TCP_HUB_ID</cDefine>
+            <valString>express1</valString>
+            <maxLen>25</maxLen>
+        </tcp_hub_id>
+        <tcp_hub_pass>
+            <longName>TCP Hub Password</longName>
+            <type>3</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Password for this device connection through the TCP hub. Enter the same password in VESC Tool.&lt;/p&gt;&lt;p&gt;Leave empty only if the hub connection is intended to have no password. Used only when Enable TCP Hub is on.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_TCP_HUB_PASS</cDefine>
+            <valString></valString>
+            <maxLen>25</maxLen>
+        </tcp_hub_pass>
+        <ble_mode>
+            <longName>Bluetooth Mode</longName>
+            <type>4</type>
+            <transmittable>1</transmittable>
+            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
+&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
+p, li { white-space: pre-wrap; }
+&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Disabled&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;The VESC Tool BLE connection is disabled. Bluetooth is disabled only when Bluetooth Mode LBM is also Disabled. Disabling bluetooth reduces the wifi-latency a bit, which is useful if you are not using bluetooth anyway.&lt;/p&gt;
+&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Enabled&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Bluetooth is enabled and anyone can connect to it with VESC tool.&lt;/p&gt;
+&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Enabled and Encrypted&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Bluetooth is enabled and pin code protected. That means that you have to do pairing and set up the pin code in order to connect with VESC tool. Encryption applies to all services on the same connection, including LispBM services.&lt;/p&gt;
+&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;NOTE:&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Bluetooth settings will be applied after a reboot.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BLE_MODE</cDefine>
+            <valInt>1</valInt>
+            <enumNames>Disabled</enumNames>
+            <enumNames>Enabled</enumNames>
+            <enumNames>Enabled and Encrypted</enumNames>
+        </ble_mode>
+        <ble_mode_lbm>
+            <longName>Bluetooth Mode LBM</longName>
+            <type>4</type>
+            <transmittable>1</transmittable>
+            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
+&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
+p, li { white-space: pre-wrap; }
+&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Disabled&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;The LispBM BLE extensions are disabled. Bluetooth is disabled only when Bluetooth Mode is also set to Disabled.&lt;/p&gt;
+&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Server&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;The LBM BLE server extensions are enabled, allowing scripts to create custom services and advertise this device.&lt;/p&gt;
+&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Client&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;The LBM BLE client extensions are enabled, allowing scripts to scan for devices and create outgoing connections. Scripts control pairing and PIN entry for these connections independently of Bluetooth Mode.&lt;/p&gt;
+&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Client &amp;amp; Server&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Both the LBM BLE client and server extensions are enabled. Outgoing client connections can run alongside incoming connections. VESC Tool access is controlled separately by Bluetooth Mode.&lt;/p&gt;
+&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;NOTE:&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Bluetooth settings will be applied after a reboot.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BLE_MODE_LBM</cDefine>
+            <valInt>0</valInt>
+            <enumNames>Disabled</enumNames>
+            <enumNames>Server</enumNames>
+            <enumNames>Client</enumNames>
+            <enumNames>Client &amp; Server</enumNames>
+        </ble_mode_lbm>
+        <ble_name>
+            <longName>Device Name</longName>
+            <type>3</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Device name shown during Bluetooth scanning and WiFi discovery. Use a recognizable name, up to 8 bytes (8 ordinary English characters; accented characters can use more than one byte).&lt;/p&gt;&lt;p&gt;Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BLE_NAME</cDefine>
+            <valString>JFBMS32</valString>
+            <maxLen>8</maxLen>
+        </ble_name>
+        <ble_pin>
+            <longName>Bluetooth PIN Code</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Six-digit pairing code used in Encrypted Bluetooth mode. For example, a stored value of 1234 is entered as 001234.&lt;/p&gt;&lt;p&gt;Unused in the other Bluetooth modes. Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BLE_PIN</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>999999</maxInt>
+            <minInt>0</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>123456</valInt>
+            <suffix></suffix>
+            <vTx>5</vTx>
+        </ble_pin>
+        <ble_service_capacity>
+            <longName>BLE Service Capacity</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Number of custom Bluetooth services that Lisp scripts can create in Scripting mode. Set this to at least the number your script needs.&lt;/p&gt;&lt;p&gt;More slots reserve more memory. Leave 0 when custom Bluetooth services are not used.&lt;/p&gt;&lt;p&gt;Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BLE_SERVICE_CAPACITY</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>99</maxInt>
+            <minInt>0</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>0</valInt>
+            <suffix></suffix>
+            <vTx>5</vTx>
+        </ble_service_capacity>
+        <ble_chr_descr_capacity>
+            <longName>BLE Characteristic and Descriptor Capacity</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Total number of characteristic and descriptor slots reserved for custom Lisp Bluetooth services in Scripting mode. Count both characteristics and their descriptors across all services.&lt;/p&gt;&lt;p&gt;More slots reserve more memory. Leave 0 when custom Bluetooth services are not used.&lt;/p&gt;&lt;p&gt;Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BLE_CHR_DESCR_CAPACITY</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>99</maxInt>
+            <minInt>0</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>0</valInt>
+            <suffix></suffix>
+            <vTx>5</vTx>
+        </ble_chr_descr_capacity>
+        <cells_ic1>
+            <longName>Cells on Lower BQ (IC1)</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Number of series-connected cells measured by the first/lower BQ monitor, from 3 to 16. This must match the physically wired cells, not the number of cells in parallel.&lt;/p&gt;&lt;p&gt;Total series cell count is Cells IC1 + Cells IC2. Follow the board wiring diagram for unused cell inputs.&lt;/p&gt;&lt;p&gt;Writing a change automatically reinitializes the monitors and stops balancing during reinitialization.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_CELLS_IC1</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>16</maxInt>
+            <minInt>3</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>16</valInt>
+            <suffix></suffix>
+            <vTx>1</vTx>
+        </cells_ic1>
+        <cells_ic2>
+            <longName>Cells on Upper BQ (IC2)</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Number of series-connected cells measured by the second/upper BQ monitor. Set 0 if it is unused; otherwise use 3 to 16 to match the wiring.&lt;/p&gt;&lt;p&gt;Values 1 and 2 are invalid. Total series cell count is Cells IC1 + Cells IC2.&lt;/p&gt;&lt;p&gt;Follow the board wiring diagram for unused inputs. Writing a change automatically reinitializes the monitors and stops balancing during reinitialization.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_CELLS_IC2</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>16</maxInt>
+            <minInt>0</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>16</valInt>
+            <suffix></suffix>
+            <vTx>1</vTx>
+        </cells_ic2>
+        <temp_num>
+            <longName>Temperature Sensors</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Number of enabled external cell NTC sensors. The firmware reads the first 0 to 4 sensor inputs; values above 4 still read only four sensors.&lt;/p&gt;&lt;p&gt;Match the number and order of physically connected sensors and configure NTC Resistance and Beta. Setting 0 substitutes a nominal 24 degrees C for cell-temperature checks, so actual cell temperature is not monitored.&lt;/p&gt;&lt;p&gt;Enabled sensors with invalid readings block charging and balancing. Onboard monitor and MOSFET temperature checks remain separate.&lt;/p&gt;&lt;p&gt;Sensor changes apply automatically after writing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_TEMP_NUM</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>4</maxInt>
+            <minInt>0</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>1</valInt>
+            <suffix></suffix>
+            <vTx>1</vTx>
+        </temp_num>
+        <temp_res>
+            <longName>NTC Resistance</longName>
+            <type>4</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Nominal resistance of each external NTC temperature sensor at 25 degrees C, in ohms. Select the value from the sensor datasheet; for example, select 10k for a 10000-ohm NTC.&lt;/p&gt;&lt;p&gt;This setting applies to all enabled external NTC sensors. An incorrect value gives incorrect temperatures and therefore incorrect temperature limits.&lt;/p&gt;&lt;p&gt;Sensor settings apply automatically after writing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_TEMP_RES</cDefine>
+            <valInt>2</valInt>
+            <enumNames>4.7k</enumNames>
+            <enumNames>5k</enumNames>
+            <enumNames>10k</enumNames>
+            <enumNames>20k</enumNames>
+            <enumNames>22k</enumNames>
+            <enumNames>47k</enumNames>
+            <enumNames>50k</enumNames>
+            <enumNames>100k</enumNames>
+            <enumNames>200k</enumNames>
+        </temp_res>
+        <temp_beta>
+            <longName>NTC Beta</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Beta coefficient of the external NTC sensors, in kelvin (K), from the sensor datasheet; for example, 3435. It must match the fitted sensors and be greater than 0 when any external sensor is enabled.&lt;/p&gt;&lt;p&gt;This setting works together with NTC Resistance to convert resistance into temperature. Sensor settings apply automatically after writing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_TEMP_BETA</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>65535</maxInt>
+            <minInt>0</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>3435</valInt>
+            <suffix></suffix>
+            <vTx>3</vTx>
+        </temp_beta>
+        <batt_ah>
+            <longName>Battery Capacity</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Usable capacity of the complete battery pack, in amp-hours (Ah). Series connections increase voltage, not Ah; parallel connections add capacity.&lt;/p&gt;&lt;p&gt;For example, a 10 Ah cell group remains a 10 Ah pack when connected in series. Used to convert accumulated charge into state of charge (SOC) when Coulomb Counting is enabled.&lt;/p&gt;&lt;p&gt;Use a positive value that represents the actual pack.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BATT_AH</cDefine>
+            <editorDecimalsDouble>2</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>999</maxDouble>
+            <minDouble>0</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>1</stepDouble>
+            <valDouble>10</valDouble>
+            <vTxDoubleScale>100</vTxDoubleScale>
+            <suffix> Ah</suffix>
+            <vTx>9</vTx>
+        </batt_ah>
+        <soc_use_ah>
+            <longName>Use Coulomb Counting for SOC</longName>
+            <type>5</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Enabled estimates state of charge (SOC) by integrating measured current using Battery Capacity. This needs an accurate capacity and current measurement and is synchronized by a completed charge.&lt;/p&gt;&lt;p&gt;Disabled estimates SOC from the lowest cell voltage using Cell Voltage Empty and Full, with the SOC filter. Voltage-based SOC can change under load.&lt;/p&gt;&lt;p&gt;The minimum counter current does not filter the current used for Coulomb Counting SOC.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_SOC_USE_AH</cDefine>
+            <valInt>0</valInt>
+        </soc_use_ah>
+        <block_sleep>
+            <longName>Block Sleep Mode</longName>
+            <type>5</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Enabled keeps the BMS awake instead of entering its normal automatic deep sleep. Disabled allows sleep when the pack is idle and the other sleep conditions are met.&lt;/p&gt;&lt;p&gt;Keeping the BMS awake uses more battery energy. This is not a charging or balancing enable switch.&lt;/p&gt;&lt;p&gt;After about 1 hour of balanced idle operation, Block Sleep clears automatically and is saved.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BLOCK_SLEEP</cDefine>
+            <valInt>1</valInt>
+        </block_sleep>
+        <max_bal_ch>
+            <longName>Max Balance Channels</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Maximum number of cells balanced at the same time on each BQ monitor, not across the entire pack. Set 0 to disable balancing.&lt;/p&gt;&lt;p&gt;The highest cells are chosen first, and two adjacent cells on the same BQ are never balanced together, so the actual count can be lower. Balancing runs in 30-second periods with a 2-second pause to measure settled cell voltages.&lt;/p&gt;&lt;p&gt;Fewer channels reduce heat but can make balancing take longer. This limit does not start balancing by itself.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_MAX_BAL_CH</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>8</maxInt>
+            <minInt>0</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>5</valInt>
+            <suffix></suffix>
+            <vTx>4</vTx>
+        </max_bal_ch>
+        <vc_empty>
+            <longName>Cell Voltage Empty</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Lowest-cell voltage, in volts per cell, used as the empty reference for voltage-based SOC. It must be below Cell Voltage Full.&lt;/p&gt;&lt;p&gt;This is an SOC reference, not a programmable discharge cutoff. Choose it for the cell chemistry and the usable capacity you want to report.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_VC_EMPTY</cDefine>
+            <editorDecimalsDouble>2</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>4.999</maxDouble>
+            <minDouble>1.5</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.01</stepDouble>
+            <valDouble>3.1</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> V</suffix>
+            <vTx>9</vTx>
+        </vc_empty>
+        <vc_full>
+            <longName>Cell Voltage Full</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Lowest-cell voltage, in volts per cell, used as the full reference for voltage-based SOC. It must be above Cell Voltage Empty and at least as high as the configured charge thresholds.&lt;/p&gt;&lt;p&gt;This is an SOC reference; Charge End Voltage controls when charging stops. Match the cell chemistry.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_VC_FULL</cDefine>
+            <editorDecimalsDouble>2</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>4.999</maxDouble>
+            <minDouble>1.5</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.01</stepDouble>
+            <valDouble>4.2</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> V</suffix>
+            <vTx>9</vTx>
+        </vc_full>
+        <vc_balance_start>
+            <longName>Balance Start Difference</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Voltage difference, in volts, between a higher cell and the lowest cell in the pack that qualifies it for balancing. For example, 0.015 V means 15 mV above the lowest cell.&lt;/p&gt;&lt;p&gt;This is not an absolute cell voltage. Keep it at least as high as Balance Stop Difference.&lt;/p&gt;&lt;p&gt;Lower values target closer matching but can react more to measurement noise. Other balance safety conditions must also be satisfied.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BALANCE_START</cDefine>
+            <editorDecimalsDouble>3</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>99</maxDouble>
+            <minDouble>0</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.001</stepDouble>
+            <valDouble>0.015</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> V</suffix>
+            <vTx>9</vTx>
+        </vc_balance_start>
+        <vc_balance_end>
+            <longName>Balance Stop Difference</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Smaller voltage difference, in volts, used to finish balancing after it has started. For example, 0.008 V means 8 mV above the lowest cell.&lt;/p&gt;&lt;p&gt;Set it no higher than Balance Start Difference; a lower stop value provides hysteresis and avoids repeatedly starting and stopping near one threshold.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BALANCE_END</cDefine>
+            <editorDecimalsDouble>3</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>99</maxDouble>
+            <minDouble>0</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.001</stepDouble>
+            <valDouble>0.008</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> V</suffix>
+            <vTx>9</vTx>
+        </vc_balance_end>
+        <vc_charge_start>
+            <longName>Charge Start Voltage</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Highest-cell voltage, in volts per cell, below which a new charge is allowed to start. Once charging is running, Charge End Voltage becomes the upper limit.&lt;/p&gt;&lt;p&gt;Set this no higher than Charge End Voltage; a lower start value provides hysteresis. After a completed charge, once post-charge balancing has finished and the highest cell is below this value, the BMS tops the pack up again while the charger stays connected. Charging also requires valid measurements, safe temperatures, an available charger and no blocking fault.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_CHARGE_START</cDefine>
+            <editorDecimalsDouble>3</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>4.999</maxDouble>
+            <minDouble>1.5</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.01</stepDouble>
+            <valDouble>4.05</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> V</suffix>
+            <vTx>9</vTx>
+        </vc_charge_start>
+        <vc_charge_end>
+            <longName>Charge End Voltage</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Highest-cell voltage, in volts per cell, at which the BMS stops charging and marks the session complete. This limits each cell, not the total pack voltage, and does not regulate charger output voltage.&lt;/p&gt;&lt;p&gt;Match the cell chemistry and keep it at least as high as Charge Start Voltage and no higher than Cell Voltage Full.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_CHARGE_END</cDefine>
+            <editorDecimalsDouble>3</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>4.999</maxDouble>
+            <minDouble>1.5</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.01</stepDouble>
+            <valDouble>4.2</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> V</suffix>
+            <vTx>9</vTx>
+        </vc_charge_end>
+        <vc_charge_min>
+            <longName>Charge Minimum Voltage</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Lowest-cell voltage, in volts per cell, required to allow charging. Charging is blocked if any cell is at or below this value.&lt;/p&gt;&lt;p&gt;Set it below Charge Start Voltage and within the cell manufacturer charging limits. This setting does not provide a recovery procedure for deeply discharged cells.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_CHARGE_MIN</cDefine>
+            <editorDecimalsDouble>3</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>4.999</maxDouble>
+            <minDouble>1.5</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.01</stepDouble>
+            <valDouble>3</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> V</suffix>
+            <vTx>9</vTx>
+        </vc_charge_min>
+        <vc_balance_min>
+            <longName>Balance Minimum Voltage</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Minimum voltage of the lowest cell, in volts per cell, needed to allow balancing. If any cell is below this value, balancing is blocked for the pack.&lt;/p&gt;&lt;p&gt;The BMS top-balances after a completed charge. Balancing at low voltage can unbalance the cells, so keep this close to full: about 3.9 V for Li-ion, 3.3 V for LiFePO4. This is an absolute cell voltage; Balance Start and Stop Difference are separate voltage differences.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BALANCE_MIN</cDefine>
+            <editorDecimalsDouble>3</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>4.999</maxDouble>
+            <minDouble>1.5</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.01</stepDouble>
+            <valDouble>3.9</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> V</suffix>
+            <vTx>9</vTx>
+        </vc_balance_min>
+        <t_bal_max_cell>
+            <longName>Maximum Cell Temperature for Balancing</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Maximum external cell-sensor temperature, in degrees C, allowed for balancing. Balancing stops when the hottest enabled cell sensor exceeds this value.&lt;/p&gt;&lt;p&gt;Disabled or absent cell sensors cannot provide cell-temperature protection; configure fitted sensors correctly. BQ monitor temperature is limited separately.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_T_BAL_MAX_CELL</cDefine>
+            <editorDecimalsDouble>1</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>60</maxDouble>
+            <minDouble>-15</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>1</stepDouble>
+            <valDouble>45</valDouble>
+            <vTxDoubleScale>10</vTxDoubleScale>
+            <suffix> &#176;C</suffix>
+            <vTx>7</vTx>
+        </t_bal_max_cell>
+        <t_bal_max_ic>
+            <longName>Maximum BQ Temperature for Balancing</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Maximum internal BQ monitor temperature, in degrees C, allowed for balancing. Balancing stops when the hottest monitor exceeds this value.&lt;/p&gt;&lt;p&gt;Balancing resistors generate heat, so this limit is separate from the external cell-temperature limit.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_T_BAL_MAX_IC</cDefine>
+            <editorDecimalsDouble>1</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>100</maxDouble>
+            <minDouble>-15</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>1</stepDouble>
+            <valDouble>85</valDouble>
+            <vTxDoubleScale>10</vTxDoubleScale>
+            <suffix> &#176;C</suffix>
+            <vTx>7</vTx>
+        </t_bal_max_ic>
+        <balance_max_current>
+            <longName>Balance Maximum Current</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Maximum magnitude of pack current, in amps, at which balancing may start. Both charging and discharging current count.&lt;/p&gt;&lt;p&gt;Balancing waits when current is too high so cell-voltage readings are less affected by load. This does not limit or regulate pack current.&lt;/p&gt;&lt;p&gt;Once balancing is active, it may continue up to 1.25 times this value to avoid rapid start/stop cycling.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BALANCE_MAX_CURRENT</cDefine>
+            <editorDecimalsDouble>3</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>999</maxDouble>
+            <minDouble>0</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.01</stepDouble>
+            <valDouble>1</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> A</suffix>
+            <vTx>9</vTx>
+        </balance_max_current>
+        <min_current_ah_wh_cnt>
+            <longName>Minimum Counter Current</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Minimum magnitude of measured current, in amps, for accumulating the reported amp-hour (Ah) and watt-hour (Wh) usage counters. Both charge and discharge count.&lt;/p&gt;&lt;p&gt;With 0.3 A, currents at or below 0.3 A do not add to these counters, which reduces accumulation from measurement noise but also excludes real small loads. It does not change the displayed current or the current integrated for Coulomb Counting SOC.&lt;/p&gt;&lt;p&gt;Changes apply when written.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_MIN_CURRENT_AH_WH_CNT</cDefine>
+            <editorDecimalsDouble>3</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>999</maxDouble>
+            <minDouble>0</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.01</stepDouble>
+            <valDouble>0.3</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> A</suffix>
+            <vTx>9</vTx>
+        </min_current_ah_wh_cnt>
+        <min_current_sleep>
+            <longName>Sleep Current Threshold</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Current threshold, in amps, used to decide whether the pack is idle. Charging or discharging current above this magnitude resets the idle timer; current at or below it can qualify for sleep.&lt;/p&gt;&lt;p&gt;Other conditions, such as enable input, balancing and active communication, must also permit sleep. A higher value can classify a small real load as idle; 0 can keep the device awake because of noise.&lt;/p&gt;&lt;p&gt;This does not switch off current at the selected value.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_MIN_CURRENT_SLEEP</cDefine>
+            <editorDecimalsDouble>3</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>999</maxDouble>
+            <minDouble>0</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.01</stepDouble>
+            <valDouble>0.3</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> A</suffix>
+            <vTx>9</vTx>
+        </min_current_sleep>
+        <t_charge_max>
+            <longName>Maximum Cell Temperature for Charging</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Maximum external cell-sensor temperature, in degrees C, allowed for charging. Charging is blocked when the hottest enabled cell sensor is at or above this value.&lt;/p&gt;&lt;p&gt;Set it above Minimum Cell Temperature for Charging and within the cell manufacturer limits. Requires enabled, correctly configured external sensors.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_T_CHARGE_MAX</cDefine>
+            <editorDecimalsDouble>1</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>60</maxDouble>
+            <minDouble>-15</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>1</stepDouble>
+            <valDouble>45</valDouble>
+            <vTxDoubleScale>10</vTxDoubleScale>
+            <suffix> &#176;C</suffix>
+            <vTx>7</vTx>
+        </t_charge_max>
+        <t_charge_max_mos>
+            <longName>Maximum MOSFET Temperature for Charging</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Maximum onboard MOSFET temperature, in degrees C, allowed for charging. Charging is blocked at or above this value.&lt;/p&gt;&lt;p&gt;This protects the charging electronics and is separate from the external cell-sensor limits.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_T_CHARGE_MAX_MOS</cDefine>
+            <editorDecimalsDouble>1</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>100</maxDouble>
+            <minDouble>-15</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>1</stepDouble>
+            <valDouble>85</valDouble>
+            <vTxDoubleScale>10</vTxDoubleScale>
+            <suffix> &#176;C</suffix>
+            <vTx>7</vTx>
+        </t_charge_max_mos>
+        <min_charge_current>
+            <longName>Min Charge Current</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Minimum charging current, in amps, expected after the 10-second startup grace period. After that grace, current at or below this threshold switches charging off on the next scan. A valid session near Charge Start Voltage finishes as CHG_COMPLETE; otherwise it stops with CHG_NO_CURRENT. Low measured charger-port voltage switches charging off during startup too. Choose this threshold below the charger's normal current. Unplug for more than 5 seconds or use Chg En to retry.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_MIN_CHARGE_CURRENT</cDefine>
+            <editorDecimalsDouble>2</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>124</maxDouble>
+            <minDouble>0</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.01</stepDouble>
+            <valDouble>0.5</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> A</suffix>
+            <vTx>9</vTx>
+        </min_charge_current>
+        <max_charge_current>
+            <longName>Max Charge Current</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Software charging-overcurrent threshold, in amps. If measured charging current exceeds this value while charging, the BMS disables charging and latches a fault. This setting must not exceed Hardware Charge Overcurrent.&lt;/p&gt;&lt;p&gt;This is a trip threshold, not a charger current regulator. Select a value above normal charger current but within the ratings of the cells and charging hardware.&lt;/p&gt;&lt;p&gt;Correct the cause before clearing the fault or reconnecting.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_MAX_CHARGE_CURRENT</cDefine>
+            <editorDecimalsDouble>2</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>124</maxDouble>
+            <minDouble>0</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.1</stepDouble>
+            <valDouble>16</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> A</suffix>
+            <vTx>9</vTx>
+        </max_charge_current>
+        <sleep>
+            <longName>Periodic Wake Interval</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Interval between periodic timer wakes during deep sleep, in hours. For example, 12 means the sleeping BMS wakes every 12 hours for its checks.&lt;/p&gt;&lt;p&gt;This does not mean the BMS waits 12 hours before entering sleep; idle conditions control sleep entry. Hardware wake inputs can wake it earlier.&lt;/p&gt;&lt;p&gt;Block Sleep prevents normal deep sleep.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_SLEEP</cDefine>
+            <editorDecimalsDouble>1</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>168</maxDouble>
+            <minDouble>1</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>1</stepDouble>
+            <valDouble>12</valDouble>
+            <vTxDoubleScale>10</vTxDoubleScale>
+            <suffix> hours</suffix>
+            <vTx>7</vTx>
+        </sleep>
+        <shutdown>
+            <longName>Timed Shutdown After Sleep</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Time accumulated in sleep, in days, before the BMS enters hardware shutdown. Set 0 to disable this timed shutdown.&lt;/p&gt;&lt;p&gt;Hardware shutdown is different from deep sleep: periodic timer waking stops and hardware wake or power-up is required. Low Voltage Shutdown can still shut the BMS down independently of this setting.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_SHUTDOWN</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>999</maxInt>
+            <minInt>0</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>15</valInt>
+            <suffix> days</suffix>
+            <vTx>4</vTx>
+        </shutdown>
+        <vc_shutdown>
+            <longName>Low Voltage Shutdown</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Lowest-cell voltage, in volts per cell, at or below which the BMS enters hardware shutdown to protect the cells from further self-discharge.&lt;/p&gt;&lt;p&gt;Checked only on the periodic sleep timer wake, when the cells have rested without load, and only while EN is low, no charger is detected and VESC Tool, CAN traffic and Block Sleep do not keep the BMS awake. It is not a discharge cutoff while riding; the ESC handles that.&lt;/p&gt;&lt;p&gt;After shutdown, plugging in a charger or another hardware wake is needed. It must be below Charge Start Voltage. Choose it for the cell chemistry, for example about 3.0 V for Li-ion or 2.8 V for LiFePO4.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_VC_SHUTDOWN</cDefine>
+            <editorDecimalsDouble>2</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>4.999</maxDouble>
+            <minDouble>1.5</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.01</stepDouble>
+            <valDouble>3</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> V</suffix>
+            <vTx>9</vTx>
+        </vc_shutdown>
+        <soc_filter_const>
+            <longName>Voltage SOC Smoothing</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Smoothing strength for voltage-based state of charge (SOC). A smaller value gives a slower, steadier response; a larger value follows voltage changes faster.&lt;/p&gt;&lt;p&gt;0 holds the previous estimate during filtering. The displayed value is scaled: 10 means a stored value of 0.00001.&lt;/p&gt;&lt;p&gt;Use displayed values from 0 to 10000; 10000 means no smoothing. Values above 10000 are treated as no smoothing.&lt;/p&gt;&lt;p&gt;Unused when Coulomb Counting SOC is enabled.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_SOC_FILTER_CONST</cDefine>
+            <editorDecimalsDouble>1</editorDecimalsDouble>
+            <editorScale>1e+06</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>1</maxDouble>
+            <minDouble>0</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>1</stepDouble>
+            <valDouble>1e-05</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix></suffix>
+            <vTx>9</vTx>
+        </soc_filter_const>
+        <t_charge_min>
+            <longName>Minimum Cell Temperature for Charging</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Minimum external cell-sensor temperature, in degrees C, allowed for charging. Charging is blocked when the coldest enabled cell sensor is at or below this value.&lt;/p&gt;&lt;p&gt;Set it below Maximum Cell Temperature for Charging and within the cell manufacturer limits. Requires enabled, correctly configured external sensors.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_T_CHARGE_MIN</cDefine>
+            <editorDecimalsDouble>1</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>60</maxDouble>
+            <minDouble>-40</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>1</stepDouble>
+            <valDouble>0</valDouble>
+            <vTxDoubleScale>10</vTxDoubleScale>
+            <suffix> &#176;C</suffix>
+            <vTx>7</vTx>
+        </t_charge_min>
+        <hw_occ_current>
+            <longName>Charge Overcurrent (OCC)</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;BQ charge-overcurrent threshold, in amps, for the fitted 1 milliohm current shunt. Range 4 to 124 A, rounded to the nearest 2 A step.&lt;/p&gt;&lt;p&gt;A BQ overcurrent fault is handled by firmware to disable charging; this is separate from the software Max Charge Current setting. It does not regulate charger current.&lt;/p&gt;&lt;p&gt;Match the charger, cells, shunt and board ratings. Changes automatically reinitialize the BQ monitors, temporarily stopping charging and balancing.&lt;/p&gt;&lt;p&gt;Remove the fault cause before attempting recovery.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_HW_OCC_CURRENT</cDefine>
+            <editorDecimalsDouble>0</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>124</maxDouble>
+            <minDouble>4</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>2</stepDouble>
+            <valDouble>16</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> A</suffix>
+            <vTx>9</vTx>
+        </hw_occ_current>
+        <hw_ocd_current>
+            <longName>Discharge Overcurrent (OCD1)</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;BQ discharge-overcurrent threshold, in amps, for the fitted 1 milliohm current shunt. Range 4 to 200 A, rounded to the nearest 2 A step.&lt;/p&gt;&lt;p&gt;A trip activates the discharge protection/interlock; this is separate from charging-current protection. It does not regulate discharge current.&lt;/p&gt;&lt;p&gt;Match the cells and discharge hardware ratings. Changes automatically reinitialize the BQ monitors.&lt;/p&gt;&lt;p&gt;Remove the fault cause before attempting recovery.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_HW_OCD_CURRENT</cDefine>
+            <editorDecimalsDouble>0</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>200</maxDouble>
+            <minDouble>4</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>2</stepDouble>
+            <valDouble>16</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> A</suffix>
+            <vTx>9</vTx>
+        </hw_ocd_current>
+        <psw_scd_tres>
+            <longName>Short-circuit Threshold (SCD)</longName>
+            <type>4</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;BQ short-circuit trip voltage across the current shunt, in millivolts (mV). With the fitted 1 milliohm shunt, the numerical threshold in mV equals current in amps: 40 mV corresponds to about 40 A.&lt;/p&gt;&lt;p&gt;A higher threshold is less sensitive to current spikes but allows more fault current before tripping. Use a value appropriate for the actual shunt and board ratings.&lt;/p&gt;&lt;p&gt;This is a fault trip, not a current regulator. Changes automatically reinitialize the BQ monitors; remove the short circuit before attempting recovery.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_PSW_SCD_TRES</cDefine>
+            <valInt>2</valInt>
+            <enumNames>10 mV</enumNames>
+            <enumNames>20 mV</enumNames>
+            <enumNames>40 mV</enumNames>
+            <enumNames>60 mV</enumNames>
+            <enumNames>80 mV</enumNames>
+            <enumNames>100 mV</enumNames>
+            <enumNames>125 mV</enumNames>
+            <enumNames>150 mV</enumNames>
+            <enumNames>175 mV</enumNames>
+            <enumNames>200 mV</enumNames>
+            <enumNames>250 mV</enumNames>
+            <enumNames>300 mV</enumNames>
+            <enumNames>350 mV</enumNames>
+            <enumNames>400 mV</enumNames>
+            <enumNames>450 mV</enumNames>
+            <enumNames>500 mV</enumNames>
+        </psw_scd_tres>
+    </Params>
+    <SerOrder>
+        <ser>controller_id</ser>
+        <ser>can_baud_rate</ser>
+        <ser>can_status_rate_hz</ser>
+        <ser>wifi_mode</ser>
+        <ser>wifi_sta_ssid</ser>
+        <ser>wifi_sta_key</ser>
+        <ser>wifi_ap_ssid</ser>
+        <ser>wifi_ap_key</ser>
+        <ser>use_tcp_local</ser>
+        <ser>use_tcp_hub</ser>
+        <ser>tcp_hub_url</ser>
+        <ser>tcp_hub_port</ser>
+        <ser>tcp_hub_id</ser>
+        <ser>tcp_hub_pass</ser>
+        <ser>ble_mode</ser>
+        <ser>ble_mode_lbm</ser>
+        <ser>ble_name</ser>
+        <ser>ble_pin</ser>
+        <ser>ble_service_capacity</ser>
+        <ser>ble_chr_descr_capacity</ser>
+        <ser>max_bal_ch</ser>
+        <ser>cells_ic1</ser>
+        <ser>cells_ic2</ser>
+        <ser>temp_num</ser>
+        <ser>batt_ah</ser>
+        <ser>soc_use_ah</ser>
+        <ser>block_sleep</ser>
+        <ser>vc_empty</ser>
+        <ser>vc_full</ser>
+        <ser>vc_balance_start</ser>
+        <ser>vc_balance_end</ser>
+        <ser>vc_charge_start</ser>
+        <ser>vc_charge_end</ser>
+        <ser>vc_charge_min</ser>
+        <ser>vc_balance_min</ser>
+        <ser>t_bal_max_cell</ser>
+        <ser>t_bal_max_ic</ser>
+        <ser>balance_max_current</ser>
+        <ser>min_current_ah_wh_cnt</ser>
+        <ser>min_current_sleep</ser>
+        <ser>t_charge_max</ser>
+        <ser>t_charge_max_mos</ser>
+        <ser>min_charge_current</ser>
+        <ser>max_charge_current</ser>
+        <ser>sleep</ser>
+        <ser>soc_filter_const</ser>
+        <ser>t_charge_min</ser>
+        <ser>temp_res</ser>
+        <ser>temp_beta</ser>
+        <ser>shutdown</ser>
+        <ser>hw_occ_current</ser>
+        <ser>hw_ocd_current</ser>
+        <ser>psw_scd_tres</ser>
+        <ser>vc_shutdown</ser>
+    </SerOrder>
+    <Grouping>
+        <group>
+            <groupName>General</groupName>
+            <subgroup>
+                <subgroupName>CAN</subgroupName>
+                <subgroupParams>
+                    <param>controller_id</param>
+                    <param>can_baud_rate</param>
+                    <param>can_status_rate_hz</param>
+                </subgroupParams>
+            </subgroup>
+            <subgroup>
+                <subgroupName>WiFi</subgroupName>
+                <subgroupParams>
+                    <param>ble_name</param>
+                    <param>wifi_mode</param>
+                    <param>::sep::Station Mode</param>
+                    <param>wifi_sta_ssid</param>
+                    <param>wifi_sta_key</param>
+                    <param>::sep::Access Point Mode</param>
+                    <param>wifi_ap_ssid</param>
+                    <param>wifi_ap_key</param>
+                    <param>::sep::TCP Local</param>
+                    <param>use_tcp_local</param>
+                    <param>::sep::TCP Hub</param>
+                    <param>use_tcp_hub</param>
+                    <param>tcp_hub_url</param>
+                    <param>tcp_hub_port</param>
+                    <param>tcp_hub_id</param>
+                    <param>tcp_hub_pass</param>
+                </subgroupParams>
+            </subgroup>
+            <subgroup>
+                <subgroupName>Bluetooth</subgroupName>
+                <subgroupParams>
+                    <param>ble_name</param>
+                    <param>ble_mode</param>
+                    <param>ble_mode_lbm</param>
+                    <param>ble_pin</param>
+                    <param>ble_service_capacity</param>
+                    <param>ble_chr_descr_capacity</param>
+                </subgroupParams>
+            </subgroup>
+            <subgroup>
+                <subgroupName>General</subgroupName>
+                <subgroupParams>
+                    <param>soc_filter_const</param>
+                    <param>cells_ic1</param>
+                    <param>cells_ic2</param>
+                    <param>batt_ah</param>
+                    <param>soc_use_ah</param>
+                    <param>min_current_ah_wh_cnt</param>
+                    <param>vc_empty</param>
+                    <param>vc_full</param>
+                    <param>temp_num</param>
+                    <param>temp_res</param>
+                    <param>temp_beta</param>
+                </subgroupParams>
+            </subgroup>
+            <subgroup>
+                <subgroupName>Charging</subgroupName>
+                <subgroupParams>
+                    <param>vc_charge_start</param>
+                    <param>vc_charge_end</param>
+                    <param>vc_charge_min</param>
+                    <param>t_charge_min</param>
+                    <param>t_charge_max</param>
+                    <param>t_charge_max_mos</param>
+                    <param>min_charge_current</param>
+                    <param>max_charge_current</param>
+                </subgroupParams>
+            </subgroup>
+            <subgroup>
+                <subgroupName>Hardware Current Protection</subgroupName>
+                <subgroupParams>
+                    <param>hw_occ_current</param>
+                    <param>hw_ocd_current</param>
+                    <param>psw_scd_tres</param>
+                </subgroupParams>
+            </subgroup>
+            <subgroup>
+                <subgroupName>Balancing</subgroupName>
+                <subgroupParams>
+                    <param>vc_balance_start</param>
+                    <param>vc_balance_end</param>
+                    <param>vc_balance_min</param>
+                    <param>balance_max_current</param>
+                    <param>max_bal_ch</param>
+                    <param>t_bal_max_cell</param>
+                    <param>t_bal_max_ic</param>
+                </subgroupParams>
+            </subgroup>
+            <subgroup>
+                <subgroupName>Sleep and Shutdown</subgroupName>
+                <subgroupParams>
+                    <param>min_current_sleep</param>
+                    <param>sleep</param>
+                    <param>block_sleep</param>
+                    <param>shutdown</param>
+                    <param>vc_shutdown</param>
+                </subgroupParams>
+            </subgroup>
+        </group>
+    </Grouping>
+</ConfigParams>
