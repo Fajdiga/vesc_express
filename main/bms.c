@@ -28,6 +28,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 #include <string.h>
 #include <math.h>
@@ -40,11 +41,24 @@ static volatile bms_values m_values;
 static volatile bms_soc_soh_temp_stat m_stat_temp_max;
 static volatile bms_soc_soh_temp_stat m_stat_soc_min;
 static volatile bms_soc_soh_temp_stat m_stat_soc_max;
+static SemaphoreHandle_t reply_mutex;
+
+static int clamp_count(int count, int max) {
+	if (count < 0) {
+		return 0;
+	}
+
+	return count > max ? max : count;
+}
 
 // Function pointers
 static void(*cmd_handler)(COMM_PACKET_ID cmd, int param1, int param2) = 0;
 
 void bms_init(void) {
+	if (!reply_mutex) {
+		reply_mutex = xSemaphoreCreateMutex();
+	}
+
 	memset((void*)&m_values, 0, sizeof(m_values));
 	memset((void*)&m_stat_temp_max, 0, sizeof(m_stat_temp_max));
 	memset((void*)&m_stat_soc_min, 0, sizeof(m_stat_soc_min));
@@ -168,7 +182,7 @@ bool bms_process_can_frame(uint32_t can_id, uint8_t *data8, int len, bool is_ext
 				m_values.can_id = id;
 				m_values.update_time = xTaskGetTickCount();
 				unsigned int ofs = data8[ind++];
-				m_values.cell_num = data8[ind++];
+				m_values.cell_num = clamp_count(data8[ind++], BMS_MAX_CELLS);
 
 				while(ind < len) {
 					if (ofs >= (sizeof(m_values.v_cell) / sizeof(float))) {
@@ -211,7 +225,7 @@ bool bms_process_can_frame(uint32_t can_id, uint8_t *data8, int len, bool is_ext
 				m_values.can_id = id;
 				m_values.update_time = xTaskGetTickCount();
 				unsigned int ofs = data8[ind++];
-				m_values.temp_adc_num = data8[ind++];
+				m_values.temp_adc_num = clamp_count(data8[ind++], BMS_MAX_TEMPS);
 
 				while(ind < len) {
 					if (ofs >= (sizeof(m_values.temps_adc) / sizeof(float))) {
@@ -297,9 +311,18 @@ void bms_process_cmd(unsigned char *data, unsigned int len,
 	switch (packet_id) {
 	case COMM_BMS_GET_VALUES: {
 		int32_t ind = 0;
-		uint8_t send_buffer[256];
+		// 59 fixed bytes + 3 per cell + 2 per temp + status string. Upstream's
+		// 256 bytes overflowed with 50 cells and 50 temps.
+		static uint8_t send_buffer[64 + 3 * BMS_MAX_CELLS + 2 * BMS_MAX_TEMPS + BMS_STATUS_LEN];
+
+		if (reply_mutex) {
+			xSemaphoreTake(reply_mutex, portMAX_DELAY);
+		}
 
 		send_buffer[ind++] = packet_id;
+
+		int cell_num = clamp_count(m_values.cell_num, BMS_MAX_CELLS);
+		int temp_adc_num = clamp_count(m_values.temp_adc_num, BMS_MAX_TEMPS);
 
 		buffer_append_float32(send_buffer, m_values.v_tot, 1e6, &ind);
 		buffer_append_float32(send_buffer, m_values.v_charge, 1e6, &ind);
@@ -309,19 +332,19 @@ void bms_process_cmd(unsigned char *data, unsigned int len,
 		buffer_append_float32(send_buffer, m_values.wh_cnt, 1e3, &ind);
 
 		// Cell voltages
-		send_buffer[ind++] = m_values.cell_num;
-		for (int i = 0;i < m_values.cell_num;i++) {
+		send_buffer[ind++] = cell_num;
+		for (int i = 0;i < cell_num;i++) {
 			buffer_append_float16(send_buffer, m_values.v_cell[i], 1e3, &ind);
 		}
 
 		// Balancing state
-		for (int i = 0;i < m_values.cell_num;i++) {
+		for (int i = 0;i < cell_num;i++) {
 			send_buffer[ind++] = m_values.bal_state[i];
 		}
 
 		// Temperatures
-		send_buffer[ind++] = m_values.temp_adc_num;
-		for (int i = 0;i < m_values.temp_adc_num;i++) {
+		send_buffer[ind++] = temp_adc_num;
+		for (int i = 0;i < temp_adc_num;i++) {
 			buffer_append_float16(send_buffer, m_values.temps_adc[i], 1e2, &ind);
 		}
 		buffer_append_float16(send_buffer, m_values.temp_ic, 1e2, &ind);
@@ -357,6 +380,10 @@ void bms_process_cmd(unsigned char *data, unsigned int len,
 		ind += strlen((char*)m_values.status) + 1;
 
 		reply_func(send_buffer, ind);
+
+		if (reply_mutex) {
+			xSemaphoreGive(reply_mutex);
+		}
 	} break;
 
 	default:
@@ -423,15 +450,12 @@ void bms_send_status_can(void) {
 	comm_can_transmit_eid(id | ((uint32_t)CAN_PACKET_BMS_AH_WH << 8), buffer, send_index);
 
 	int cell_now = 0;
-	int cell_max = m_values.cell_num;
-	if (cell_max > BMS_MAX_CELLS) {
-		cell_max = BMS_MAX_CELLS;
-	}
+	int cell_max = clamp_count(m_values.cell_num, BMS_MAX_CELLS);
 
 	while (cell_now < cell_max) {
 		send_index = 0;
 		buffer[send_index++] = cell_now;
-		buffer[send_index++] = m_values.cell_num;
+		buffer[send_index++] = cell_max;
 		if (cell_now < cell_max) {
 			buffer_append_float16(buffer, m_values.v_cell[cell_now++], 1e3, &send_index);
 		}
@@ -460,10 +484,7 @@ void bms_send_status_can(void) {
 	comm_can_transmit_eid(id | ((uint32_t)CAN_PACKET_BMS_BAL << 8), buffer, send_index);
 
 	int temp_now = 0;
-	int temp_max = m_values.temp_adc_num;
-	if (temp_max > BMS_MAX_TEMPS) {
-		temp_max = BMS_MAX_TEMPS;
-	}
+	int temp_max = clamp_count(m_values.temp_adc_num, BMS_MAX_TEMPS);
 
 	while (temp_now < temp_max) {
 		send_index = 0;
@@ -504,7 +525,8 @@ void bms_send_status_can(void) {
 	buffer_append_float16(buffer, (float_t)m_values.v_cell_max, 1e3, &send_index);
 	buffer[send_index++] = (uint8_t)(m_values.soc * 255.0);
 	buffer[send_index++] = (uint8_t)(m_values.soh * 255.0);
-	buffer[send_index++] = (int8_t)m_values.temp_max_cell;
+	// The summary has only a signed byte; do not wrap a hot/fault value cold.
+	buffer[send_index++] = (int8_t)fmaxf(-128.0f, fminf(127.0f, m_values.temp_max_cell));
 	buffer[send_index++] =
 			((m_values.is_charging ? 1 : 0) << 0) |
 			((m_values.is_balancing ? 1 : 0) << 1) |
