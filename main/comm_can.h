@@ -21,13 +21,17 @@
 #define MAIN_COMM_CAN_H_
 
 #include "datatypes.h"
+#include "esp_err.h"
 
 #define CAN_STATUS_MSGS_TO_STORE	10
 
 // Functions
 void comm_can_start(int pin_tx, int pin_rx);
 void comm_can_stop(void);
+bool comm_can_send_buffer_recent(int msec);
+esp_err_t comm_can_transmit_sid_sync(uint32_t id, const uint8_t *data, uint8_t len, int timeout_ms);
 int comm_can_get_rx_recovery_cnt(void);
+void comm_can_print_err_stats(void);
 void comm_can_use_vesc_decoder(bool use_vesc_dec);
 CAN_BAUD comm_can_kbits_to_baud(int kbits);
 void comm_can_update_baudrate(int delay_msec);
@@ -82,6 +86,7 @@ void comm_can_update_pid_pos_offset(int id, float angle_now, bool store);
 #ifdef CONFIG_IDF_TARGET_ESP32C6
 void comm_can2_start(int pin_tx, int pin_rx, int baud_kbits);
 void comm_can2_stop(void);
+esp_err_t comm_can2_transmit_sid_sync(uint32_t id, const uint8_t *data, uint8_t len, int timeout_ms);
 void comm_can2_use_vesc_decoder(bool use);
 bool comm_can2_is_running(void);
 int  comm_can2_get_rx_recovery_cnt(void);
