@@ -27,7 +27,9 @@
 // Functions
 void comm_can_start(int pin_tx, int pin_rx);
 void comm_can_stop(void);
+bool comm_can_send_buffer_recent(int msec);
 int comm_can_get_rx_recovery_cnt(void);
+void comm_can_print_err_stats(void);
 void comm_can_use_vesc_decoder(bool use_vesc_dec);
 CAN_BAUD comm_can_kbits_to_baud(int kbits);
 void comm_can_update_baudrate(int delay_msec);
