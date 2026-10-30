@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ConfigParams>
+    <Params>
+        <config_name>
+            <longName>none</longName>
+            <type>3</type>
+            <transmittable>0</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Internal configuration type used by VESC Tool. This is not a user setting.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine></cDefine>
+            <valString>main_config_t</valString>
+            <maxLen>0</maxLen>
+        </config_name>
+        <hw_name>
+            <longName>JFBMS Slave</longName>
+            <type>0</type>
+            <transmittable>0</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Identifies the JFBMS Slave firmware hardware target. This is not a user setting.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine></cDefine>
+        </hw_name>
+        <slave_id>
+            <longName>Slave ID</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Address of this JFBMS Slave on the battery-monitor CAN bus, from 1 to 8. Give each slave a unique ID and use consecutive IDs from 1 through the Number of Slaves configured on the Master or JF Link.&lt;/p&gt;&lt;p&gt;This is not a VESC controller CAN ID. A duplicate or missing ID prevents reliable pack data.&lt;/p&gt;&lt;p&gt;A new ID applies when written without restarting the device; update the parent configuration to match.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_SLAVE_ID</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>8</maxInt>
+            <minInt>1</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>1</valInt>
+            <suffix></suffix>
+            <vTx>4</vTx>
+        </slave_id>
+        <can_baud_rate>
+            <longName>CAN Baud Rate</longName>
+            <type>4</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;CAN bus speed used to communicate with the Master or JF Link. Every device on this physical bus must use the same speed.&lt;/p&gt;&lt;p&gt;For a standard JFBMS Master dedicated slave bus, select 500 kbit/s. With JF Link, match its configured CAN Baud Rate.&lt;/p&gt;&lt;p&gt;Write the configuration and reconnect at the new speed.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_CAN_BAUD_RATE</cDefine>
+            <valInt>2</valInt>
+            <enumNames>CAN_BAUD_125K</enumNames>
+            <enumNames>CAN_BAUD_250K</enumNames>
+            <enumNames>CAN_BAUD_500K</enumNames>
+            <enumNames>CAN_BAUD_1M</enumNames>
+            <enumNames>CAN_BAUD_10K</enumNames>
+            <enumNames>CAN_BAUD_20K</enumNames>
+            <enumNames>CAN_BAUD_50K</enumNames>
+            <enumNames>CAN_BAUD_75K</enumNames>
+            <enumNames>CAN_BAUD_100K</enumNames>
+        </can_baud_rate>
+        <cells_ic1>
+            <longName>Cells on Lower BQ (IC1)</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Number of series-connected cells measured by the first/lower BQ monitor, from 3 to 16. This must match the physically wired cells, not the number of cells in parallel.&lt;/p&gt;&lt;p&gt;Total series cell count is Cells IC1 + Cells IC2. Follow the board wiring diagram for unused cell inputs.&lt;/p&gt;&lt;p&gt;Writing a change automatically reinitializes the monitors and stops balancing during reinitialization.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_CELLS_IC1</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>16</maxInt>
+            <minInt>3</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>16</valInt>
+            <suffix></suffix>
+            <vTx>1</vTx>
+        </cells_ic1>
+        <cells_ic2>
+            <longName>Cells on Upper BQ (IC2)</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Number of series-connected cells measured by the second/upper BQ monitor. Set 0 if it is unused; otherwise use 3 to 16 to match the wiring.&lt;/p&gt;&lt;p&gt;Values 1 and 2 are invalid. Total series cell count is Cells IC1 + Cells IC2.&lt;/p&gt;&lt;p&gt;Follow the board wiring diagram for unused inputs. Writing a change automatically reinitializes the monitors and stops balancing during reinitialization.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_CELLS_IC2</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>16</maxInt>
+            <minInt>0</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>0</valInt>
+            <suffix></suffix>
+            <vTx>1</vTx>
+        </cells_ic2>
+        <temp_bq1_en>
+            <longName>BQ1 External Temperature Sensor</longName>
+            <type>5</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Enables the external NTC sensor connected to the lower BQ monitor temperature input. Enable only if that sensor is physically fitted, then set NTC Resistance and Beta to match it.&lt;/p&gt;&lt;p&gt;An enabled sensor with an invalid reading is reported as a temperature fault and blocks parent control that requires valid temperatures. Disabled means this sensor cannot protect cell temperature; internal BQ temperature is still monitored.&lt;/p&gt;&lt;p&gt;Changes apply automatically after writing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_TEMP_BQ1_EN</cDefine>
+            <valInt>1</valInt>
+        </temp_bq1_en>
+        <temp_bq2_en>
+            <longName>BQ2 External Temperature Sensor</longName>
+            <type>5</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Enables the external NTC sensor connected to the upper BQ monitor temperature input. Used only when Cells on Upper BQ is greater than 0.&lt;/p&gt;&lt;p&gt;Enable only for a fitted sensor and configure NTC Resistance and Beta. An enabled sensor with an invalid reading is reported as a temperature fault and blocks parent control that requires valid temperatures.&lt;/p&gt;&lt;p&gt;Disabled means this sensor cannot protect cell temperature; internal BQ temperature is still monitored. Changes apply automatically after writing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_TEMP_BQ2_EN</cDefine>
+            <valInt>1</valInt>
+        </temp_bq2_en>
+        <temp_res>
+            <longName>NTC Resistance</longName>
+            <type>4</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Nominal resistance of each external NTC temperature sensor at 25 degrees C, in ohms. Select the value from the sensor datasheet; for example, select 10k for a 10000-ohm NTC.&lt;/p&gt;&lt;p&gt;This setting applies to all enabled external NTC sensors. An incorrect value gives incorrect temperatures and therefore incorrect temperature limits.&lt;/p&gt;&lt;p&gt;Sensor settings apply automatically after writing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_TEMP_RES</cDefine>
+            <valInt>2</valInt>
+            <enumNames>4.7k</enumNames>
+            <enumNames>5k</enumNames>
+            <enumNames>10k</enumNames>
+            <enumNames>20k</enumNames>
+            <enumNames>22k</enumNames>
+            <enumNames>47k</enumNames>
+            <enumNames>50k</enumNames>
+            <enumNames>100k</enumNames>
+            <enumNames>200k</enumNames>
+        </temp_res>
+        <temp_beta>
+            <longName>NTC Beta</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Beta coefficient of the external NTC sensors, in kelvin (K), from the sensor datasheet; for example, 3435. It must match the fitted sensors and be greater than 0 when any external sensor is enabled.&lt;/p&gt;&lt;p&gt;This setting works together with NTC Resistance to convert resistance into temperature. Sensor settings apply automatically after writing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_TEMP_BETA</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>65535</maxInt>
+            <minInt>0</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>3435</valInt>
+            <suffix></suffix>
+            <vTx>3</vTx>
+        </temp_beta>
+    </Params>
+    <SerOrder>
+        <ser>slave_id</ser>
+        <ser>can_baud_rate</ser>
+        <ser>cells_ic1</ser>
+        <ser>cells_ic2</ser>
+        <ser>temp_bq1_en</ser>
+        <ser>temp_bq2_en</ser>
+        <ser>temp_res</ser>
+        <ser>temp_beta</ser>
+    </SerOrder>
+    <Grouping>
+        <group>
+            <groupName>General</groupName>
+            <subgroup>
+                <subgroupName>CAN</subgroupName>
+                <subgroupParams>
+                    <param>slave_id</param>
+                    <param>can_baud_rate</param>
+                </subgroupParams>
+            </subgroup>
+            <subgroup>
+                <subgroupName>Cell Configuration</subgroupName>
+                <subgroupParams>
+                    <param>cells_ic1</param>
+                    <param>cells_ic2</param>
+                </subgroupParams>
+            </subgroup>
+            <subgroup>
+                <subgroupName>Temperature Sensors</subgroupName>
+                <subgroupParams>
+                    <param>temp_bq1_en</param>
+                    <param>temp_bq2_en</param>
+                    <param>temp_res</param>
+                    <param>temp_beta</param>
+                </subgroupParams>
+            </subgroup>
+        </group>
+    </Grouping>
+</ConfigParams>

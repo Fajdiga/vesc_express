@@ -151,9 +151,21 @@ set(COMPONENT_ADD_INCLUDEDIRS
 "lowzip"
 )
 
+idf_build_get_property(jetfleet_hw_file VESC_HW_FILE)
+set(HW_LDFRAGMENTS "")
+if(jetfleet_hw_file STREQUAL "hw_jfbms_master")
+    list(REMOVE_ITEM COMPONENT_SRCS "adc.c")
+    list(APPEND HW_LDFRAGMENTS "hwconf/jetfleet/jfbms_master/adc_monitor.lf")
+endif()
+
 idf_component_register(SRCS ${COMPONENT_SRCS}
     INCLUDE_DIRS ${COMPONENT_ADD_INCLUDEDIRS}
+    LDFRAGMENTS ${HW_LDFRAGMENTS}
 )
+
+if(jetfleet_hw_file STREQUAL "hw_jfbms_master" OR jetfleet_hw_file STREQUAL "hw_jf_link")
+    target_compile_definitions(${COMPONENT_LIB} PUBLIC BMS_MAX_CELLS=255)
+endif()
 
 if(CONFIG_BT_NIMBLE_ENABLED)
     idf_component_get_property(bt_dir bt COMPONENT_DIR)

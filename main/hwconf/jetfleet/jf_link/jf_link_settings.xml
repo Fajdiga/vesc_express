@@ -1,0 +1,460 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ConfigParams>
+    <Params>
+        <config_name>
+            <longName>none</longName>
+            <type>3</type>
+            <transmittable>0</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Internal configuration type used by VESC Tool. This is not a user setting.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine></cDefine>
+            <valString>main_config_t</valString>
+            <maxLen>0</maxLen>
+        </config_name>
+        <hw_name>
+            <longName>JF Link</longName>
+            <type>0</type>
+            <transmittable>0</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Identifies the JF Link firmware hardware target. This is not a user setting.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine></cDefine>
+        </hw_name>
+        <controller_id>
+            <longName>CAN ID</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Address used by VESC Tool and other devices on the VESC CAN network. Give each device on this bus a different ID.&lt;/p&gt;&lt;p&gt;This is separate from the numbered JFBMS Slave IDs. Takes effect when the configuration is written.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_CONTROLLER_ID</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>254</maxInt>
+            <minInt>1</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>3</valInt>
+            <suffix></suffix>
+            <vTx>4</vTx>
+        </controller_id>
+        <can_baud_rate>
+            <longName>CAN Baud Rate</longName>
+            <type>4</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Communication speed of the CAN bus. Every device on the same physical bus must use the same speed, or communication will fail.&lt;/p&gt;&lt;p&gt;Write the configuration and reconnect at the selected speed.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_CAN_BAUD_RATE</cDefine>
+            <valInt>2</valInt>
+            <enumNames>CAN_BAUD_125K</enumNames>
+            <enumNames>CAN_BAUD_250K</enumNames>
+            <enumNames>CAN_BAUD_500K</enumNames>
+            <enumNames>CAN_BAUD_1M</enumNames>
+            <enumNames>CAN_BAUD_10K</enumNames>
+            <enumNames>CAN_BAUD_20K</enumNames>
+            <enumNames>CAN_BAUD_50K</enumNames>
+            <enumNames>CAN_BAUD_75K</enumNames>
+            <enumNames>CAN_BAUD_100K</enumNames>
+        </can_baud_rate>
+        <wifi_mode>
+            <longName>WiFi Mode</longName>
+            <type>4</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Disabled turns WiFi off. Station mode connects this device to an existing WiFi network using the Station SSID and password.&lt;/p&gt;&lt;p&gt;Access Point mode creates a network that your phone or computer can join using the Access Point SSID and password. Restart the device after changing WiFi settings.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_WIFI_MODE</cDefine>
+            <valInt>2</valInt>
+            <enumNames>WiFi Disabled</enumNames>
+            <enumNames>Station</enumNames>
+            <enumNames>Access Point</enumNames>
+        </wifi_mode>
+        <wifi_sta_ssid>
+            <longName>Station Mode SSID</longName>
+            <type>3</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Name of the existing WiFi network to join in Station mode. It must match the router network name exactly, including capital letters.&lt;/p&gt;&lt;p&gt;Unused in Disabled or Access Point mode. Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_WIFI_STA_SSID</cDefine>
+            <valString></valString>
+            <maxLen>35</maxLen>
+        </wifi_sta_ssid>
+        <wifi_sta_key>
+            <longName>Station Mode Password</longName>
+            <type>3</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Password for the existing WiFi network selected by Station Mode SSID. Leave empty only for an open network.&lt;/p&gt;&lt;p&gt;Unused outside Station mode. Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_WIFI_STA_KEY</cDefine>
+            <valString></valString>
+            <maxLen>25</maxLen>
+        </wifi_sta_key>
+        <wifi_ap_ssid>
+            <longName>Access Point SSID</longName>
+            <type>3</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Name of the WiFi network this device creates in Access Point mode. Choose a recognizable name so users can find it.&lt;/p&gt;&lt;p&gt;Unused outside Access Point mode. Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_WIFI_AP_SSID</cDefine>
+            <valString>VESC WiFi</valString>
+            <maxLen>35</maxLen>
+        </wifi_ap_ssid>
+        <wifi_ap_key>
+            <longName>Access Point Password</longName>
+            <type>3</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Password users enter to join this device in Access Point mode. Leave empty to create an open network; a protected network requires at least 8 characters.&lt;/p&gt;&lt;p&gt;Unused outside Access Point mode. Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_WIFI_AP_KEY</cDefine>
+            <valString>vesc6wifi</valString>
+            <maxLen>25</maxLen>
+        </wifi_ap_key>
+        <use_tcp_local>
+            <longName>Enable Local TCP</longName>
+            <type>5</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Allows VESC Tool to connect to this device over the local WiFi network using TCP port 65102. WiFi must be enabled and the computer or phone must be able to reach the device.&lt;/p&gt;&lt;p&gt;Disabling this closes the local TCP connection option. Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_USE_TCP_LOCAL</cDefine>
+            <valInt>1</valInt>
+        </use_tcp_local>
+        <use_tcp_hub>
+            <longName>Enable TCP Hub</longName>
+            <type>5</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Connects this device to a VESC TCP hub for remote access. WiFi must provide access to the configured hub.&lt;/p&gt;&lt;p&gt;Set the hub hostname, port, ID and password below. Restart after changing network settings.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_USE_TCP_HUB</cDefine>
+            <valInt>0</valInt>
+        </use_tcp_hub>
+        <tcp_hub_url>
+            <longName>TCP Hub Hostname</longName>
+            <type>3</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Hostname or IP address of the VESC TCP hub, for example hub.vesc-project.com. Enter only the hostname or address, without http://, https:// or a path.&lt;/p&gt;&lt;p&gt;Used only when Enable TCP Hub is on. Restart after changing network settings.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_TCP_HUB_URL</cDefine>
+            <valString>veschub.vedder.se</valString>
+            <maxLen>35</maxLen>
+        </tcp_hub_url>
+        <tcp_hub_port>
+            <longName>TCP Hub Port</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;TCP port used by the hub server. It must match the server configuration; use a value from 1 to 65535.&lt;/p&gt;&lt;p&gt;This is separate from the fixed local TCP port 65102. Used only when Enable TCP Hub is on.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_TCP_HUB_PORT</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>65535</maxInt>
+            <minInt>0</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>65101</valInt>
+            <suffix></suffix>
+            <vTx>3</vTx>
+        </tcp_hub_port>
+        <tcp_hub_id>
+            <longName>TCP Hub ID</longName>
+            <type>3</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Identifier that VESC Tool uses to find this device through the TCP hub. Use a unique ID and enter the same ID when connecting from VESC Tool.&lt;/p&gt;&lt;p&gt;Used only when Enable TCP Hub is on.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_TCP_HUB_ID</cDefine>
+            <valString>jflink1</valString>
+            <maxLen>25</maxLen>
+        </tcp_hub_id>
+        <tcp_hub_pass>
+            <longName>TCP Hub Password</longName>
+            <type>3</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Password for this device connection through the TCP hub. Enter the same password in VESC Tool.&lt;/p&gt;&lt;p&gt;Leave empty only if the hub connection is intended to have no password. Used only when Enable TCP Hub is on.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_TCP_HUB_PASS</cDefine>
+            <valString></valString>
+            <maxLen>25</maxLen>
+        </tcp_hub_pass>
+        <ble_mode>
+            <longName>Bluetooth Mode</longName>
+            <type>4</type>
+            <transmittable>1</transmittable>
+            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
+&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
+p, li { white-space: pre-wrap; }
+&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Disabled&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;The VESC Tool BLE connection is disabled. Bluetooth is disabled only when Bluetooth Mode LBM is also Disabled. Disabling bluetooth reduces the wifi-latency a bit, which is useful if you are not using bluetooth anyway.&lt;/p&gt;
+&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Enabled&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Bluetooth is enabled and anyone can connect to it with VESC tool.&lt;/p&gt;
+&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Enabled and Encrypted&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Bluetooth is enabled and pin code protected. That means that you have to do pairing and set up the pin code in order to connect with VESC tool. Encryption applies to all services on the same connection, including LispBM services.&lt;/p&gt;
+&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;NOTE:&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Bluetooth settings will be applied after a reboot.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BLE_MODE</cDefine>
+            <valInt>1</valInt>
+            <enumNames>Disabled</enumNames>
+            <enumNames>Enabled</enumNames>
+            <enumNames>Enabled and Encrypted</enumNames>
+        </ble_mode>
+        <ble_mode_lbm>
+            <longName>Bluetooth Mode LBM</longName>
+            <type>4</type>
+            <transmittable>1</transmittable>
+            <description>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
+&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
+p, li { white-space: pre-wrap; }
+&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Roboto'; ; font-weight:400; font-style:normal;&quot;&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Disabled&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;The LispBM BLE extensions are disabled. Bluetooth is disabled only when Bluetooth Mode is also set to Disabled.&lt;/p&gt;
+&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Server&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;The LBM BLE server extensions are enabled, allowing scripts to create custom services and advertise this device.&lt;/p&gt;
+&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Client&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;The LBM BLE client extensions are enabled, allowing scripts to scan for devices and create outgoing connections. Scripts control pairing and PIN entry for these connections independently of Bluetooth Mode.&lt;/p&gt;
+&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Client &amp;amp; Server&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Both the LBM BLE client and server extensions are enabled. Outgoing client connections can run alongside incoming connections. VESC Tool access is controlled separately by Bluetooth Mode.&lt;/p&gt;
+&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;NOTE:&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;Bluetooth settings will be applied after a reboot.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BLE_MODE_LBM</cDefine>
+            <valInt>0</valInt>
+            <enumNames>Disabled</enumNames>
+            <enumNames>Server</enumNames>
+            <enumNames>Client</enumNames>
+            <enumNames>Client &amp; Server</enumNames>
+        </ble_mode_lbm>
+        <ble_name>
+            <longName>Device Name</longName>
+            <type>3</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Device name shown during Bluetooth scanning and WiFi discovery. Use a recognizable name, up to 8 bytes (8 ordinary English characters; accented characters can use more than one byte).&lt;/p&gt;&lt;p&gt;Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BLE_NAME</cDefine>
+            <valString>JF Link</valString>
+            <maxLen>8</maxLen>
+        </ble_name>
+        <ble_pin>
+            <longName>Bluetooth PIN Code</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Six-digit pairing code used in Encrypted Bluetooth mode. For example, a stored value of 1234 is entered as 001234.&lt;/p&gt;&lt;p&gt;Unused in the other Bluetooth modes. Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BLE_PIN</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>999999</maxInt>
+            <minInt>0</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>123456</valInt>
+            <suffix></suffix>
+            <vTx>5</vTx>
+        </ble_pin>
+        <ble_service_capacity>
+            <longName>BLE Service Capacity</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Number of custom Bluetooth services that Lisp scripts can create in Scripting mode. Set this to at least the number your script needs.&lt;/p&gt;&lt;p&gt;More slots reserve more memory. Leave 0 when custom Bluetooth services are not used.&lt;/p&gt;&lt;p&gt;Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BLE_SERVICE_CAPACITY</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>99</maxInt>
+            <minInt>0</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>0</valInt>
+            <suffix></suffix>
+            <vTx>5</vTx>
+        </ble_service_capacity>
+        <ble_chr_descr_capacity>
+            <longName>BLE Characteristic and Descriptor Capacity</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Total number of characteristic and descriptor slots reserved for custom Lisp Bluetooth services in Scripting mode. Count both characteristics and their descriptors across all services.&lt;/p&gt;&lt;p&gt;More slots reserve more memory. Leave 0 when custom Bluetooth services are not used.&lt;/p&gt;&lt;p&gt;Restart after changing.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BLE_CHR_DESCR_CAPACITY</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>99</maxInt>
+            <minInt>0</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>0</valInt>
+            <suffix></suffix>
+            <vTx>5</vTx>
+        </ble_chr_descr_capacity>
+        <num_slaves>
+            <longName>Number of Slaves</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Number of JFBMS Slave boards that form this pack, from 1 to 8. Assign them unique Slave IDs consecutively from 1 through this number.&lt;/p&gt;&lt;p&gt;All configured slaves must supply valid, fresh data before pack control is allowed. Do not count CAN motor controllers or individual cells.&lt;/p&gt;&lt;p&gt;Changes apply when written; pack data must then be received again. JF Link collects pack data and sends balancing commands; it has no charging power switch and cannot enforce charger or discharge protection.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_NUM_SLAVES</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>8</maxInt>
+            <minInt>1</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>1</valInt>
+            <suffix></suffix>
+            <vTx>1</vTx>
+        </num_slaves>
+        <num_parallel>
+            <longName>Parallel Strings</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Number of identical series strings connected in parallel. 1 means all slaves form one series string.&lt;/p&gt;&lt;p&gt;Number of Slaves must be divisible by this value. Slave IDs are assigned in consecutive blocks per string: with 4 slaves and 2 parallel strings, IDs 1-2 form string A and IDs 3-4 form string B.&lt;/p&gt;&lt;p&gt;All strings must have the same cell count; otherwise balancing is blocked and the status shows topo. Pack voltage is reported as the average string voltage. Balancing is unchanged.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_NUM_PARALLEL</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>8</maxInt>
+            <minInt>1</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>1</valInt>
+            <suffix></suffix>
+            <vTx>1</vTx>
+        </num_parallel>
+        <vc_balance_start>
+            <longName>Balance Start Difference</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Voltage difference, in volts, between a higher cell and the lowest cell in the pack that qualifies it for balancing. For example, 0.015 V means 15 mV above the lowest cell.&lt;/p&gt;&lt;p&gt;This is not an absolute cell voltage. Keep it at least as high as Balance Stop Difference.&lt;/p&gt;&lt;p&gt;Lower values target closer matching but can react more to measurement noise. Other balance safety conditions must also be satisfied.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BALANCE_START</cDefine>
+            <editorDecimalsDouble>3</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>0.5</maxDouble>
+            <minDouble>0</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.001</stepDouble>
+            <valDouble>0.015</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> V</suffix>
+            <vTx>9</vTx>
+        </vc_balance_start>
+        <vc_balance_end>
+            <longName>Balance Stop Difference</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Smaller voltage difference, in volts, used to finish balancing after it has started. For example, 0.008 V means 8 mV above the lowest cell.&lt;/p&gt;&lt;p&gt;Set it no higher than Balance Start Difference; a lower stop value provides hysteresis and avoids repeatedly starting and stopping near one threshold.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BALANCE_END</cDefine>
+            <editorDecimalsDouble>3</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>0.5</maxDouble>
+            <minDouble>0</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.001</stepDouble>
+            <valDouble>0.008</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> V</suffix>
+            <vTx>9</vTx>
+        </vc_balance_end>
+        <vc_balance_min>
+            <longName>Balance Minimum Voltage</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Minimum allowed cell voltage for balancing, in volts per cell. Every cell must be above this configured value and must also pass the fixed 2.5 V validity floor.&lt;/p&gt;&lt;p&gt;Balancing additionally requires fresh complete slave data, valid temperatures and no faults. This is an absolute cell voltage, separate from Balance Start and Stop Difference.&lt;/p&gt;&lt;p&gt;JF Link cannot use this setting to cut off charging or discharging.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_BALANCE_MIN</cDefine>
+            <editorDecimalsDouble>3</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>5</maxDouble>
+            <minDouble>1</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.01</stepDouble>
+            <valDouble>3.5</valDouble>
+            <vTxDoubleScale>1</vTxDoubleScale>
+            <suffix> V</suffix>
+            <vTx>9</vTx>
+        </vc_balance_min>
+        <max_bal_ch>
+            <longName>Max Balance Cells per BQ</longName>
+            <type>2</type>
+            <transmittable>1</transmittable>
+            <description>&lt;html&gt;&lt;body&gt;&lt;p&gt;Maximum number of cells that may be balanced at the same time on each BQ monitor, not across the entire pack. Only nonadjacent channels are selected, so the actual count can be lower.&lt;/p&gt;&lt;p&gt;Fewer channels reduce heat but can make balancing take longer. This limit does not start balancing by itself.&lt;/p&gt;&lt;p&gt;Range 0 to 8; 0 disables balancing. Balancing also requires a user request, fresh healthy slave data and safe temperatures; this setting alone does not enable it.&lt;/p&gt;&lt;p&gt;Fixed temperature safety limits also require internal BQ temperature below 100 degrees C and enabled external sensors below 60 degrees C.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</description>
+            <cDefine>CONF_MAX_BAL_CH</cDefine>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxInt>8</maxInt>
+            <minInt>0</minInt>
+            <showDisplay>0</showDisplay>
+            <stepInt>1</stepInt>
+            <valInt>8</valInt>
+            <suffix></suffix>
+            <vTx>1</vTx>
+        </max_bal_ch>
+    </Params>
+    <SerOrder>
+        <ser>controller_id</ser>
+        <ser>can_baud_rate</ser>
+        <ser>wifi_mode</ser>
+        <ser>wifi_sta_ssid</ser>
+        <ser>wifi_sta_key</ser>
+        <ser>wifi_ap_ssid</ser>
+        <ser>wifi_ap_key</ser>
+        <ser>use_tcp_local</ser>
+        <ser>use_tcp_hub</ser>
+        <ser>tcp_hub_url</ser>
+        <ser>tcp_hub_port</ser>
+        <ser>tcp_hub_id</ser>
+        <ser>tcp_hub_pass</ser>
+        <ser>ble_mode</ser>
+        <ser>ble_mode_lbm</ser>
+        <ser>ble_name</ser>
+        <ser>ble_pin</ser>
+        <ser>ble_service_capacity</ser>
+        <ser>ble_chr_descr_capacity</ser>
+        <ser>num_slaves</ser>
+        <ser>vc_balance_start</ser>
+        <ser>vc_balance_end</ser>
+        <ser>vc_balance_min</ser>
+        <ser>max_bal_ch</ser>
+        <ser>num_parallel</ser>
+    </SerOrder>
+    <Grouping>
+        <group>
+            <groupName>General</groupName>
+            <subgroup>
+                <subgroupName>CAN</subgroupName>
+                <subgroupParams>
+                    <param>controller_id</param>
+                    <param>can_baud_rate</param>
+                </subgroupParams>
+            </subgroup>
+            <subgroup>
+                <subgroupName>WiFi</subgroupName>
+                <subgroupParams>
+                    <param>ble_name</param>
+                    <param>wifi_mode</param>
+                    <param>::sep::Station Mode</param>
+                    <param>wifi_sta_ssid</param>
+                    <param>wifi_sta_key</param>
+                    <param>::sep::Access Point Mode</param>
+                    <param>wifi_ap_ssid</param>
+                    <param>wifi_ap_key</param>
+                    <param>::sep::TCP Local</param>
+                    <param>use_tcp_local</param>
+                    <param>::sep::TCP Hub</param>
+                    <param>use_tcp_hub</param>
+                    <param>tcp_hub_url</param>
+                    <param>tcp_hub_port</param>
+                    <param>tcp_hub_id</param>
+                    <param>tcp_hub_pass</param>
+                </subgroupParams>
+            </subgroup>
+            <subgroup>
+                <subgroupName>Bluetooth</subgroupName>
+                <subgroupParams>
+                    <param>ble_name</param>
+                    <param>ble_mode</param>
+                    <param>ble_mode_lbm</param>
+                    <param>ble_pin</param>
+                    <param>ble_service_capacity</param>
+                    <param>ble_chr_descr_capacity</param>
+                </subgroupParams>
+            </subgroup>
+            <subgroup>
+                <subgroupName>JFBMS Slaves</subgroupName>
+                <subgroupParams>
+                    <param>num_slaves</param>
+                    <param>num_parallel</param>
+                </subgroupParams>
+            </subgroup>
+            <subgroup>
+                <subgroupName>JFBMS Balancing</subgroupName>
+                <subgroupParams>
+                    <param>vc_balance_start</param>
+                    <param>vc_balance_end</param>
+                    <param>vc_balance_min</param>
+                    <param>max_bal_ch</param>
+                </subgroupParams>
+            </subgroup>
+        </group>
+    </Grouping>
+</ConfigParams>
