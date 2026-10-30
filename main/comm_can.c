@@ -82,6 +82,8 @@ typedef struct {
 	volatile bool recovering;
 	volatile int recovery_cnt;
 	volatile bool tx_reclaim;
+	volatile bool last_tx_success;
+	volatile uint32_t err_bit, err_form, err_stuff, err_ack, err_arb, bus_off;
 } can_state_t;
 
 static DRAM_ATTR can_state_t can_state;
@@ -105,6 +107,8 @@ static volatile unsigned int rx_buffer_last_id;
 static volatile unsigned int rx_buffer_response_type = 1;
 
 static volatile bool use_vesc_decoder = true;
+static volatile TickType_t send_buffer_last_ticks;
+static volatile bool send_buffer_seen;
 
 static bool (*sid_callback)(uint32_t id, uint8_t *data, uint8_t len) = 0;
 static bool (*eid_callback)(uint32_t id, uint8_t *data, uint8_t len) = 0;
@@ -601,6 +605,7 @@ static bool IRAM_ATTR can_rx_done(twai_node_handle_t node, const twai_rx_done_ev
 
 static bool IRAM_ATTR can_tx_done(twai_node_handle_t node, const twai_tx_done_event_data_t *event, void *arg) {
 	can_state_t *state = arg;
+	state->last_tx_success = event->is_tx_success;
 	can_tx_message_t *msg = (can_tx_message_t *)event->done_tx_frame;
 	BaseType_t wake = pdFALSE;
 	xQueueSendFromISR(state->tx_free, &msg, &wake);
@@ -612,6 +617,7 @@ static bool IRAM_ATTR can_state_change(
 	can_state_t *state = arg;
 	BaseType_t wake = pdFALSE;
 	if (event->new_sta == TWAI_ERROR_BUS_OFF) {
+		state->bus_off++;
 		state->recover_pending = true;
 		xSemaphoreGiveFromISR(proc_sem, &wake);
 	} else if (state->recovering && event->new_sta == TWAI_ERROR_ACTIVE) {
@@ -620,6 +626,43 @@ static bool IRAM_ATTR can_state_change(
 		xSemaphoreGiveFromISR(proc_sem, &wake);
 	}
 	return wake == pdTRUE;
+}
+
+static bool IRAM_ATTR can_error(twai_node_handle_t node,
+		const twai_error_event_data_t *event, void *arg) {
+	(void)node;
+	can_state_t *state = arg;
+	state->err_bit += event->err_flags.bit_err;
+	state->err_form += event->err_flags.form_err;
+	state->err_stuff += event->err_flags.stuff_err;
+	state->err_ack += event->err_flags.ack_err;
+	state->err_arb += event->err_flags.arb_lost;
+	return false;
+}
+
+static void print_err_stats(const char *name, can_state_t *state) {
+	int tec = -1;
+	int rec = -1;
+	if (state->send_mutex && xSemaphoreTake(state->send_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+		twai_node_status_t status = {0};
+		if (state->node && twai_node_get_info(state->node, &status, NULL) == ESP_OK) {
+			tec = status.tx_error_count;
+			rec = status.rx_error_count;
+		}
+		xSemaphoreGive(state->send_mutex);
+	}
+	commands_printf("%s errors: bit=%lu form=%lu stuff=%lu ack=%lu arb=%lu bus_off=%lu tec=%d rec=%d tx_free=%d",
+			name, (unsigned long)state->err_bit, (unsigned long)state->err_form,
+			(unsigned long)state->err_stuff, (unsigned long)state->err_ack,
+			(unsigned long)state->err_arb, (unsigned long)state->bus_off, tec, rec,
+			state->tx_free ? (int)uxQueueMessagesWaiting(state->tx_free) : -1);
+}
+
+void comm_can_print_err_stats(void) {
+	print_err_stats("CAN1", &can_state);
+#ifdef CONFIG_IDF_TARGET_ESP32C6
+	print_err_stats("CAN2", &can2_state);
+#endif
 }
 
 static void can_reset_tx(can_state_t *state) {
@@ -671,11 +714,19 @@ static bool can_node_start(can_state_t *state, int pin_tx, int pin_rx, uint32_t 
 		.on_rx_done = can_rx_done,
 		.on_tx_done = can_tx_done,
 		.on_state_change = can_state_change,
+		.on_error = can_error,
 	};
 	esp_err_t res = twai_new_node_onchip(&config, &state->node);
 	if (res == ESP_OK) {
 		res = twai_node_register_event_callbacks(state->node, &callbacks, state);
 	}
+#ifdef HW_CAN_FILTER_CONFIG
+	twai_mask_filter_config_t filter = {0};
+	if (res == ESP_OK && state == &can_state && HW_CAN_FILTER_CONFIG(&filter)) {
+		res = twai_node_config_mask_filter(state->node, 0, &filter);
+	}
+#endif
+
 	if (res == ESP_OK) {
 		res = twai_node_enable(state->node);
 	}
@@ -737,6 +788,54 @@ static void can_transmit(can_state_t *state, uint32_t id, const uint8_t *data, u
 	xSemaphoreGive(state->send_mutex);
 }
 
+// A checked send is used when hardware must confirm a command reached the bus
+// before shutdown. Use the same upstream TX pool and completion callbacks.
+static esp_err_t can_transmit_sync(can_state_t *state, uint32_t id,
+		const uint8_t *data, uint8_t len, int timeout_ms) {
+	if (!data || len > 8 || id > 0x7FF || timeout_ms <= 0) return ESP_ERR_INVALID_ARG;
+	if (!state->send_mutex) return ESP_ERR_INVALID_STATE;
+	TickType_t started = xTaskGetTickCount();
+	TickType_t budget = pdMS_TO_TICKS(timeout_ms);
+	if (xSemaphoreTake(state->send_mutex, budget) != pdTRUE) return ESP_ERR_TIMEOUT;
+	esp_err_t res = ESP_ERR_INVALID_STATE;
+	if (!state->node || state->recover_pending || state->recovering) goto done;
+	int remaining = timeout_ms - (int)((xTaskGetTickCount() - started) * portTICK_PERIOD_MS);
+	if (remaining <= 0) { res = ESP_ERR_TIMEOUT; goto done; }
+	res = twai_node_transmit_wait_all_done(state->node, remaining);
+	if (res != ESP_OK) goto done;
+	remaining = timeout_ms - (int)((xTaskGetTickCount() - started) * portTICK_PERIOD_MS);
+	if (remaining <= 0) { res = ESP_ERR_TIMEOUT; goto done; }
+	can_tx_message_t *msg;
+	if (xQueueReceive(state->tx_free, &msg, 0) != pdTRUE) { res = ESP_ERR_TIMEOUT; goto done; }
+	msg->frame = (twai_frame_t){
+		.header = {.id = id, .dlc = len, .ide = false},
+		.buffer = msg->data, .buffer_len = len,
+	};
+	memcpy(msg->data, data, len);
+	state->last_tx_success = false;
+	res = twai_node_transmit(state->node, &msg->frame, 0);
+	if (res != ESP_OK) {
+		xQueueSend(state->tx_free, &msg, 0);
+		goto done;
+	}
+	remaining = timeout_ms - (int)((xTaskGetTickCount() - started) * portTICK_PERIOD_MS);
+	res = remaining > 0 ? twai_node_transmit_wait_all_done(state->node, remaining) : ESP_ERR_TIMEOUT;
+	if (res == ESP_OK && !state->last_tx_success) res = ESP_FAIL;
+done:
+	xSemaphoreGive(state->send_mutex);
+	return res;
+}
+
+esp_err_t comm_can_transmit_sid_sync(uint32_t id, const uint8_t *data,
+		uint8_t len, int timeout_ms) {
+	return can_transmit_sync(&can_state, id, data, len, timeout_ms);
+}
+
+bool comm_can_send_buffer_recent(int msec) {
+	return send_buffer_seen && msec > 0 &&
+		(TickType_t)(xTaskGetTickCount() - send_buffer_last_ticks) < pdMS_TO_TICKS(msec);
+}
+
 static void process_task(void *arg) {
 	for (;;) {
 		xSemaphoreTake(proc_sem, portMAX_DELAY);
@@ -747,10 +846,15 @@ static void process_task(void *arg) {
 #endif
 
 		can_message_t rx_message;
-		while (can_state.rx_queue && xQueueReceive(can_state.rx_queue, &rx_message, 0) == pdTRUE) {
+		for (int i = 0; i < RXBUF_LEN && can_state.rx_queue &&
+				xQueueReceive(can_state.rx_queue, &rx_message, 0) == pdTRUE; i++) {
 			can_message_t *msg = &rx_message;
 
 			lispif_process_can(msg->identifier, msg->data, msg->data_length_code, msg->extd);
+			extern void hw_can_rx_hook(uint32_t, uint8_t *, int, bool) __attribute__((weak));
+			if (hw_can_rx_hook) {
+				hw_can_rx_hook(msg->identifier, msg->data, msg->data_length_code, msg->extd);
+			}
 
 			// Application RX callbacks (e.g. native lib). If the callback
 			// consumes the frame, skip the built-in VESC decoding.
@@ -775,10 +879,15 @@ static void process_task(void *arg) {
 		}
 
 #ifdef CONFIG_IDF_TARGET_ESP32C6
-		while (can2_state.rx_queue && xQueueReceive(can2_state.rx_queue, &rx_message, 0) == pdTRUE) {
+		for (int i = 0; i < RXBUF_LEN && can2_state.rx_queue &&
+				xQueueReceive(can2_state.rx_queue, &rx_message, 0) == pdTRUE; i++) {
 			can_message_t *m = &rx_message;
 
 			lispif_process_can2(m->identifier, m->data, m->data_length_code, m->extd);
+			extern void hw_can2_rx_hook(uint32_t, uint8_t *, int, bool) __attribute__((weak));
+			if (hw_can2_rx_hook) {
+				hw_can2_rx_hook(m->identifier, m->data, m->data_length_code, m->extd);
+			}
 
 			if (can2_use_vesc_dec) {
 				if (!bms_process_can_frame(m->identifier, m->data, m->data_length_code, m->extd)) {
@@ -1051,6 +1160,8 @@ void comm_can_set_eid_rx_callback(bool (*p_func)(uint32_t id, uint8_t *data, uin
  * 3: Same as 0, but the reply is processed locally and not sent out on the last interface.
  */
 void comm_can_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len, uint8_t send) {
+	send_buffer_last_ticks = xTaskGetTickCount();
+	send_buffer_seen = true;
 	uint8_t send_buffer[8];
 
 	if (len <= 6) {
@@ -1479,6 +1590,11 @@ void comm_can_update_pid_pos_offset(int id, float angle_now, bool store) {
 }
 
 #ifdef CONFIG_IDF_TARGET_ESP32C6
+
+esp_err_t comm_can2_transmit_sid_sync(uint32_t id, const uint8_t *data,
+		uint8_t len, int timeout_ms) {
+	return can_transmit_sync(&can2_state, id, data, len, timeout_ms);
+}
 
 void comm_can2_start(int pin_tx, int pin_rx, int baud_kbits) {
 	if (!proc_started) {

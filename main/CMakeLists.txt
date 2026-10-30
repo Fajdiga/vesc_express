@@ -115,6 +115,7 @@ set(COMPONENT_ADD_INCLUDEDIRS
 "config"
 "hwconf"
 "hwconf/devkits"
+"${CMAKE_SOURCE_DIR}/${HW_DIR}"
 "hwconf/trampa"
 "hwconf/trampa/bms_rb"
 "hwconf/vesc"
