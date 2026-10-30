@@ -81,6 +81,7 @@ typedef struct {
 	volatile bool recover_pending;
 	volatile bool recovering;
 	volatile int recovery_cnt;
+	volatile bool tx_reclaim;
 } can_state_t;
 
 static DRAM_ATTR can_state_t can_state;
@@ -615,6 +616,7 @@ static bool IRAM_ATTR can_state_change(
 		xSemaphoreGiveFromISR(proc_sem, &wake);
 	} else if (state->recovering && event->new_sta == TWAI_ERROR_ACTIVE) {
 		state->recovering = false;
+		state->tx_reclaim = true;
 		xSemaphoreGiveFromISR(proc_sem, &wake);
 	}
 	return wake == pdTRUE;
@@ -636,6 +638,7 @@ static void can_node_stop(can_state_t *state) {
 	}
 	state->recover_pending = false;
 	state->recovering = false;
+	state->tx_reclaim = false;
 }
 
 static bool can_node_start(can_state_t *state, int pin_tx, int pin_rx, uint32_t bitrate) {
@@ -687,7 +690,7 @@ static bool can_node_start(can_state_t *state, int pin_tx, int pin_rx, uint32_t 
 }
 
 static void can_recover(can_state_t *state) {
-	if ((!state->recover_pending && !state->recovering) || !state->send_mutex) {
+	if ((!state->recover_pending && !state->recovering && !state->tx_reclaim) || !state->send_mutex) {
 		return;
 	}
 	xSemaphoreTake(state->send_mutex, portMAX_DELAY);
@@ -699,6 +702,16 @@ static void can_recover(can_state_t *state) {
 		} else {
 			state->recovering = false;
 		}
+	}
+	// The driver drops the frame that was in flight at bus-off without a
+	// TX-done callback, so its buffer never returns to tx_free. Once the
+	// driver has sent everything still queued it holds no buffers, so all
+	// of them can be returned. Without this each bus-off leaks one buffer
+	// until transmission stops completely.
+	if (state->node && state->tx_reclaim && !state->recover_pending && !state->recovering &&
+			twai_node_transmit_wait_all_done(state->node, 100) == ESP_OK) {
+		state->tx_reclaim = false;
+		can_reset_tx(state);
 	}
 	xSemaphoreGive(state->send_mutex);
 }
