@@ -1925,7 +1925,7 @@ loopforeach
     (event-enable 'event-data-rx)
 
     ; Seed the pack snapshot once; the control loop keeps refreshing it. Do not
-    ; block boot waiting for slaves — charging self-gates on pack-data-ok, so the
+    ; block boot waiting for slaves - charging self-gates on pack-data-ok, so the
     ; pack comes online as soon as the first broadcast arrives.
     (refresh-pack-data)
 
