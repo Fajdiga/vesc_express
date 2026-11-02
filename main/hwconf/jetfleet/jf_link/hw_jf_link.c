@@ -127,6 +127,7 @@ static can_msg_t m_can_rx_buf[JFBMS_CAN_BUF_SIZE];
 static volatile int m_can_rx_head = 0;
 static volatile int m_can_rx_tail = 0;
 static volatile uint32_t m_can_rx_overflow = 0;
+static uint32_t m_invalid_broadcasts = 0;
 
 static config_syms_t m_syms_cfg = {0};
 
@@ -447,8 +448,11 @@ static void parse_slave_message(uint32_t id, const uint8_t *data, int len, uint3
 			if (required_temp[t]) valid = s->temps[t] >= -400 && s->temps[t] <= 1200;
 		}
 		stage->in_progress = false;
+		// A single bad read (e.g. 0xFFFF cell marker) must not flap the slave
+		// offline and beep: the live snapshot ages out and the slave timeout
+		// reports a real loss.
 		if (!valid) {
-			live->active = false;
+			m_invalid_broadcasts++;
 			xSemaphoreGive(m_data_mutex);
 			return;
 		}
@@ -1623,8 +1627,9 @@ static lbm_value ext_can_debug(lbm_value *args, lbm_uint argn) {
 
 	uint32_t now = xTaskGetTickCount();
 
-	commands_printf_lisp("JF Link CAN buf: head=%d tail=%d overflow=%lu",
-			m_can_rx_head, m_can_rx_tail, (unsigned long)m_can_rx_overflow);
+	commands_printf_lisp("JF Link CAN buf: head=%d tail=%d overflow=%lu invalid=%lu",
+			m_can_rx_head, m_can_rx_tail, (unsigned long)m_can_rx_overflow,
+			(unsigned long)m_invalid_broadcasts);
 
 	commands_printf_lisp("JF Link cfg: id=%d baud=%d slaves=%d parallel=%d",
 			backup.config.controller_id,
@@ -1679,6 +1684,7 @@ static lbm_value ext_can_debug_reset(lbm_value *args, lbm_uint argn) {
 	(void)argn;
 
 	m_can_rx_overflow = 0;
+	m_invalid_broadcasts = 0;
 	return ENC_SYM_TRUE;
 }
 
