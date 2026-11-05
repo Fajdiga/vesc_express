@@ -395,7 +395,9 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 
 	case COMM_GET_CUSTOM_CONFIG:
 	case COMM_GET_CUSTOM_CONFIG_DEFAULT: {
+		if (len < 1) break;
 		main_config_t *conf = calloc(1, sizeof(main_config_t));
+		if (!conf) break;
 
 		int conf_ind = data[0];
 
@@ -431,7 +433,9 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 	} break;
 
 	case COMM_SET_CUSTOM_CONFIG: {
+		if (len < 1) break;
 		main_config_t *conf = calloc(1, sizeof(main_config_t));
+		if (!conf) break;
 		*conf = backup.config;
 
 		int conf_ind = data[0];
@@ -468,6 +472,7 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 	} break;
 
 	case COMM_GET_CUSTOM_CONFIG_XML: {
+		if (len < 1) break;
 		int32_t ind = 0;
 
 		int conf_ind = data[ind++];
@@ -477,10 +482,12 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 			break;
 		}
 
+		if (len < 9) break;
 		int32_t len_conf = buffer_get_int32(data, &ind);
 		int32_t ofs_conf = buffer_get_int32(data, &ind);
 
-		if ((len_conf + ofs_conf) > DATA_MAIN_CONFIG_T__SIZE || len_conf > (PACKET_MAX_PL_LEN - 10)) {
+		if (len_conf < 0 || ofs_conf < 0 || ofs_conf > DATA_MAIN_CONFIG_T__SIZE ||
+				len_conf > DATA_MAIN_CONFIG_T__SIZE - ofs_conf || len_conf > (PACKET_MAX_PL_LEN - 10)) {
 			break;
 		}
 
